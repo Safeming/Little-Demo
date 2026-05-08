@@ -1,0 +1,36 @@
+# @package _global_
+
+# Face-local carrier follow-up on top of the working v108b line.
+# Keep the proven warm-started RGB face branch, but allow new face-local
+# carrier modules to be partially loaded from an older checkpoint.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.detail_high_freq_face_local_
+
+opt:
+  iterations: 3600
+  latent_weight_decay: [0.0008, 1200, 0.0004, 2600, 0.0002]
+
+  face_region_source: parser_prefer
+  face_region_parser_dilate: 5
+  face_region_source_aware_validity_enable: true
+
+  face_detail_boundary_keep_width: 0
+  face_detail_boundary_keep_weight: 0.0
+  shoulder_arm_detail_boundary_keep_width: 0
+  shoulder_arm_detail_boundary_keep_weight: 0.0
+  waist_detail_boundary_keep_width: 0
+  waist_detail_boundary_keep_weight: 0.0
+
+  clarity_debug_enable: true
+  clarity_debug_interval: 100
+
+save_iterations: [1200, 2400, 3600]

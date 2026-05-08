@@ -1,0 +1,134 @@
+# @package _global_
+
+# v162a: root-cause probe for baseline-level clarity.
+# Start from the strongest baseline-adjacent explicit anchor (v142e), keep its
+# binding state, make image-error boundary usable before texture forward via a
+# per-camera live-score cache, and reopen only a short hardest-contour regrow
+# window. This avoids the v144a failure mode where clearing binding state plus
+# broad regrow destroyed the v142e contour.
+
+best_metric: psnr_fg
+best_metric_mode: max
+
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+
+model:
+  gaussian:
+    binding_densify_boundary_only: true
+    binding_densify_arm_only: false
+    binding_densify_require_boundary_tag: true
+    binding_densify_clone_candidate_seed_boundary_only: true
+    binding_densify_clone_candidate_seed_arm_only: false
+    binding_densify_child_immediate_refresh_boundary_only: true
+    binding_densify_child_immediate_refresh_arm_only: false
+    binding_densify_clone_candidate_seed_boundary_threshold: 0.08
+    binding_densify_child_immediate_refresh_boundary_threshold: 0.08
+    binding_densify_risky_parent_clone_enable: false
+    binding_densify_directional_split_enable: false
+    binding_densify_predictive_directional_split_enable: false
+
+opt:
+  iterations: 2500
+
+  grad_clip: 0.034
+
+  position_lr_init: 0.000010
+  position_lr_final: 0.0000010
+  opacity_lr: 0.00100
+  scaling_lr: 0.000105
+  rotation_lr: 0.000025
+
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  texture_lr: 0.00018
+  tex_latent_lr: 0.00008
+
+  densify_from_iter: 200
+  densify_until_iter: 1300
+  densification_interval: 100
+  densify_grad_threshold: 0.00055
+  percent_dense: 0.0010
+  opacity_reset_interval: 1000000
+  opacity_threshold: 0.060
+
+  boundary_live_score_cache_enable: true
+  boundary_live_score_cache_key: camera
+  boundary_live_score_cache_max_entries: 32
+  boundary_live_score_cache_ema: 0.65
+  boundary_live_score_cache_clear_missing: true
+  boundary_live_score_cache_clear_before_eval: true
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.04
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.08
+  boundary_tag_min_ratio: 0.06
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1300
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.14
+  boundary_tag_score_smooth_k: 10
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_mix: [0.45, 1, 0.62, 600, 0.74, 1300, 0.80]
+  boundary_image_error_score_gain: 1.10
+  boundary_image_error_score_power: 1.05
+  boundary_image_error_score_min: 0.035
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_k: 8
+  boundary_image_error_score_smooth_blend: 0.10
+  boundary_image_error_score_prior_floor: 0.10
+
+  boundary_signed_mixed_loss_scale: 0.08
+  boundary_signed_shrink_loss_scale: 1.20
+  boundary_signed_grow_loss_scale: 0.34
+  boundary_signed_share_gain: 1.05
+  boundary_signed_share_power: 1.15
+  boundary_signed_shrink_share_gain: 1.18
+  boundary_signed_shrink_share_power: 1.32
+
+  boundary_aware_opacity_scale: 0.12
+  boundary_aware_scaling_scale: 0.040
+  boundary_aware_boundary_opacity_residual_scale: 0.55
+  boundary_aware_boundary_scaling_residual_scale: 0.35
+  boundary_opacity_residual_lr: 0.00012
+  boundary_scaling_residual_lr: 0.000040
+  lambda_boundary_opacity_residual_reg: 0.0007
+  lambda_boundary_scaling_residual_reg: 0.00018
+  lambda_boundary_opacity_residual_smooth: 0.0009
+  lambda_boundary_scaling_residual_smooth: 0.00065
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  lambda_silhouette_outer: 0.006
+  lambda_silhouette_outer_shell: 0.018
+  silhouette_outer_ring_width: 4
+  silhouette_outer_shell_start_width: 2
+  silhouette_outer_shell_end_width: 10
+  silhouette_outer_shell_soft_weights: true
+  silhouette_outer_shell_weight_min: 0.24
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500]
+save_iterations: [1000, 1500, 2000, 2500]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500]

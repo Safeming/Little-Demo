@@ -1,0 +1,41 @@
+# @package _global_
+
+# v178d: K=4 with stronger contour uncertainty weighting.
+# Tests whether the remaining shoulder/arm softness is caused by local
+# SMPL/camera mismatch that should be downweighted near uncertain contours.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+opt:
+  iterations: 3000
+  texture_lr: 0.000070
+  grad_clip: 0.017
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_accumulation_steps: 4
+  train_sample_accumulation_without_replacement: true
+  train_sample_log_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 13
+  contour_uncertainty_outer_width: 9
+  contour_uncertainty_min_weight: 0.66
+
+  lambda_edge_shoulder_arm: 0.052
+  lambda_detail_shoulder_arm_luma_dog: 0.040
+  lambda_l1_shoulder_arm: 0.060
+
+test_interval: 750
+test_iterations: [750, 1500, 2250, 3000]
+save_iterations: [750, 1500, 2250, 3000]
+checkpoint_iterations: [750, 1500, 2250, 3000]

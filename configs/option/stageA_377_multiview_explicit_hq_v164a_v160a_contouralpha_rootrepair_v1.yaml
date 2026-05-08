@@ -1,0 +1,171 @@
+# @package _global_
+
+# v164a: root-repair stage from v160a.
+#
+# This is not another owner/boundary-head polish.  v160/v163 showed that
+# texture owner can improve perception, but the side contour still bulges and
+# signed finishing barely moves alpha/geometry.  This stage keeps the v160a
+# appearance mostly fixed and spends its budget on the opacity/scaling/position
+# main path under silhouette supervision.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+model:
+  deformer:
+    rigid:
+      non_rigid_layer_sharpen_strength: 0.28
+      non_rigid_layer_sharpen_threshold: 0.00018
+      non_rigid_layer_sharpen_width: 0.00025
+      non_rigid_layer_sharpen_min_dominance: 0.38
+      non_rigid_layer_sharpen_dominance_width: 0.06
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            takeover:
+              strength: [0.40, 1, 0.42, 1200, 0.42]
+              max: 0.40
+            head:
+              boundary:
+                enable: true
+                scale: [0.38, 1, 0.52, 500, 0.62, 1200, 0.66]
+                gate_gain: 1.08
+                gate_bias: -0.01
+                min_gate: 0.04
+                focus_threshold: 0.035
+                focus_power: 1.00
+                focus_min: 0.0
+                focus_max: 1.0
+                takeover:
+                  enable: true
+                  scale: [0.42, 1, 0.56, 500, 0.66, 1200, 0.70]
+                  max: 0.70
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.030
+      high_frequency:
+        tiny_repair_scale: 0.010
+        scale: 0.032
+        gate_bias: -0.045
+        face_branch:
+          gate_bias: -0.075
+
+opt:
+  iterations: 1200
+
+  grad_clip: 0.026
+
+  position_lr_init: 0.000005
+  position_lr_final: 0.0000008
+  opacity_lr: 0.00105
+  scaling_lr: 0.000095
+  rotation_lr: 0.000020
+
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  texture_lr: 0.000030
+  tex_latent_lr: 0.000000
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: false
+
+  boundary_live_score_cache_enable: true
+  boundary_live_score_cache_require_texture_boundary_head: true
+  boundary_live_score_cache_key: camera
+  boundary_live_score_cache_max_entries: 32
+  boundary_live_score_cache_ema: 0.65
+  boundary_live_score_cache_clear_missing: true
+  boundary_live_score_cache_clear_before_eval: true
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.035
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.09
+  boundary_tag_min_ratio: 0.07
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1000
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.16
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 5
+  boundary_image_error_score_band_width: 5
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.12
+  boundary_image_error_score_prior_floor: 0.12
+
+  boundary_signed_mixed_loss_scale: 0.12
+  boundary_signed_shrink_loss_scale: 1.55
+  boundary_signed_grow_loss_scale: 0.30
+  boundary_signed_share_gain: 1.12
+  boundary_signed_share_power: 1.26
+  boundary_signed_shrink_share_gain: 1.32
+  boundary_signed_shrink_share_power: 1.48
+
+  boundary_aware_opacity_scale: 0.16
+  boundary_aware_scaling_scale: 0.048
+  boundary_aware_boundary_opacity_residual_scale: 0.85
+  boundary_aware_boundary_scaling_residual_scale: 0.55
+  boundary_opacity_residual_lr: 0.00018
+  boundary_scaling_residual_lr: 0.000060
+  lambda_boundary_opacity_residual_reg: 0.00085
+  lambda_boundary_scaling_residual_reg: 0.00020
+  lambda_boundary_opacity_residual_smooth: 0.0011
+  lambda_boundary_scaling_residual_smooth: 0.00080
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  silhouette_outer_ring_width: 5
+  silhouette_outer_shell_start_width: 1
+  silhouette_outer_shell_end_width: 12
+  silhouette_outer_shell_soft_weights: true
+  silhouette_outer_shell_weight_min: 0.26
+  lambda_silhouette_outer: [0.004, 1, 0.008, 500, 0.010]
+  lambda_silhouette_outer_shell: [0.014, 1, 0.030, 500, 0.036, 1000, 0.038]
+  lambda_silhouette_upper_torso_outer_shell: [0.012, 1, 0.032, 500, 0.042, 1000, 0.044]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.010, 1, 0.026, 500, 0.034, 1000, 0.036]
+  lambda_silhouette_outer_spike: [0.006, 1, 0.016, 600, 0.022]
+  silhouette_outer_spike_opacity_threshold: 0.055
+  silhouette_outer_spike_support_threshold: 0.30
+  silhouette_outer_spike_power: 1.12
+
+  # Prevent the anti-bulge stage from carving holes or thinning the body too
+  # much.  v161a improved LPIPS but paid too much L1_fg; this is the guard.
+  silhouette_inner_ring_width: 4
+  lambda_silhouette_inner: [0.004, 1, 0.010, 500, 0.014, 1000, 0.016]
+
+test_interval: 400
+test_iterations: [400, 800, 1200]
+save_iterations: [800, 1200]
+checkpoint_iterations: [400, 800, 1200]

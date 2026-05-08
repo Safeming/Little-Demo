@@ -1,0 +1,80 @@
+# @package _global_
+
+# v170f: data-root probe from v168a. If boundary actuator variants fail, this
+# tests whether balanced frames/cameras plus photometric correction can restore
+# texture clarity without changing geometry.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+opt:
+  iterations: 3500
+
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+
+  feature_lr: 0.00010
+  texture_lr: 0.00012
+  tex_latent_lr: 0.000035
+  texture_trainable_name_patterns: null
+  texture_frozen_name_patterns: null
+  grad_clip: 0.026
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_camera_min_prob: 0.035
+  train_sample_camera_max_prob: 0.080
+  train_sample_log_interval: 500
+  train_sample_camera_weights:
+    "1": 1.52
+    "2": 0.54
+    "3": 0.90
+    "4": 0.60
+    "5": 1.44
+    "6": 1.09
+    "7": 1.21
+    "8": 1.24
+    "9": 1.32
+    "10": 1.41
+    "11": 0.80
+    "12": 0.89
+    "13": 1.05
+    "14": 1.19
+    "15": 0.82
+    "16": 0.87
+    "17": 0.77
+    "18": 0.68
+    "19": 0.95
+    "20": 0.74
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.38
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.84
+  photometric_correction_max_scale: 1.18
+  photometric_correction_max_shift: 0.070
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.55
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000, 3500]
+save_iterations: [500, 1000, 1500, 2000, 2500, 3000, 3500]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500, 3000, 3500]

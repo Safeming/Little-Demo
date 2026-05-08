@@ -1,0 +1,54 @@
+# @package _global_
+
+# v153a: resume from v152a's restored geometry support, then hand sharpness
+# back to the explicit trunk-owner path.
+# Keep the learned forward trunk and restored support from v152a, but stop
+# further densify/regrow and only test whether owner takeover + local detail +
+# delayed non-rigid can convert support into visible sharpness.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+
+model:
+  deformer:
+    non_rigid:
+      delay: 1200
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.16, 250, 0.42, 900, 0.66, 1800, 0.84, 2800, 0.96, 3600, 1.00]
+    detail_residual:
+      tiny_repair_scale: 0.06
+      high_frequency:
+        tiny_repair_scale: 0.03
+        scale: 0.032
+        face_branch:
+          tiny_repair_scale: 0.015
+          scale: 0.12
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.04
+  rigid_lr: 0.00008
+  non_rigid_lr: 0.00055
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 150
+  owner_local_detail_boost_takeover_floor: 0.24
+  owner_local_detail_boost_takeover_gain: 1.10
+  owner_local_detail_boost_takeover_power: 1.30
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

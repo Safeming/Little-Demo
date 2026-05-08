@@ -1,0 +1,168 @@
+# @package _global_
+
+# v161a: contour actuator stage from v160a best.
+#
+# v160a proved mixed/live boundary routing and top-k boundary tags are useful,
+# but c22_f210/f240 still shows waist/shorts bulging and shoulder-arm halo.
+# This stage is intentionally not a texture/owner polish. It caps owner growth
+# and uses strong signed shrink + opacity/scaling residuals + outer-shell
+# silhouette supervision to make the detected boundary actually move the
+# contour.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  deformer:
+    rigid:
+      # v160a kept sharpen_gate at zero. Lower the gate threshold so this C1
+      # stage can harden routing where the contour actuator produces motion.
+      non_rigid_layer_sharpen_strength: 0.35
+      non_rigid_layer_sharpen_threshold: 0.00020
+      non_rigid_layer_sharpen_width: 0.00025
+      non_rigid_layer_sharpen_min_dominance: 0.40
+      non_rigid_layer_sharpen_dominance_width: 0.06
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              # Keep owner as substrate, but prevent the late owner ramp that
+              # made v160a@2000 regress and can thicken the silhouette.
+              takeover:
+                strength: [0.44, 1, 0.46, 1500, 0.46]
+                max: 0.42
+              boundary:
+                enable: true
+                scale: [0.44, 1, 0.56, 500, 0.64, 1000, 0.70]
+                gate_gain: 1.08
+                gate_bias: -0.01
+                min_gate: 0.04
+                focus_threshold: 0.035
+                focus_power: 1.00
+                focus_min: 0.0
+                focus_max: 1.0
+                takeover:
+                  enable: true
+                  scale: [0.46, 1, 0.58, 500, 0.68, 1000, 0.74]
+                  max: 0.74
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.036
+      high_frequency:
+        tiny_repair_scale: 0.014
+        scale: 0.038
+        gate_bias: -0.04
+        face_branch:
+          gate_bias: -0.07
+
+opt:
+  iterations: 1500
+
+  grad_clip: 0.028
+
+  position_lr_init: 0.000006
+  position_lr_final: 0.0000010
+  opacity_lr: 0.00115
+  scaling_lr: 0.000115
+  rotation_lr: 0.000028
+
+  rigid_lr: 0.000045
+  non_rigid_lr: 0.00024
+  texture_lr: 0.00018
+  tex_latent_lr: 0.00008
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  # Disable owner-driven detail amplification during anti-bulge. The next stage
+  # can restore texture once the contour is correct.
+  owner_local_detail_boost_enable: false
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.035
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.10
+  boundary_tag_min_ratio: 0.08
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1200
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.18
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 5
+  boundary_image_error_score_band_width: 5
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.12
+  boundary_image_error_score_prior_floor: 0.12
+
+  # Strong C1 actuator: shrink dominates grow, with enough residual leverage to
+  # remove waist/shorts protrusions instead of only changing texture.
+  boundary_signed_mixed_loss_scale: 0.14
+  boundary_signed_shrink_loss_scale: 2.00
+  boundary_signed_grow_loss_scale: 0.22
+  boundary_signed_share_gain: 1.18
+  boundary_signed_share_power: 1.32
+  boundary_signed_shrink_share_gain: 1.50
+  boundary_signed_shrink_share_power: 1.65
+
+  boundary_aware_opacity_scale: 0.18
+  boundary_aware_scaling_scale: 0.055
+  boundary_aware_boundary_opacity_residual_scale: 1.20
+  boundary_aware_boundary_scaling_residual_scale: 0.80
+  boundary_opacity_residual_lr: 0.00024
+  boundary_scaling_residual_lr: 0.000075
+  lambda_boundary_opacity_residual_reg: 0.00075
+  lambda_boundary_scaling_residual_reg: 0.00018
+  lambda_boundary_opacity_residual_smooth: 0.0010
+  lambda_boundary_scaling_residual_smooth: 0.00075
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  # Direct anti-bulge pressure outside the GT silhouette. This is the main
+  # difference from v160a and targets c22_f210/f240-style side contour bulging.
+  silhouette_outer_ring_width: 5
+  silhouette_outer_shell_start_width: 1
+  silhouette_outer_shell_end_width: 13
+  silhouette_outer_shell_soft_weights: true
+  silhouette_outer_shell_weight_min: 0.28
+  lambda_silhouette_outer: [0.006, 1, 0.012, 500, 0.014]
+  lambda_silhouette_outer_shell: [0.020, 1, 0.044, 500, 0.056, 1200, 0.060]
+  lambda_silhouette_upper_torso_outer_shell: [0.018, 1, 0.045, 500, 0.060, 1200, 0.066]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.014, 1, 0.036, 500, 0.050, 1200, 0.056]
+  lambda_silhouette_outer_spike: [0.008, 1, 0.024, 600, 0.032]
+  silhouette_outer_spike_opacity_threshold: 0.055
+  silhouette_outer_spike_support_threshold: 0.30
+  silhouette_outer_spike_power: 1.15
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [1500]
+checkpoint_iterations: [1500]

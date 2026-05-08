@@ -1,0 +1,85 @@
+# @package _global_
+
+# v143b: keep v143a's forward anchor-weight residual branch, then add a small
+# boundary-gated local x_bar residual in the anchor-local frame. This tests the
+# next causal step: not only reweight T_lbs, but also directly let the forward
+# contour position slide in tangent/normal space before the renderer sees it.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - deformer.rigid.residual_field_mlp
+
+model:
+  gaussian:
+    binding_densify_boundary_only: true
+    binding_densify_arm_only: false
+    binding_densify_clone_candidate_seed_boundary_only: true
+    binding_densify_clone_candidate_seed_arm_only: false
+    binding_densify_child_immediate_refresh_boundary_only: true
+    binding_densify_child_immediate_refresh_arm_only: false
+  deformer:
+    rigid:
+      residual_field_enable: true
+      residual_field_anchor_enable: true
+      residual_field_xbar_enable: true
+      residual_field_update_dominant_joint: false
+      residual_field_feature_detach: true
+      residual_field_detach_gate: true
+      residual_field_boundary_gate_enable: true
+      residual_field_boundary_gate_power: 0.9
+      residual_field_boundary_gate_min: 0.03
+      residual_anchor_delta_scale: 0.10
+      residual_anchor_delta_max: 0.16
+      residual_xbar_scale: 0.0045
+      residual_xbar_max: 0.010
+      residual_xbar_tangent_scale: 1.0
+      residual_xbar_normal_scale: 0.65
+      residual_field_mlp:
+        n_neurons: 64
+        n_hidden_layers: 2
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+opt:
+  iterations: 4000
+
+  position_lr_init: 0.000018
+  position_lr_final: 0.0000010
+  opacity_lr: 0.00058
+  scaling_lr: 0.00032
+  rotation_lr: 0.00006
+
+  rigid_lr: 0.00014
+  non_rigid_lr: 0.0
+  texture_lr: 0.00040
+  tex_latent_lr: 0.00018
+
+  densify_from_iter: 400
+  densify_until_iter: 2200
+  densification_interval: 200
+  densify_grad_threshold: 0.00035
+  percent_dense: 0.0018
+  opacity_reset_interval: 1000000
+
+  boundary_aware_freeze_converter_for_boundary_loss: false
+  boundary_tag_schedule_use_local_iteration: true
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 2200
+
+  lambda_binding_residual_anchor_reg: 0.0030
+  lambda_binding_residual_xbar_reg: 0.0025
+
+test_interval: 500
+test_iterations: [2000, 4000]
+save_iterations: [4000]

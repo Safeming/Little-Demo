@@ -1,0 +1,132 @@
+# @package _global_
+
+# v172b: boundary local override from v170e best.
+#
+# v171a proved that boundary focus/takeover routing can reach 0.10, but the
+# visible boundary/head contribution remained too small.  This run does not
+# continue broad trunk/HF training.  It keeps the v170e clarity anchor, opens a
+# moderate layer-sharpen path, caps broad owner takeover, and gives the
+# hardest-contour boundary expert enough local authority to affect the final
+# silhouette/edge.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+model:
+  deformer:
+    rigid:
+      non_rigid_layer_sharpen_strength: 0.16
+      non_rigid_layer_sharpen_threshold: 0.00020
+      non_rigid_layer_sharpen_width: 0.00025
+      non_rigid_layer_sharpen_min_dominance: 0.40
+      non_rigid_layer_sharpen_dominance_width: 0.06
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                enable: true
+                scale: 1.0
+                strength: 0.70
+                max: 0.45
+                use_support: true
+              boundary:
+                focus_source: boundary_tag
+                focus_use_region_gate: false
+                focus_use_support: false
+                focus_threshold: 0.0
+                focus_power: 1.0
+                focus_min: 0.0
+                focus_max: 1.0
+                scale: [0.72, 1, 0.98, 500, 1.14, 1100, 1.18]
+                gate_gain: 1.22
+                gate_bias: 0.12
+                min_gate: 0.16
+                max_gate: 0.86
+                use_local_color_input: true
+                use_local_color_output: false
+                use_local_geometry_raw: true
+                use_support_feature: true
+                use_region_gate_feature: true
+                use_boundary_feature: true
+                init_scale: 0.62
+                takeover:
+                  enable: true
+                  scale: [0.42, 1, 0.58, 500, 0.70, 1100, 0.74]
+                  max: 0.75
+                  use_region_gate: false
+
+opt:
+  iterations: 1500
+  grad_clip: 0.022
+
+  # Keep the v170e anchor fixed outside the boundary expert and boundary
+  # opacity/scaling residual tensors.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+
+  texture_lr: 0.00018
+  texture_trainable_name_patterns:
+    - structured_trunk_output_head_local_color_owner_head_boundary_mlps.*
+    - structured_trunk_output_head_local_color_owner_head_boundary_gate_mlps.*
+  texture_frozen_name_patterns: null
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.08
+  boundary_tag_min_ratio: 0.05
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1200
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_union_with_existing: false
+
+  boundary_signed_mixed_loss_scale: 0.10
+  boundary_signed_shrink_loss_scale: 1.38
+  boundary_signed_grow_loss_scale: 0.24
+  boundary_signed_share_gain: 1.08
+  boundary_signed_share_power: 1.18
+  boundary_signed_shrink_share_gain: 1.26
+  boundary_signed_shrink_share_power: 1.40
+
+  boundary_aware_boundary_opacity_residual_scale: 0.82
+  boundary_aware_boundary_scaling_residual_scale: 0.50
+  boundary_opacity_residual_lr: 0.00020
+  boundary_scaling_residual_lr: 0.000068
+  lambda_boundary_opacity_residual_reg: 0.00080
+  lambda_boundary_scaling_residual_reg: 0.00020
+  lambda_boundary_opacity_residual_smooth: 0.0010
+  lambda_boundary_scaling_residual_smooth: 0.00070
+
+  lambda_silhouette_outer: [0.005, 1, 0.009, 600, 0.010]
+  lambda_silhouette_outer_shell: [0.018, 1, 0.036, 600, 0.042, 1300, 0.044]
+  lambda_silhouette_upper_torso_outer_shell: [0.016, 1, 0.036, 600, 0.044, 1300, 0.046]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.012, 1, 0.030, 600, 0.038, 1300, 0.040]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [500, 1000, 1500]
+checkpoint_iterations: [500, 1000, 1500]

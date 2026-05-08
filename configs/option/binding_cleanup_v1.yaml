@@ -1,0 +1,13 @@
+# @package _global_
+
+opt:
+  lambda_binding_entropy: 0.02
+  lambda_binding_layer_sharp: 0.05
+  lambda_binding_layer_balance: 0.02
+  lambda_binding_region_sharp: 0.03
+  lambda_binding_bodycloth_exclusive: 0.04
+  lambda_binding_semantic: 0.10
+  lambda_binding_semantic_smooth: 0.03
+  lambda_binding_semantic_cluster: 0.02
+  lambda_binding_thin_boundary: 0.03
+  lambda_binding_thin_sparse: 0.01

@@ -1,0 +1,47 @@
+# @package _global_
+
+# Region-local high-frequency follow-up on top of v109b.
+# Keep the working face-local branch and only partially load the new
+# extra local carrier projections.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.detail_high_freq_face_extra_local_projs.
+
+opt:
+  iterations: 3000
+  latent_weight_decay: [0.0008, 1000, 0.0004, 2200, 0.0002]
+
+  face_region_source: parser_prefer
+  face_region_parser_dilate: 5
+  face_region_source_aware_validity_enable: true
+
+  upper_torso_region_source: parser_prefer
+  upper_torso_region_parser_dilate: 7
+  upper_torso_region_min_pixels: 32
+  upper_torso_image_region_dilate: 2
+  upper_torso_image_region_min_pixels: 28
+  upper_torso_detail_region_min_pixels: 28
+
+  face_detail_boundary_keep_width: 0
+  face_detail_boundary_keep_weight: 0.0
+  shoulder_arm_detail_boundary_keep_width: 0
+  shoulder_arm_detail_boundary_keep_weight: 0.0
+  upper_torso_detail_boundary_keep_width: 0
+  upper_torso_detail_boundary_keep_weight: 0.0
+  waist_detail_boundary_keep_width: 0
+  waist_detail_boundary_keep_weight: 0.0
+
+  clarity_debug_enable: true
+  clarity_debug_interval: 100
+  upper_torso_region_debug_enable: true
+  upper_torso_region_debug_interval: 100
+
+save_iterations: [1200, 2400, 3000]

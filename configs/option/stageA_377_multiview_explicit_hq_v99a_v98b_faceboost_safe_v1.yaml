@@ -1,0 +1,112 @@
+# @package _global_
+
+# Face-priority refine on top of v98b:
+# keep the proven safe footprint, but push more supervision into the face
+# and slightly relax face interior masking so detail loss can reach more of it.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+dataset:
+  val_frames: [0, 570, 30]
+
+model:
+  texture:
+    detail_residual:
+      enable: true
+      schedule_use_local_iteration: true
+      scale: 1.0
+      max_residual: 0.18
+
+opt:
+  iterations: 1800
+  grad_clip: 0.05
+
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.00045
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+
+  pose_correction_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  texture_lr: 0.00055
+  tex_latent_lr: 0.00018
+  lr_ratio: 0.1
+  latent_weight_decay: [0.0015, 600, 0.0008, 1200, 0.0004]
+
+  foreground_mask_source: hard
+  global_mask_source: hard
+
+  lambda_l1: 1.0
+  lambda_l1_fg: 0.24
+  lambda_l1_boundary: 0.0
+  lambda_l1_face: 0.30
+  lambda_edge_face: 0.030
+  lambda_detail_face: 0.070
+  lambda_perceptual_face: 0.045
+  lambda_l1_shoulder_arm: 0.13
+  lambda_edge_shoulder_arm: 0.050
+  lambda_detail_shoulder_arm: 0.035
+  lambda_perceptual_shoulder_arm: 0.016
+  lambda_l1_waist: 0.050
+  lambda_edge_waist: 0.020
+  lambda_detail_waist: 0.0
+  lambda_perceptual_waist: 0.0
+  lambda_dssim: 0.014
+  lambda_perceptual: 0.010
+
+  detail_multiscale_scales: [1, 2, 4]
+  detail_highpass_kernel: 5
+  detail_scale_decay: 0.60
+  detail_gradient_mix: 0.18
+  detail_interior_exclude_boundary_width: 7
+  detail_interior_erode_kernel_size: 3
+  face_detail_interior_exclude_boundary_width: 5
+  face_detail_interior_erode_kernel_size: 1
+  face_detail_region_min_pixels: 32
+  shoulder_arm_detail_region_min_pixels: 72
+  waist_detail_region_min_pixels: 32
+
+  boundary_band_width: 5
+  face_region_min_pixels: 48
+  face_perceptual_crop_pad: 16
+  shoulder_arm_region_min_pixels: 96
+  shoulder_arm_perceptual_crop_pad: 12
+  waist_region_min_pixels: 24
+  perceptual_crop_pad: 16
+
+  mask_loss_type: l1
+  lambda_mask: 0.0
+  lambda_mask_boundary: 0.0
+  lambda_mask_boundary_hard: 0.0
+  lambda_silhouette_outer: 0.0
+  lambda_silhouette_inner: 0.0
+  lambda_opacity: 0.0
+
+  lambda_skinning: 0.0
+  lambda_pose: 0.0
+  lambda_aiap_xyz: 0.0
+  lambda_aiap_cov: 0.0
+  aiap_interval: 1000000
+  aiap_max_points: 0
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.05
+
+test_interval: 300
+save_iterations: [900, 1800]

@@ -1,0 +1,63 @@
+# @package _global_
+
+# v168a: isolated trunk-HF experiment from the v142e clarity anchor.
+#
+# v167a stayed healthy but did not improve v142e because the run still updated
+# Gaussian features and the whole texture module. This test freezes the anchor
+# state and only lets the dedicated trunk HF head move.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        disable_input_residual: true
+        dual_head:
+          hf_head:
+            enable: true
+            # Keep v142e's HF composition. v167a's direct local-color injection
+            # softened the result, so this run isolates the actual HF MLP/gate.
+            use_local_color: false
+
+opt:
+  iterations: 1500
+
+  grad_clip: 0.030
+
+  # Full anchor freeze outside the converter texture HF head.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+
+  texture_lr: 0.00022
+  texture_trainable_name_patterns:
+    - structured_trunk_output_head_hf_head_mlp.*
+    - structured_trunk_output_head_hf_head_gate_mlp.*
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_reset_interval: 1000000
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [500, 1000, 1500]
+checkpoint_iterations: [500, 1000, 1500]

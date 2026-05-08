@@ -1,0 +1,56 @@
+# @package _global_
+
+# v172a: layer-sharpen probe from v170e best.
+#
+# This is intentionally a 1-step eval/render probe, not a training run.  v168-
+# v171 kept `sharpen_gate_mean=0` because the rigid layer sharpen path was not
+# enabled in those configs.  Here all learning rates are zero and only the
+# explicit-binding layer sharpen config is changed, so the result isolates
+# whether this hardening path is safe before v172b trains boundary override.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+model:
+  deformer:
+    rigid:
+      non_rigid_layer_sharpen_strength: 0.14
+      non_rigid_layer_sharpen_threshold: 0.00020
+      non_rigid_layer_sharpen_width: 0.00025
+      non_rigid_layer_sharpen_min_dominance: 0.40
+      non_rigid_layer_sharpen_dominance_width: 0.06
+
+opt:
+  iterations: 1
+
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  texture_lr: 0.0
+  tex_latent_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+test_interval: 1
+test_iterations: [1]
+save_iterations: [1]
+checkpoint_iterations: [1]

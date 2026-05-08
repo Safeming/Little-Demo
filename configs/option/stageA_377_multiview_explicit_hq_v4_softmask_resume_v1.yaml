@@ -1,0 +1,17 @@
+# @package _global_
+
+best_metric: psnr_fg
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 2000
+  grad_clip: 0.08
+  aiap_interval: 20
+  aiap_max_points: 12000
+
+test_interval: 500
+save_iterations: [2000]

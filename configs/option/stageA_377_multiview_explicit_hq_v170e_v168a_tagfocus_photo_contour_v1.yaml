@@ -1,0 +1,57 @@
+# @package _global_
+
+# v170e: tag-driven boundary actuator with photometric correction and contour
+# uncertainty. This tests the next root cause: multi-camera exposure drift and
+# small silhouette misalignment can make boundary supervision destructive.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              boundary:
+                focus_source: boundary_tag
+                focus_use_region_gate: false
+                focus_use_support: false
+                focus_threshold: 0.0
+                scale: [0.36, 1, 0.58, 900, 0.78, 2200, 0.86, 3000, 0.90]
+                gate_gain: 1.12
+                gate_bias: 0.03
+                min_gate: 0.10
+                init_scale: 0.50
+                takeover:
+                  enable: true
+                  scale: [0.20, 1, 0.34, 900, 0.48, 2200, 0.56, 3000, 0.60]
+                  max: 0.60
+                  use_region_gate: false
+
+opt:
+  iterations: 3000
+  texture_lr: 0.00020
+  grad_clip: 0.025
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.45
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.82
+  photometric_correction_max_scale: 1.22
+  photometric_correction_max_shift: 0.085
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.50
+
+  boundary_aware_boundary_opacity_residual_scale: 0.65
+  boundary_aware_boundary_scaling_residual_scale: 0.40
+  boundary_opacity_residual_lr: 0.00017
+  boundary_scaling_residual_lr: 0.000058
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500, 3000]

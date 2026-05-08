@@ -1,0 +1,59 @@
+# @package _global_
+
+# Balanced follow-up on top of v100a:
+# keep the explicit high-frequency carrier, but split it into
+# shared luminance detail plus restrained chroma detail so we sharpen
+# edges/textures without pushing as much fake bright-color detail.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.detail_high_freq_
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        scale: 1.0
+        max_residual: 0.10
+        gate_bias: -0.18
+        min_gate: 0.08
+        chroma_center: true
+        chroma_scale: 0.28
+        luma_branch:
+          enable: true
+          scale: 0.72
+          mlp:
+            n_neurons: 48
+            n_hidden_layers: 1
+            skip_in: []
+            cond_in: []
+            multires: 0
+            last_layer_init: true
+        point_gate:
+          enable: true
+          combine_mode: max
+          fallback_to_full: false
+          semantic_id_weights:
+            - [1, 1.00]
+            - [2, 0.92]
+            - [3, 0.68]
+          joint_id_weights:
+            - [15, 1.00]
+            - [12, 0.97]
+            - [13, 0.92]
+            - [14, 0.92]
+            - [16, 0.84]
+            - [17, 0.84]
+            - [18, 0.46]
+            - [19, 0.46]
+          min_gate: 0.18
+
+opt:
+  iterations: 1800
+  latent_weight_decay: [0.0015, 600, 0.0008, 1200, 0.0004]
+
+save_iterations: [900, 1800]

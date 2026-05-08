@@ -1,0 +1,21 @@
+# @package _global_
+
+# v1320: complete the explicit_binding trunk-owner route. Promote
+# local_color/current_xyz/current_radius from a support-only helper into a
+# direct final-color owner path, while keeping support modulation to avoid
+# leaking detail outside the intended regions.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            enable: true
+            use_support: true
+            use_region_gate: false
+            gate_base: 0.0
+            scale: [0.18, 600, 0.30, 1800, 0.46, 3200, 0.72]
+        dual_head:
+          hf_head:
+            use_local_color: false

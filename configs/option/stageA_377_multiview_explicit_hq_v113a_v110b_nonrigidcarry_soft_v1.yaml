@@ -1,0 +1,11 @@
+# @package _global_
+
+# v113a: conservative non-rigid carry-through. The goal is to stop
+# rigid/soft layers from dropping too much non-rigid detail while keeping
+# v110b's stable structure intact.
+
+model:
+  deformer:
+    rigid:
+      non_rigid_delta_rigid_preserve: 0.40
+      non_rigid_delta_soft_preserve: 0.70

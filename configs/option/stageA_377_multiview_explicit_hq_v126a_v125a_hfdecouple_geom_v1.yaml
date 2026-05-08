@@ -1,0 +1,47 @@
+# @package _global_
+
+# v126a: make the trunk high-frequency branch truly independent from the coarse
+# head. Give hf its own gate, remove local_color as the main donor, and feed
+# current-pose local geometry plus structure raw directly into the hf head.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        dual_head:
+          hf_head:
+            reuse_output_gate: false
+            use_local_color: false
+            init_from_output_head: true
+            init_scale: 0.22
+            gate_gain: 1.05
+            gate_bias: -0.08
+            min_gate: 0.02
+            scale: [0.14, 600, 0.20, 1800, 0.28, 3200, 0.36]
+            input:
+              use_output_fusion: true
+              use_structure_raw: true
+              use_local_geometry_raw: true
+            gate_mlp:
+              n_neurons: 96
+              n_hidden_layers: 1
+              multires: 0
+              skip_in: []
+              cond_in: []
+              last_layer_init: true
+    detail_residual:
+      tiny_repair_scale: 0.14
+      high_frequency:
+        tiny_repair_scale: 0.08
+        scale: 0.06
+        face_branch:
+          tiny_repair_scale: 0.03
+          scale: 0.010

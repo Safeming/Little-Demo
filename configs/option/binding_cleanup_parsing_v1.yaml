@@ -1,0 +1,4 @@
+# @package _global_
+
+opt:
+  lambda_binding_parsing: [0.0, 300, 0.02]

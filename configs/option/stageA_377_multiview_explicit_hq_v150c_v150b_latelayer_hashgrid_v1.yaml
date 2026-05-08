@@ -1,0 +1,143 @@
+# @package _global_
+
+# v150c: keep the boundary-tag regrow path from v150b, then add a conservative
+# late layer-routing residual. Anchor/support still carry the main forward
+# change; layer routing is only allowed as a small late correction to cloth/skin
+# ownership after contour support has started to grow.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+model:
+  gaussian:
+    binding_densify_boundary_only: true
+    binding_densify_require_boundary_tag: true
+    binding_densify_arm_only: false
+    binding_densify_boundary_threshold: 0.04
+    binding_densify_clone_candidate_seed_boundary_only: true
+    binding_densify_clone_candidate_seed_arm_only: false
+    binding_densify_clone_candidate_seed_boundary_threshold: 0.04
+    binding_densify_clone_candidate_seed_max_points: 384
+    binding_densify_clone_candidate_seed_max_ratio: 0.015
+    binding_densify_child_immediate_refresh_boundary_only: true
+    binding_densify_child_immediate_refresh_arm_only: false
+    binding_densify_child_boundary_threshold: 0.04
+    binding_densify_child_immediate_refresh_boundary_threshold: 0.04
+    binding_densify_child_immediate_refresh_max_points: 768
+    binding_densify_child_immediate_refresh_max_ratio: 0.05
+    binding_refresh_require_boundary_tag: true
+    binding_risk_gate_require_boundary_tag: true
+  deformer:
+    rigid:
+      forward_trunk_enable: true
+      forward_trunk_anchor_enable: true
+      forward_trunk_support_enable: true
+      forward_trunk_layer_enable: true
+      forward_trunk_update_dominant_joint: true
+      forward_trunk_feature_detach: false
+      forward_trunk_blend_alpha: [0.06, 400, 0.14, 1000, 0.28, 1800, 0.46, 2600, 0.62, 3400, 0.75]
+      forward_trunk_confidence_suppress: 0.0
+      forward_trunk_output_clamp: 4.0
+      forward_trunk_anchor_alpha_scale: 0.90
+      forward_trunk_support_alpha_scale: 0.90
+      forward_trunk_layer_alpha_scale: 0.25
+      forward_trunk_anchor_logit_scale: 1.15
+      forward_trunk_layer_logit_scale: 0.80
+      forward_trunk_anchor_residual: true
+      forward_trunk_layer_residual: true
+      forward_trunk_anchor_delta_logit_max: 4.0
+      forward_trunk_layer_delta_logit_max: 0.80
+      forward_trunk_layer_min_prob: 0.02
+      forward_trunk_support_scale: 0.0060
+      forward_trunk_support_max: 0.0120
+      forward_trunk_support_tangent_scale: 1.0
+      forward_trunk_support_normal_scale: 0.60
+
+      hybrid_field_enable: false
+      hybrid_field_anchor_enable: false
+      hybrid_field_support_enable: false
+      hybrid_field_layer_enable: false
+
+      residual_field_enable: false
+      residual_field_anchor_enable: false
+      residual_field_xbar_enable: false
+
+      forward_trunk_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.0, 4000, 0.0]
+    detail_residual:
+      tiny_repair_scale: 0.05
+      high_frequency:
+        tiny_repair_scale: 0.02
+        scale: 0.02
+        face_branch:
+          tiny_repair_scale: 0.0
+          scale: 0.0
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.04
+  rigid_lr: 0.00008
+  non_rigid_lr: 0.00070
+
+  percent_dense: 0.012
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 300
+  densify_until_iter: 3800
+  densify_grad_threshold: 0.00016
+
+  owner_local_detail_boost_enable: false
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0016
+  lambda_binding_forward_trunk_support_reg: 0.0020
+  lambda_binding_forward_trunk_layer_reg: 0.0012
+  lambda_binding_layer_balance: 0.015
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_band_width: 5
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_mix: [0.35, 400, 0.55, 1400, 0.72, 2600, 0.82, 3400, 0.88]
+  boundary_image_error_score_gain: 1.20
+  boundary_image_error_score_power: 1.10
+  boundary_image_error_score_min: 0.04
+  boundary_image_error_score_band_width: 5
+  boundary_image_error_pred_threshold: 0.42
+  boundary_image_error_target_threshold: 0.50
+  boundary_image_error_score_focus_dilate: 3
+  boundary_image_error_score_smooth_k: 8
+  boundary_image_error_score_smooth_blend: 0.30
+  boundary_image_error_score_smooth_distance_quantile: 0.50
+  boundary_image_error_score_prior_floor: 0.18
+
+  boundary_tag_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 2800
+  boundary_tag_threshold: 0.42
+  boundary_tag_min_ratio: 0.04
+  boundary_tag_binary: false
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.35
+  boundary_tag_support_threshold: 0.28
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

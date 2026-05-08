@@ -1,0 +1,228 @@
+# @package _global_
+
+# v181b: bounded view-conditioned texture residual.
+#
+# This follows the 2026-05-07 plan: after v181a gives the model a low-frequency
+# per-camera affine exposure channel, add only a small view-conditioned RGB
+# residual in the existing detail_high_freq texture path. Geometry, opacity,
+# scaling, pose correction, non-rigid deformation, latent code, and boundary
+# residuals stay frozen.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.detail_high_freq_
+
+model:
+  texture:
+    detail_residual:
+      enable: true
+      schedule_use_local_iteration: true
+      scale: 1.0
+      max_residual: 0.08
+      high_frequency:
+        enable: true
+        schedule_use_local_iteration: true
+        # Keep the residual bounded and gradual: v181b should absorb small
+        # view-dependent detail/color differences, not rewrite the canonical texture.
+        scale: [0.00, 1, 0.08, 400, 0.16, 1000, 0.24, 1800, 0.30]
+        max_residual: 0.040
+        tiny_repair_scale: 1.0
+        use_input_context: true
+        input_context_dim: 32
+        use_canonical_xyz: true
+        xyz_multires: 4
+        xyz_include_input: true
+        xyz_frequency_scale: 0.75
+        use_view_dir: true
+        view_multires: 4
+        view_include_input: true
+        view_frequency_scale: 1.0
+        gate_bias: -0.35
+        min_gate: 0.04
+        chroma_center: true
+        chroma_scale: 0.42
+        luma_branch:
+          enable: true
+          scale: 0.55
+        # Foreground/detail-biased gate: face/skin/upper/cloth-like trunk regions
+        # can receive a small residual, while background stays untouched.
+        point_gate_combine_mode: mul
+        point_gate:
+          enable: true
+          combine_mode: max
+          fallback_to_full: false
+          semantic_id_weights:
+            - [1, 0.80]
+            - [2, 0.90]
+            - [3, 1.00]
+          joint_id_weights:
+            - [12, 0.82]
+            - [13, 0.86]
+            - [14, 0.86]
+            - [15, 0.82]
+            - [16, 1.00]
+            - [17, 1.00]
+            - [18, 0.78]
+            - [19, 0.78]
+            - [20, 0.72]
+            - [21, 0.72]
+            - [22, 0.66]
+            - [23, 0.66]
+          min_gate: 0.10
+        mlp:
+          n_neurons: 56
+          n_hidden_layers: 2
+          skip_in: []
+          cond_in: []
+          multires: 0
+          last_layer_init: true
+        gate_mlp:
+          n_neurons: 40
+          n_hidden_layers: 1
+          skip_in: []
+          cond_in: []
+          multires: 0
+          last_layer_init: true
+        # Do not add a separate face branch in v181b; keep this as one bounded
+        # global view-conditioned residual test.
+        face_branch:
+          enable: false
+        boundary_floor:
+          enable: false
+    structured_trunk:
+      output_head:
+        dual_head:
+          hf_head:
+            # Keep inherited trunk HF contribution stable; v181b isolates the
+            # view-conditioned detail_high_freq residual.
+            scale: 0.50
+
+opt:
+  iterations: 2500
+  texture_lr: 0.000070
+  camera_affine_lr: 0.000060
+  grad_clip: 0.012
+
+  # Freeze geometry and all non-texture deformation paths.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+  texture_trainable_name_patterns:
+    - detail_high_freq_context_proj.*
+    - detail_high_freq_carrier_proj.*
+    - detail_high_freq_mlp.*
+    - detail_high_freq_gate_mlp.*
+    - detail_high_freq_luma_mlp.*
+  texture_frozen_name_patterns: null
+
+  # Keep v181a's per-camera affine active but slow it down so b mainly tests
+  # view-conditioned residual capacity.
+  camera_affine_enable: true
+  camera_affine_train_camera_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  camera_affine_max_camera_id: 23
+  camera_affine_strength: 1.0
+  camera_affine_scale_max_delta: 0.060
+  camera_affine_shift_max_abs: 0.030
+  camera_affine_clamp_colors: true
+  camera_affine_apply_unknown: false
+  camera_affine_scale_reg_weight: 1.0
+  camera_affine_shift_reg_weight: 1.0
+  lambda_camera_affine_reg: 0.0040
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_accumulation_steps: 6
+  train_sample_accumulation_without_replacement: true
+  train_sample_camera_min_prob: 0.025
+  train_sample_camera_max_prob: 0.105
+  train_sample_log_interval: 500
+  train_sample_camera_weights:
+    "1": 1.80
+    "2": 0.35
+    "3": 0.85
+    "4": 0.45
+    "5": 1.70
+    "6": 1.15
+    "7": 1.25
+    "8": 1.35
+    "9": 1.50
+    "10": 1.65
+    "11": 0.70
+    "12": 0.80
+    "13": 1.05
+    "14": 1.25
+    "15": 0.70
+    "16": 0.75
+    "17": 0.60
+    "18": 0.50
+    "19": 0.90
+    "20": 0.60
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.34
+  photometric_correction_erode_kernel_size: 11
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.88
+  photometric_correction_max_scale: 1.13
+  photometric_correction_max_shift: 0.050
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.56
+
+  detail_multiscale_scales: [1, 2, 4]
+  detail_highpass_kernel: 5
+  detail_scale_decay: 0.55
+  detail_gradient_mix: 0.35
+
+  lambda_l1_fg: 0.18
+  lambda_l1_face: 0.10
+  lambda_edge_face: 0.026
+  lambda_detail_face: 0.040
+  lambda_detail_face_luma_dog: 0.030
+  lambda_l1_shoulder_arm: 0.070
+  lambda_edge_shoulder_arm: 0.046
+  lambda_detail_shoulder_arm: 0.050
+  lambda_detail_shoulder_arm_luma_dog: 0.036
+  lambda_detail_upper_torso_luma_dog: 0.034
+  lambda_detail_upper_torso_core_luma_dog: 0.030
+  lambda_l1_waist: 0.045
+  lambda_edge_waist: 0.022
+  lambda_detail_waist: 0.034
+  lambda_detail_waist_luma_dog: 0.026
+
+  lambda_boundary_opacity_residual_reg: 0.0
+  lambda_boundary_scaling_residual_reg: 0.0
+  lambda_boundary_opacity_residual_smooth: 0.0
+  lambda_boundary_scaling_residual_smooth: 0.0
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500]
+save_iterations: [500, 1000, 1500, 2000, 2500]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500]

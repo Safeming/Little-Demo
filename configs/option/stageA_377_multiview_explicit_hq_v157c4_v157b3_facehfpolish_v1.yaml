@@ -1,0 +1,98 @@
+# @package _global_
+
+# v157c4: keep B-stage geometry/owner stable, then push face/HF polish without
+# leaning on heavy signed finishing.
+# Hypothesis from v157b3:
+# - owner/HF already produced the big gain
+# - but face/boundary branches remained near zero
+# This variant asks whether the remaining sharpness gap is mostly an underpowered
+# learned HF/face path rather than a missing residual boundary actuator.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  deformer:
+    non_rigid:
+      delay: 700
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: 1.0
+              boundary:
+                enable: false
+    detail_residual:
+      tiny_repair_scale: 0.055
+      high_frequency:
+        tiny_repair_scale: 0.024
+        scale: 0.052
+        gate_bias: 0.00
+        min_gate: 0.03
+        face_branch:
+          enable: true
+          tiny_repair_scale: 0.012
+          scale: 0.24
+          gate_bias: -0.02
+          min_gate: 0.08
+
+opt:
+  iterations: 1500
+
+  grad_clip: 0.036
+
+  position_lr_init: 0.000008
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0012
+  scaling_lr: 0.00015
+  rotation_lr: 0.00003
+
+  rigid_lr: 0.00006
+  non_rigid_lr: 0.00030
+  texture_lr: 0.00034
+  tex_latent_lr: 0.00014
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 1
+  owner_local_detail_boost_takeover_floor: 0.30
+  owner_local_detail_boost_takeover_gain: 1.18
+  owner_local_detail_boost_takeover_power: 1.30
+
+  boundary_tag_update_interval: 60
+  boundary_tag_update_until_iter: 1200
+  boundary_tag_threshold: 0.45
+
+  boundary_signed_mixed_loss_scale: 0.02
+  boundary_signed_shrink_loss_scale: 0.35
+  boundary_signed_grow_loss_scale: 0.10
+  boundary_signed_share_gain: 1.00
+  boundary_signed_share_power: 1.04
+  boundary_signed_shrink_share_gain: 1.02
+  boundary_signed_shrink_share_power: 1.08
+
+  boundary_aware_opacity_scale: 0.04
+  boundary_aware_scaling_scale: 0.012
+  boundary_aware_boundary_opacity_residual_scale: 0.08
+  boundary_aware_boundary_scaling_residual_scale: 0.04
+
+  boundary_opacity_residual_lr: 0.00004
+  boundary_scaling_residual_lr: 0.000015
+  lambda_boundary_opacity_residual_reg: 0.0005
+  lambda_boundary_scaling_residual_reg: 0.0001
+  lambda_boundary_opacity_residual_smooth: 0.0007
+  lambda_boundary_scaling_residual_smooth: 0.0004
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [1500]
+checkpoint_iterations: [1500]

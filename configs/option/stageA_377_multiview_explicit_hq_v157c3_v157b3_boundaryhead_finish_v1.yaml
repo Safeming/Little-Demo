@@ -1,0 +1,123 @@
+# @package _global_
+
+# v157c3: light boundary-head finishing on top of v157b3.
+# Hypothesis from v157a/b/c:
+# - stage A recovered support
+# - stage B proved owner/HF handoff works
+# - stage C1 showed pure signed finishing can move pixels without awakening the
+#   learned final sharp-output head
+# This variant explicitly gives the boundary head a controlled chance to
+# participate while keeping signed residual finishing as a backup, not the main actor.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  deformer:
+    non_rigid:
+      delay: 600
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: 1.0
+              boundary:
+                enable: true
+                scale: [0.06, 150, 0.16, 500, 0.34, 1000, 0.52, 1500, 0.62]
+                gate_gain: 1.10
+                gate_bias: -0.04
+                min_gate: 0.04
+                use_local_color_input: true
+                use_local_color_output: false
+                use_local_geometry_raw: true
+                use_support_feature: true
+                use_region_gate_feature: true
+                use_boundary_feature: true
+                focus_threshold: 0.12
+                focus_power: 1.30
+                focus_min: 0.0
+                focus_max: 1.0
+                focus_use_region_gate: true
+                focus_use_support: true
+                focus_support_detach: true
+                init_from_local_color: true
+                init_scale: 0.18
+                takeover:
+                  enable: true
+                  scale: [0.04, 150, 0.10, 500, 0.20, 1000, 0.34, 1500, 0.42]
+                  max: 0.55
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.045
+      high_frequency:
+        tiny_repair_scale: 0.022
+        scale: 0.044
+        gate_bias: -0.02
+        min_gate: 0.02
+        face_branch:
+          enable: true
+          tiny_repair_scale: 0.010
+          scale: 0.18
+          gate_bias: -0.04
+          min_gate: 0.06
+
+opt:
+  iterations: 1500
+
+  grad_clip: 0.033
+
+  position_lr_init: 0.000006
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0010
+  scaling_lr: 0.00012
+  rotation_lr: 0.00003
+
+  rigid_lr: 0.00005
+  non_rigid_lr: 0.00025
+  texture_lr: 0.00028
+  tex_latent_lr: 0.00011
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 1
+  owner_local_detail_boost_takeover_floor: 0.28
+  owner_local_detail_boost_takeover_gain: 1.18
+  owner_local_detail_boost_takeover_power: 1.28
+
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1500
+  boundary_tag_threshold: 0.42
+
+  boundary_signed_mixed_loss_scale: 0.05
+  boundary_signed_shrink_loss_scale: 0.90
+  boundary_signed_grow_loss_scale: 0.28
+  boundary_signed_share_gain: 1.00
+  boundary_signed_share_power: 1.08
+  boundary_signed_shrink_share_gain: 1.08
+  boundary_signed_shrink_share_power: 1.18
+
+  boundary_aware_opacity_scale: 0.08
+  boundary_aware_scaling_scale: 0.028
+  boundary_aware_boundary_opacity_residual_scale: 0.24
+  boundary_aware_boundary_scaling_residual_scale: 0.16
+
+  boundary_opacity_residual_lr: 0.00009
+  boundary_scaling_residual_lr: 0.00003
+  lambda_boundary_opacity_residual_reg: 0.0005
+  lambda_boundary_scaling_residual_reg: 0.0001
+  lambda_boundary_opacity_residual_smooth: 0.0008
+  lambda_boundary_scaling_residual_smooth: 0.0005
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [1500]
+checkpoint_iterations: [1500]

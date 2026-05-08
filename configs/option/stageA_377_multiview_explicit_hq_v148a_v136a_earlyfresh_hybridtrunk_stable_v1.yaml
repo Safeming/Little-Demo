@@ -1,0 +1,75 @@
+# @package _global_
+
+# v148a: single retained high-value direction.
+# Start fresh from the v136a mainline, keep explicit binding as the prior,
+# but let the forward trunk learn anchor/support/layer residuals from the
+# beginning. Compared with late-stage resume patches, this directly tests
+# whether contour support can be learned in the forward path.
+#
+# Stability changes versus v146:
+# 1. No 3k opacity reset in the 4k probe.
+# 2. Densify only in the early window.
+# 3. Lower rigid/non-rigid lr and tighter grad clipping.
+# 4. Layer routing is enabled, but only as a small residual, not direct takeover.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.05
+  rigid_lr: 0.00008
+  non_rigid_lr: 0.00070
+
+  percent_dense: 0.008
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 500
+  densify_until_iter: 2800
+  densify_grad_threshold: 0.0002
+
+  lambda_binding_hybrid_anchor_reg: 0.0014
+  lambda_binding_hybrid_support_reg: 0.0018
+  lambda_binding_hybrid_layer_reg: 0.0012
+
+model:
+  deformer:
+    rigid:
+      hybrid_field_enable: true
+      hybrid_field_anchor_enable: true
+      hybrid_field_support_enable: true
+      hybrid_field_layer_enable: true
+      hybrid_field_update_dominant_joint: true
+      hybrid_field_feature_detach: false
+      hybrid_field_detach_gate: false
+      hybrid_field_gate_mode: softfree
+      hybrid_field_gate_min: 0.25
+      hybrid_field_gate_power: 1.0
+      hybrid_field_confidence_suppress: 0.10
+
+      hybrid_anchor_mode: residual
+      hybrid_anchor_delta_scale: 0.10
+      hybrid_anchor_delta_max: 0.16
+
+      hybrid_layer_mode: residual
+      hybrid_layer_delta_scale: 0.18
+      hybrid_layer_delta_max: 0.30
+
+      hybrid_support_scale: 0.0035
+      hybrid_support_max: 0.0070
+      hybrid_support_tangent_scale: 1.0
+      hybrid_support_normal_scale: 0.60
+
+      hybrid_field_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

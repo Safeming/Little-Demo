@@ -1,0 +1,41 @@
+# @package _global_
+
+# Stronger face-local RGB carrier injection to test whether the remaining
+# softness is mostly limited by face-local high-frequency bandwidth.
+
+opt:
+  lambda_detail_face_luma_dog: 0.070
+  lambda_perceptual_face_patch: 0.050
+  lambda_perceptual_shoulder_arm_patch: 0.008
+  face_patch_perceptual_topk: 4
+  face_patch_perceptual_size: 56
+  face_patch_perceptual_focus_power: 1.68
+  face_patch_perceptual_error_mix: 0.82
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        face_branch:
+          channels: 3
+          init_from: shared_chroma
+          scale: 0.58
+          gate_bias: 0.12
+          min_gate: 0.22
+          local_carrier:
+            enable: true
+            inject_scale: 0.65
+            use_canonical_xyz: true
+            xyz_multires: 10
+            xyz_include_input: true
+            xyz_frequency_scale: 1.45
+            use_view_dir: true
+            view_multires: 5
+            view_include_input: true
+            view_frequency_scale: 1.10
+            use_radius: true
+            radius_multires: 6
+            radius_include_input: true
+            radius_frequency_scale: 1.15
+          point_gate:
+            enable: false

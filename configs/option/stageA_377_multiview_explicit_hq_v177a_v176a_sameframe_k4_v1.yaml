@@ -1,0 +1,54 @@
+# @package _global_
+
+# v177a: same-frame K=4 multi-view gradient accumulation from v176a best.
+#
+# v176a proved that K=2 same-frame accumulation gives a real but small gain
+# after v175a repaired the HF source. This run tests whether denser same-frame
+# supervision continues to help, or whether camera/SMPL/color inconsistencies
+# start averaging the contour again.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        # Keep the HF path at the v175/v176 late-stage strength. This isolates
+        # the sampling change instead of re-running another HF warmup.
+        scale: 0.24
+        tiny_repair_scale: 1.20
+        face_branch:
+          tiny_repair_scale: 1.24
+        boundary_floor:
+          value: 1.30
+    structured_trunk:
+      output_head:
+        dual_head:
+          hf_head:
+            scale: 0.50
+
+opt:
+  # 4000 micro-views with K=4 equals about 1000 optimizer updates.
+  iterations: 4000
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_accumulation_steps: 4
+  train_sample_accumulation_without_replacement: true
+  train_sample_log_interval: 500
+
+  grad_clip: 0.022
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000]
+save_iterations: [1000, 2000, 3000, 4000]
+checkpoint_iterations: [1000, 2000, 3000, 4000]

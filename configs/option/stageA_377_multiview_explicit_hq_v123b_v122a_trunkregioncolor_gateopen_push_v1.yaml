@@ -1,0 +1,53 @@
+# @package _global_
+
+# v123b: same trunk-local color path as v123a, but with a stronger gate-open
+# / local-color push so we can test whether the remaining softness is mostly
+# a strength issue rather than a structural issue.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        gate_gain: 1.55
+        local_color:
+          enable: true
+          use_raw_feature: true
+          use_gated_feature: true
+          use_gate_feature: true
+          gate_with_region: true
+          init_from_output_head: true
+          init_scale: 0.45
+          scale: 1.18
+        local_region_overrides:
+          - name: face
+            raw_scale: 1.52
+            gated_scale: 2.02
+            gate_feature_scale: 1.34
+            gate_bias: 0.10
+            gate_boost: 0.30
+            color_scale: 1.42
+            soft_gate_min: 0.22
+          - name: shoulder_upper
+            raw_scale: 1.28
+            gated_scale: 1.56
+            gate_feature_scale: 1.16
+            gate_bias: 0.06
+            gate_boost: 0.18
+            color_scale: 0.94
+            soft_gate_min: 0.18
+          - name: upper_torso
+            raw_scale: 1.16
+            gated_scale: 1.34
+            gate_feature_scale: 1.10
+            gate_bias: 0.03
+            gate_boost: 0.10
+            color_scale: 0.64
+            soft_gate_min: 0.12

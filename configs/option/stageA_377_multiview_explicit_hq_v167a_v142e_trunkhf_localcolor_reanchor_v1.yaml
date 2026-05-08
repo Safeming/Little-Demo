@@ -1,0 +1,73 @@
+# @package _global_
+
+# v167a: return to the strongest explicit-binding clarity anchor, v142e, and
+# move forward on the trunk-high-frequency plan without continuing the softer
+# v165/v166c branch.
+#
+# Goal:
+# - keep v142e's clear selective-trunk dynamics and signed-contour state
+# - do not reopen densify / opacity reset / binding-state reset
+# - make the dual-head HF path use the already-trained local color carrier as a
+#   real trunk-side high-frequency source
+# - use lower texture LR so this is a re-anchor test, not a destructive regrow
+#
+# Success signals:
+# - FG_LPIPS stays near or below v142e best (0.13972), not the v166c 0.159 band
+# - head_gate remains selective instead of drifting toward v166c's ~0.99
+# - local color contribution remains non-zero
+# - c22_f000210 / c22_f000240 shoulder, arm edge, waist and cloth folds do not
+#   soften relative to v142e.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        # Keep the trunk output-head route as the main appearance path.
+        disable_input_residual: true
+        dual_head:
+          hf_head:
+            enable: true
+            use_local_color: true
+            # Conservative scale: enough to test whether local color can feed
+            # the trunk HF route, but far below a full regrow.
+            local_color_scale: 0.32
+
+opt:
+  iterations: 2000
+
+  grad_clip: 0.035
+
+  # Keep geometry and binding fixed. This run is a texture/trunk mechanism
+  # check from v142e, not another contour regrow.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+
+  texture_lr: 0.00018
+  tex_latent_lr: 0.00006
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_reset_interval: 1000000
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

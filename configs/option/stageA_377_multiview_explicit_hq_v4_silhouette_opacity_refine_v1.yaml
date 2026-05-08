@@ -1,0 +1,73 @@
+# @package _global_
+
+best_metric: psnr_fg
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 900
+  grad_clip: 0.05
+
+  # Freeze geometry / texture / deformation; only tighten silhouette.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.0
+  opacity_lr: 0.010
+  scaling_lr: 0.0004
+  rotation_lr: 0.0
+
+  pose_correction_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  texture_lr: 0.0
+  tex_latent_lr: 0.0
+  lr_ratio: 0.1
+
+  # Keep weak RGB anchoring so opacity refinement does not over-shrink the body.
+  lambda_l1: 1.0
+  lambda_l1_fg: 0.10
+  lambda_l1_boundary: 0.10
+  lambda_l1_face: 0.0
+  lambda_perceptual_face: 0.0
+  lambda_l1_shoulder_arm: 0.0
+  lambda_edge_shoulder_arm: 0.0
+  boundary_band_width: 5
+  face_region_min_pixels: 48
+  face_perceptual_crop_pad: 12
+  shoulder_arm_region_min_pixels: 96
+  lambda_dssim: 0.0
+  lambda_perceptual: 0.0
+  perceptual_crop_pad: 16
+
+  mask_loss_type: l1
+  lambda_mask: 0.05
+  lambda_mask_boundary: 0.08
+  lambda_mask_boundary_hard: 0.12
+  lambda_silhouette_outer: 0.10
+  lambda_silhouette_inner: 0.04
+  silhouette_outer_ring_width: 5
+  silhouette_inner_ring_width: 3
+  lambda_opacity: 0.0
+
+  lambda_skinning: 0.0
+  lambda_pose: 0.0
+  lambda_aiap_xyz: 0.0
+  lambda_aiap_cov: 0.0
+  aiap_interval: 1000000
+  aiap_max_points: 0
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.05
+
+test_interval: 300
+save_iterations: [900]

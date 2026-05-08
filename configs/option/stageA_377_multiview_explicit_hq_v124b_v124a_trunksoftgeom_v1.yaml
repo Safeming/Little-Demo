@@ -1,0 +1,29 @@
+# @package _global_
+
+# v124b: build on v124a by removing the final hard region masking from
+# trunk-local color and adding current-pose geometry features so the trunk can
+# place detail using deformed-frame structure instead of only canonical-local
+# templates.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          gate_with_region: false
+          use_current_xyz_feature: true
+          current_xyz_multires: 8
+          current_xyz_include_input: true
+          current_xyz_frequency_scale: 1.0
+          use_current_radius_feature: true
+          current_radius_multires: 4
+          current_radius_include_input: true
+          current_radius_frequency_scale: 1.0

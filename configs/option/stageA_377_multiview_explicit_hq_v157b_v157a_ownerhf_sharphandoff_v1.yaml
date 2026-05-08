@@ -1,0 +1,144 @@
+# @package _global_
+
+# v157b: sharp-output handoff stage.
+# Resume only after support is regrown. Owner/HF become the sharpness carrier,
+# but boundary finishing is still held back here; v156a already showed that
+# forcing boundary takeover too early only creates a weak probe.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_refresh_require_boundary_tag: false
+    binding_risk_gate_require_boundary_tag: false
+  deformer:
+    non_rigid:
+      delay: 800
+    rigid:
+      forward_trunk_blend_alpha: [0.92, 800, 1.00]
+      forward_trunk_anchor_alpha_scale: 1.0
+      forward_trunk_support_alpha_scale: 1.0
+      forward_trunk_layer_alpha_scale: [0.24, 400, 0.34, 1200, 0.46, 2200, 0.56]
+      forward_trunk_xbar_alpha_scale: [0.88, 600, 1.00]
+      forward_trunk_layer_logit_scale: 0.62
+      forward_trunk_layer_delta_logit_max: 0.38
+      forward_trunk_layer_min_prob: 0.08
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.14, 200, 0.40, 800, 0.68, 1600, 0.90, 2400, 1.00]
+              boundary:
+                enable: false
+    detail_residual:
+      tiny_repair_scale: 0.055
+      high_frequency:
+        tiny_repair_scale: 0.028
+        scale: 0.040
+        face_branch:
+          tiny_repair_scale: 0.012
+          scale: 0.14
+
+opt:
+  iterations: 3000
+
+  grad_clip: 0.040
+
+  position_lr_init: 0.000010
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0015
+  scaling_lr: 0.00018
+  rotation_lr: 0.00004
+
+  rigid_lr: 0.00007
+  non_rigid_lr: 0.00045
+  texture_lr: 0.00034
+  tex_latent_lr: 0.00015
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 120
+  owner_local_detail_boost_takeover_floor: 0.24
+  owner_local_detail_boost_takeover_gain: 1.12
+  owner_local_detail_boost_takeover_power: 1.28
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.05
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_update_interval: 60
+  boundary_tag_update_until_iter: 1600
+  boundary_tag_threshold: 0.45
+  boundary_tag_min_ratio: 0.03
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.12
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.08
+  boundary_image_error_score_prior_floor: 0.12
+
+  boundary_signed_mixed_loss_scale: 0.05
+  boundary_signed_shrink_loss_scale: 0.90
+  boundary_signed_grow_loss_scale: 0.28
+  boundary_signed_share_gain: 1.00
+  boundary_signed_share_power: 1.08
+  boundary_signed_shrink_share_gain: 1.05
+  boundary_signed_shrink_share_power: 1.15
+
+  boundary_aware_opacity_scale: 0.08
+  boundary_aware_scaling_scale: 0.024
+  boundary_aware_boundary_opacity_residual_scale: 0.20
+  boundary_aware_boundary_scaling_residual_scale: 0.12
+
+  boundary_opacity_residual_lr: 0.00007
+  boundary_scaling_residual_lr: 0.00002
+  lambda_boundary_opacity_residual_reg: 0.0005
+  lambda_boundary_scaling_residual_reg: 0.0001
+  lambda_boundary_opacity_residual_smooth: 0.0008
+  lambda_boundary_scaling_residual_smooth: 0.0005
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0014
+  lambda_binding_forward_trunk_support_reg: 0.0015
+  lambda_binding_forward_trunk_layer_reg: 0.0025
+  lambda_binding_forward_trunk_xbar_reg: 0.0010
+  lambda_binding_layer_balance: 0.045
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [3000]
+checkpoint_iterations: [3000]

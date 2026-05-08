@@ -1,0 +1,60 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Native/build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+*.a
+diff_rasterization/dist/
+diff_rasterization/diff_rast.egg-info/
+
+# Local editor / OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Experiment outputs
+exp/
+output/
+outputs/
+tensorboard_3d/
+screenshots/
+
+# Logging
+wandb/
+wandb.key
+*.log
+
+# Local datasets and generated assets
+/data/
+/zju_raw/
+/body_models
+/body_models/misc/
+/body_models/smpl/
+/body_models/**/*.pkl
+/body_models/**/*.npz
+/body_models/**/*.npy
+
+# Accidental CLI override files / partial downloads
+mode=test
+dataset=zjumocap_377_mono
+*.filepart
+
+# Python environments
+.venv/
+venv/
+env/
+
+# Keep source directories tracked
+!tools/
+!tools/**
+tools/__pycache__/
+tools/**/*.py[cod]
+
+*.gz

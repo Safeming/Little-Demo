@@ -1,0 +1,22 @@
+# @package _global_
+
+# v136a: once the owner head has taken over key regions, directly increase the
+# local high-frequency supervision there instead of only changing the final
+# blend ratio. This pushes explicit_binding trunk-owner to pay for blur in
+# face / shoulder / upper-torso regions with stronger detail, luma-DoG and
+# patch perceptual losses.
+
+opt:
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 300
+  owner_local_detail_boost_takeover_floor: 0.34
+  owner_local_detail_boost_takeover_gain: 1.05
+  owner_local_detail_boost_takeover_power: 1.35
+  owner_local_detail_boost_min_signal: 0.05
+  owner_local_detail_boost_detail_max_extra: [0.20, 600, 0.55, 1400, 0.95, 2600, 1.30, 3400, 1.55]
+  owner_local_detail_boost_luma_max_extra: [0.30, 600, 0.85, 1400, 1.35, 2600, 1.85, 3400, 2.10]
+  owner_local_detail_boost_patch_max_extra: [0.20, 600, 0.60, 1400, 1.00, 2600, 1.30, 3400, 1.55]
+  owner_local_detail_boost_face_strength: 1.00
+  owner_local_detail_boost_shoulder_strength: 0.92
+  owner_local_detail_boost_upper_torso_strength: 0.86
+  owner_local_detail_boost_upper_torso_core_strength: 0.98

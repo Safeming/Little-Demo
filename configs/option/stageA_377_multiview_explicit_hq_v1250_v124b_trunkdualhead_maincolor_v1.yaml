@@ -1,0 +1,47 @@
+# @package _global_
+
+# v1250: refactor the explicit_binding trunk color path into a real staged main
+# color route. Keep the old base MLP only as a fading scaffold, let the trunk
+# output head own the coarse color directly, add a dedicated high-frequency head
+# on the same fused trunk input, and keep the legacy detail branches as tiny
+# repair only.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        dual_head:
+          enable: true
+          base_scaffold_scale: [0.92, 600, 0.84, 1800, 0.72, 3200, 0.62]
+          coarse_scale: [0.42, 600, 0.50, 1800, 0.58, 3200, 0.68]
+          hf_head:
+            enable: true
+            reuse_output_gate: true
+            init_from_output_head: true
+            init_scale: 0.18
+            scale: [0.08, 600, 0.12, 1800, 0.18, 3200, 0.26]
+            use_local_color: true
+            local_color_scale: [0.72, 1200, 0.90, 2600, 1.08]
+            mlp:
+              n_neurons: 128
+              n_hidden_layers: 2
+              multires: 0
+              skip_in: []
+              cond_in: []
+              last_layer_init: true
+    detail_residual:
+      tiny_repair_scale: 0.18
+      high_frequency:
+        tiny_repair_scale: 0.10
+        scale: 0.08
+        face_branch:
+          tiny_repair_scale: 0.05
+          scale: 0.015

@@ -1,0 +1,43 @@
+# @package _global_
+
+# v1310: make trunk-owner adaptive instead of fixed-strength. Keep the strong
+# ownership ceiling from v127a, but only fully suppress coarse / boost hf when
+# the local trunk branch itself shows enough region evidence.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        dual_head:
+          region_support:
+            enable: true
+            source: gated_feature+local_color
+            detach: true
+            offset: 0.10
+            gain: 18.0
+            power: 1.0
+            base_mix: 0.15
+            max: 1.0
+          coarse_region_suppress:
+            face: 0.18
+            shoulder_upper: 0.12
+            upper_torso: 0.08
+          coarse_region_min_scale: 0.60
+          hf_head:
+            gate_gain: 1.12
+            gate_bias: -0.02
+            min_gate: 0.05
+            scale: [0.18, 600, 0.26, 1800, 0.36, 3200, 0.48]
+            region_boost:
+              face: 0.40
+              shoulder_upper: 0.24
+              upper_torso: 0.16
+            region_boost_max: 1.90
+    detail_residual:
+      tiny_repair_scale: 0.08
+      high_frequency:
+        tiny_repair_scale: 0.04
+        scale: 0.035
+        face_branch:
+          tiny_repair_scale: 0.0
+          scale: 0.0

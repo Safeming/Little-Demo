@@ -1,0 +1,23 @@
+# @package _global_
+
+# RGB warm-start without the extra face point gate bottleneck.
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        face_branch:
+          channels: 3
+          init_from: shared_chroma
+          scale: 0.40
+          gate_bias: -0.06
+          min_gate: 0.16
+          mlp:
+            n_neurons: 72
+            n_hidden_layers: 2
+            skip_in: []
+            cond_in: []
+            multires: 0
+            last_layer_init: true
+          point_gate:
+            enable: false

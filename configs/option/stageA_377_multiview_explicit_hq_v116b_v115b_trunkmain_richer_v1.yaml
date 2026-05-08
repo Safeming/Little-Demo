@@ -1,0 +1,174 @@
+# @package _global_
+
+# v116b: richer trunk-first routing.
+# Give the structured trunk a stronger shared carrier and more aggressive
+# region-local experts while still keeping point-gated late residual repair.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      enable: true
+      use_input_context: true
+      input_context_dim: 32
+      use_canonical_xyz: true
+      xyz_multires: 6
+      use_view_dir: true
+      view_multires: 4
+      use_modulated_carrier: true
+      local_gate_to_region: true
+      inject_scale: 0.42
+      structure_carrier:
+        enable: true
+        detach: true
+        inject_scale: 0.42
+        features:
+          - name: layer
+            attr: binding_weights_raw
+            center: 0.333333
+            scale: 1.8
+          - name: region
+            attr: binding_region_probs_raw
+            center: 0.333333
+            scale: 1.8
+          - name: semantic
+            attr: binding_compact_semantic_probs_raw
+            center: 0.166667
+            scale: 2.2
+          - name: surface
+            attr: binding_surface_distance
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: boundary
+            attr: binding_boundary_score
+            center: 0.25
+            scale: 2.2
+          - name: nonrigid_delta
+            attr: binding_non_rigid_delta
+            scale: 90.0
+            clamp: 1.5
+            multires: 3
+          - name: rigid_carry
+            attr: binding_non_rigid_rigid_carry
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: soft_carry
+            attr: binding_non_rigid_soft_carry
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: geometry_shift
+            attr: binding_non_rigid_geometry_shift
+            scale: 90.0
+            clamp: 1.5
+            multires: 3
+      local_carriers:
+        - name: face
+          enable: true
+          inject_scale: 0.48
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 9
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [face, 1.00]
+              - [skin, 1.00]
+              - [upper, 0.35]
+            semantic_id_weights:
+              - [1, 1.00]
+              - [2, 1.00]
+              - [3, 0.35]
+            joint_id_weights:
+              - [15, 1.00]
+              - [12, 1.00]
+              - [13, 1.00]
+              - [14, 1.00]
+              - [16, 0.40]
+              - [17, 0.40]
+              - [18, 0.10]
+              - [19, 0.10]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.002
+        - name: shoulder_upper
+          enable: true
+          inject_scale: 0.30
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 8
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [upper, 1.00]
+              - [skin, 0.35]
+              - [cloth, 0.35]
+            joint_id_weights:
+              - [13, 1.00]
+              - [14, 1.00]
+              - [16, 1.00]
+              - [17, 1.00]
+              - [18, 0.45]
+              - [19, 0.45]
+              - [12, 0.25]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.002
+        - name: upper_torso
+          enable: true
+          inject_scale: 0.28
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 8
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [upper, 1.00]
+              - [cloth, 0.70]
+              - [skin, 0.30]
+            joint_id_weights:
+              - [0, 0.35]
+              - [3, 0.55]
+              - [6, 0.75]
+              - [9, 1.00]
+              - [12, 1.00]
+              - [13, 0.60]
+              - [14, 0.60]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.003
+    detail_residual:
+      high_frequency:
+        scale: 0.55
+        face_branch:
+          scale: 0.12
+
+opt:
+  iterations: 3600
+
+  clarity_debug_enable: true
+  clarity_debug_interval: 100
+
+save_iterations: [1200, 2400, 3600]
+test_interval: 300

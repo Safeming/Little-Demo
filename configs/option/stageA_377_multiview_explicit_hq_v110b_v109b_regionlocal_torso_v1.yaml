@@ -1,0 +1,93 @@
+# @package _global_
+
+# v110b: extend v110a with a second upper-torso region-local carrier and
+# matching upper-torso high-frequency supervision.
+
+opt:
+  lambda_detail_shoulder_arm_luma_dog: 0.044
+  lambda_perceptual_shoulder_arm_patch: 0.013
+  lambda_detail_upper_torso_luma_dog: 0.024
+  lambda_perceptual_upper_torso_patch: 0.010
+
+  shoulder_arm_patch_perceptual_topk: 1
+  shoulder_arm_patch_perceptual_size: 64
+  shoulder_arm_patch_perceptual_focus_power: 1.42
+  shoulder_arm_patch_perceptual_error_mix: 0.74
+
+  upper_torso_patch_perceptual_topk: 1
+  upper_torso_patch_perceptual_size: 56
+  upper_torso_patch_perceptual_focus_power: 1.34
+  upper_torso_patch_perceptual_error_mix: 0.60
+  upper_torso_detail_luma_dog_focus_scale: 2.1
+  upper_torso_detail_luma_dog_focus_power: 1.42
+  upper_torso_detail_luma_dog_error_mix: 0.18
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        face_branch:
+          extra_local_carriers:
+            - name: shoulder_upper
+              enable: true
+              inject_scale: 0.46
+              use_canonical_xyz: true
+              xyz_multires: 10
+              xyz_include_input: true
+              xyz_frequency_scale: 1.45
+              use_view_dir: true
+              view_multires: 5
+              view_include_input: true
+              view_frequency_scale: 1.10
+              use_radius: true
+              radius_multires: 6
+              radius_include_input: true
+              radius_frequency_scale: 1.15
+              region:
+                enable: true
+                semantic_name_weights:
+                  - [upper, 1.00]
+                  - [skin, 0.30]
+                joint_id_weights:
+                  - [13, 1.00]
+                  - [14, 1.00]
+                  - [16, 1.00]
+                  - [17, 1.00]
+                  - [18, 0.36]
+                  - [19, 0.36]
+                combine_mode: max
+                fallback_to_full: true
+                fallback_to_global: true
+                min_gate_mean: 0.003
+            - name: upper_torso
+              enable: true
+              inject_scale: 0.34
+              use_canonical_xyz: true
+              xyz_multires: 10
+              xyz_include_input: true
+              xyz_frequency_scale: 1.45
+              use_view_dir: true
+              view_multires: 5
+              view_include_input: true
+              view_frequency_scale: 1.10
+              use_radius: true
+              radius_multires: 6
+              radius_include_input: true
+              radius_frequency_scale: 1.15
+              region:
+                enable: true
+                semantic_name_weights:
+                  - [upper, 1.00]
+                  - [skin, 0.16]
+                exclude_semantic_name_weights:
+                  - [face, 1.00]
+                joint_id_weights:
+                  - [12, 0.65]
+                  - [13, 1.00]
+                  - [14, 1.00]
+                  - [16, 0.78]
+                  - [17, 0.78]
+                combine_mode: max
+                fallback_to_full: true
+                fallback_to_global: true
+                min_gate_mean: 0.003

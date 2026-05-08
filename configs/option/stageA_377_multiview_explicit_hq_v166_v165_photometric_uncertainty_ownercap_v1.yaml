@@ -1,0 +1,64 @@
+# @package _global_
+
+# v166: short root-cause validation after v165.
+#
+# v165 showed weak early benefit from frame-balanced + camera-quality sampling,
+# then degraded as owner takeover kept rising while boundary/head stayed weak.
+# This stage keeps the sampler as an auxiliary signal, but tests the actual
+# root fixes before any longer K-view accumulation:
+#   1. foreground photometric normalization for multi-camera exposure/color drift
+#   2. contour uncertainty weighting for 5-16px mask/SMPL/camera boundary offsets
+#   3. owner takeover cap so late texture ownership cannot swamp weak boundary
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            takeover:
+              strength: [0.38, 1, 0.40, 500, 0.42, 1500, 0.42]
+              max: 0.44
+
+opt:
+  iterations: 1500
+
+  # Keep v165 sampler, but soften the camera-quality skew for held-out c21-23.
+  train_sample_camera_min_prob: 0.035
+  train_sample_camera_max_prob: 0.080
+  train_sample_log_interval: 250
+
+  # Per-view foreground color/exposure normalization for the RGB/detail losses.
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.55
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.78
+  photometric_correction_max_scale: 1.28
+  photometric_correction_max_shift: 0.105
+  photometric_contour_debug_interval: 250
+
+  # Lower hard RGB/high-frequency pressure around uncertain silhouette pixels.
+  # Silhouette/mask losses remain active, so the contour is not ignored.
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 11
+  contour_uncertainty_outer_width: 7
+  contour_uncertainty_min_weight: 0.42
+
+  # Prevent v165-style owner drift after the early improvement window.
+  owner_local_detail_boost_takeover_floor: 0.32
+  owner_local_detail_boost_takeover_gain: 0.72
+  owner_local_detail_boost_takeover_power: 1.15
+  owner_local_detail_boost_detail_max_extra: [0.08, 500, 0.20, 1500, 0.24]
+  owner_local_detail_boost_luma_max_extra: [0.12, 500, 0.34, 1500, 0.42]
+  owner_local_detail_boost_patch_max_extra: [0.08, 500, 0.22, 1500, 0.28]
+  owner_local_detail_boost_edge_max_extra: [0.06, 500, 0.18, 1500, 0.24]
+  owner_local_detail_boost_boundary_max_extra: [0.06, 500, 0.20, 1500, 0.26]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [500, 1000, 1500]
+checkpoint_iterations: [500, 1000, 1500]

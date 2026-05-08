@@ -1,0 +1,23 @@
+# @package _global_
+
+# v1240: keep the v123b trunk-local color path, but stop treating local_color
+# as a purely local patch head. Feed base/shared/structure trunk context
+# directly into each region-local color head so it can generate high-frequency
+# detail from full appearance context instead of only local canonical cues.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          use_base_feature: true
+          use_shared_feature: true
+          use_structure_feature: true

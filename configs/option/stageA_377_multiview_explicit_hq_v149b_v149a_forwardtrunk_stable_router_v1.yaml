@@ -1,0 +1,98 @@
+# @package _global_
+
+# v149b: stabilize v149a's learned forward trunk.
+# Key changes:
+# 1. anchor/layer probability heads become bounded residual logits on top of the prior
+# 2. layer takeover is slower than anchor/support takeover
+# 3. layer probabilities keep a small floor to prevent early single-path collapse
+# 4. owner takeover is held off so geometry path is evaluated more cleanly
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.03
+  rigid_lr: 0.00008
+  non_rigid_lr: 0.00070
+
+  percent_dense: 0.008
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 400
+  densify_until_iter: 2800
+  densify_grad_threshold: 0.0002
+
+  owner_local_detail_boost_enable: false
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0020
+  lambda_binding_forward_trunk_layer_reg: 0.0035
+  lambda_binding_forward_trunk_support_reg: 0.0024
+  lambda_binding_layer_balance: 0.040
+
+model:
+  deformer:
+    rigid:
+      forward_trunk_enable: true
+      forward_trunk_anchor_enable: true
+      forward_trunk_support_enable: true
+      forward_trunk_layer_enable: true
+      forward_trunk_update_dominant_joint: true
+      forward_trunk_feature_detach: false
+      forward_trunk_blend_alpha: [0.05, 400, 0.10, 1200, 0.18, 2200, 0.28, 3200, 0.40, 4000, 0.55]
+      forward_trunk_confidence_suppress: 0.0
+      forward_trunk_output_clamp: 4.0
+      forward_trunk_anchor_alpha_scale: 0.75
+      forward_trunk_support_alpha_scale: 0.60
+      forward_trunk_layer_alpha_scale: 0.35
+      forward_trunk_anchor_logit_scale: 1.0
+      forward_trunk_layer_logit_scale: 0.75
+      forward_trunk_anchor_residual: true
+      forward_trunk_layer_residual: true
+      forward_trunk_anchor_delta_logit_max: 2.5
+      forward_trunk_layer_delta_logit_max: 0.75
+      forward_trunk_layer_min_prob: 0.08
+      forward_trunk_support_scale: 0.0030
+      forward_trunk_support_max: 0.0060
+      forward_trunk_support_tangent_scale: 0.8
+      forward_trunk_support_normal_scale: 0.35
+
+      hybrid_field_enable: false
+      hybrid_field_anchor_enable: false
+      hybrid_field_support_enable: false
+      hybrid_field_layer_enable: false
+
+      residual_field_enable: false
+      residual_field_anchor_enable: false
+      residual_field_xbar_enable: false
+
+      forward_trunk_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.0, 4000, 0.0]
+    detail_residual:
+      tiny_repair_scale: 0.05
+      high_frequency:
+        tiny_repair_scale: 0.02
+        scale: 0.02
+        face_branch:
+          tiny_repair_scale: 0.0
+          scale: 0.0
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

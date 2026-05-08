@@ -1,0 +1,68 @@
+# @package _global_
+
+# v166b: corrected root-cause validation after v166 failed at 500.
+#
+# v166 over-corrected the target and suppressed the sharp owner path:
+#   - photometric correction hit a strong scale clamp around 0.80
+#   - contour uncertainty downweighted a very wide band to 0.42
+#   - owner takeover stayed near 0.20, far below v165@1000's useful window
+#
+# This run starts again from v165 best@1000. It keeps the frame-balanced
+# sampler, uses only a light photometric target correction, applies a narrow
+# uncertainty band, and lets owner stay near the v165@1000 clarity window
+# without drifting toward the v165@2000/3000 over-owner regime.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            takeover:
+              strength: [0.48, 1, 0.54, 700, 0.56, 1500, 0.56]
+              max: 0.56
+
+opt:
+  iterations: 1500
+
+  # Keep the exact v165 camera sampler because v165@1000 was the current best.
+  train_sample_camera_min_prob: 0.025
+  train_sample_camera_max_prob: 0.100
+  train_sample_log_interval: 250
+
+  # Light foreground color correction only. This should reduce multi-camera
+  # exposure drift without changing the evaluation target as aggressively as v166.
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.12
+  photometric_correction_erode_kernel_size: 11
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.92
+  photometric_correction_max_scale: 1.08
+  photometric_correction_max_shift: 0.025
+  photometric_contour_debug_interval: 250
+
+  # Only soften a narrow uncertain silhouette band. The RGB/detail losses
+  # still supervise most contour pixels, avoiding the v166 softening failure.
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 5
+  contour_uncertainty_outer_width: 3
+  contour_uncertainty_min_weight: 0.75
+
+  # Keep the detail boost close to v164b/v165, but stop the owner path from
+  # climbing into the v165@2000+ drift zone during this short validation.
+  owner_local_detail_boost_takeover_floor: 0.28
+  owner_local_detail_boost_takeover_gain: 0.90
+  owner_local_detail_boost_takeover_power: 1.16
+  owner_local_detail_boost_detail_max_extra: [0.10, 500, 0.30, 1000, 0.40, 1500, 0.44]
+  owner_local_detail_boost_luma_max_extra: [0.16, 500, 0.50, 1000, 0.68, 1500, 0.76]
+  owner_local_detail_boost_patch_max_extra: [0.10, 500, 0.34, 1000, 0.46, 1500, 0.52]
+  owner_local_detail_boost_edge_max_extra: [0.08, 400, 0.24, 1000, 0.36, 1500, 0.42]
+  owner_local_detail_boost_boundary_max_extra: [0.08, 400, 0.26, 1000, 0.38, 1500, 0.44]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500]
+save_iterations: [500, 1000, 1500]
+checkpoint_iterations: [500, 1000, 1500]

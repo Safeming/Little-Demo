@@ -1,0 +1,117 @@
+# @package _global_
+
+# v154a: resume from v153a and reopen a light boundary-tagged regrow window.
+# Keep the owner/hf handoff path alive, but test whether missing sharpness is
+# still mainly caused by missing support points that v153a could not regrow.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_densify_boundary_only: true
+    binding_densify_require_boundary_tag: true
+    binding_densify_arm_only: false
+    binding_densify_boundary_threshold: 0.04
+    binding_densify_clone_candidate_seed_boundary_only: true
+    binding_densify_clone_candidate_seed_arm_only: false
+    binding_densify_clone_candidate_seed_boundary_threshold: 0.04
+    binding_densify_clone_candidate_seed_max_points: 320
+    binding_densify_clone_candidate_seed_max_ratio: 0.012
+    binding_densify_child_immediate_refresh_boundary_only: true
+    binding_densify_child_immediate_refresh_arm_only: false
+    binding_densify_child_boundary_threshold: 0.04
+    binding_densify_child_immediate_refresh_boundary_threshold: 0.04
+    binding_densify_child_immediate_refresh_max_points: 640
+    binding_densify_child_immediate_refresh_max_ratio: 0.04
+    binding_refresh_require_boundary_tag: true
+    binding_risk_gate_require_boundary_tag: true
+  deformer:
+    non_rigid:
+      delay: 1600
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [1.00, 3000, 1.00]
+    detail_residual:
+      tiny_repair_scale: 0.06
+      high_frequency:
+        tiny_repair_scale: 0.03
+        scale: 0.034
+        face_branch:
+          tiny_repair_scale: 0.015
+          scale: 0.12
+
+opt:
+  iterations: 3000
+
+  grad_clip: 0.04
+
+  position_lr_init: 0.000012
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0014
+  scaling_lr: 0.00016
+  rotation_lr: 0.00004
+
+  rigid_lr: 0.00007
+  non_rigid_lr: 0.00030
+  texture_lr: 0.00032
+  tex_latent_lr: 0.00014
+
+  percent_dense: 0.006
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 2200
+  densify_grad_threshold: 0.00022
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 100
+  owner_local_detail_boost_takeover_floor: 0.30
+  owner_local_detail_boost_takeover_gain: 1.20
+  owner_local_detail_boost_takeover_power: 1.35
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_band_width: 5
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_mix: [0.35, 400, 0.55, 1400, 0.72, 2400, 0.84, 3000, 0.88]
+  boundary_image_error_score_gain: 1.15
+  boundary_image_error_score_power: 1.05
+  boundary_image_error_score_min: 0.04
+  boundary_image_error_score_band_width: 5
+  boundary_image_error_pred_threshold: 0.42
+  boundary_image_error_target_threshold: 0.50
+  boundary_image_error_score_focus_dilate: 3
+  boundary_image_error_score_smooth_k: 8
+  boundary_image_error_score_smooth_blend: 0.28
+  boundary_image_error_score_smooth_distance_quantile: 0.50
+  boundary_image_error_score_prior_floor: 0.16
+
+  boundary_tag_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 2200
+  boundary_tag_threshold: 0.40
+  boundary_tag_min_ratio: 0.03
+  boundary_tag_binary: false
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.30
+  boundary_tag_support_threshold: 0.26
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [3000]
+checkpoint_iterations: [3000]

@@ -1,0 +1,141 @@
+# @package _global_
+
+# v174a: boundary-direct RGB compose from v170e best.
+#
+# v171a/v173a made the boundary route active but did not move visible clarity:
+# boundary_color stayed around 0.001-0.002 and the final contribution was still
+# multiplied by a ~0.4 gate. v172b showed that opening geometry/opacity residuals
+# can create head/background leakage. This run keeps the v170e geometry anchor
+# frozen and tests the code-level root cause: whether the tagged boundary RGB
+# residual is being suppressed too hard at final composition.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              # Keep broad owner close to the v170e/v173 stable anchor.
+              takeover:
+                enable: true
+                scale: 1.0
+                strength: 0.92
+                max: 0.92
+                use_support: true
+              boundary:
+                focus_source: boundary_tag
+                focus_use_region_gate: false
+                focus_use_support: false
+                focus_threshold: 0.0
+                focus_power: 1.0
+                focus_min: 0.0
+                focus_max: 1.0
+
+                # Main v174 change: keep the boundary head masked by the top-k
+                # focus, but do not multiply the masked residual by the learned
+                # gate again. This directly tests the final-RGB amplitude bottleneck.
+                contrib_gate_mode: focus_only
+                contrib_scale: [1.08, 1, 1.28, 500, 1.46, 1000, 1.56, 1800, 1.60]
+
+                scale: [1.05, 1, 1.45, 500, 1.82, 1000, 2.05, 1800, 2.12]
+                gate_gain: 1.16
+                gate_bias: 0.06
+                min_gate: 0.10
+                max_gate: 0.72
+                use_local_color_input: true
+                use_local_color_output: true
+                local_color_output_scale: 0.46
+                use_local_geometry_raw: true
+                use_support_feature: true
+                use_region_gate_feature: true
+                use_boundary_feature: true
+                init_scale: 0.58
+                takeover:
+                  enable: true
+                  scale: [0.70, 1, 0.88, 500, 1.04, 1200, 1.10]
+                  max: 1.0
+                  use_region_gate: false
+
+opt:
+  iterations: 2000
+  grad_clip: 0.018
+
+  # Geometry and opacity stay locked. This isolates final RGB composition and
+  # avoids repeating the v172b leakage failure mode.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+
+  texture_lr: 0.00013
+  texture_trainable_name_patterns:
+    - structured_trunk_output_head_local_color_owner_head_boundary_mlps.*
+    - structured_trunk_output_head_local_color_owner_head_boundary_gate_mlps.*
+  texture_frozen_name_patterns: null
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.08
+  boundary_tag_min_ratio: 0.05
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1200
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_union_with_existing: false
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.34
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.84
+  photometric_correction_max_scale: 1.18
+  photometric_correction_max_shift: 0.070
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.56
+
+  # Preserve v170e's already learned residual effect, but do not train it.
+  boundary_aware_boundary_opacity_residual_scale: 0.65
+  boundary_aware_boundary_scaling_residual_scale: 0.40
+  lambda_boundary_opacity_residual_reg: 0.0
+  lambda_boundary_scaling_residual_reg: 0.0
+  lambda_boundary_opacity_residual_smooth: 0.0
+  lambda_boundary_scaling_residual_smooth: 0.0
+
+  lambda_silhouette_outer: [0.006, 1, 0.009, 900, 0.010]
+  lambda_silhouette_outer_shell: [0.020, 1, 0.038, 900, 0.042]
+  lambda_silhouette_upper_torso_outer_shell: [0.018, 1, 0.040, 900, 0.044]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.014, 1, 0.034, 900, 0.038]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [500, 1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

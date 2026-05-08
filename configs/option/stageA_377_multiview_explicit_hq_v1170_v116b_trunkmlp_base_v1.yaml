@@ -1,0 +1,210 @@
+# @package _global_
+
+# v1170: keep the existing structured-trunk linear adapters, but add
+# checkpoint-compatible residual MLP branches so explicit_binding's main trunk
+# can grow its own high-frequency support instead of only repainting through
+# late HF branches.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.structured_trunk_
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+model:
+  texture:
+    structured_trunk:
+      enable: true
+      use_input_context: true
+      input_context_dim: 32
+      use_canonical_xyz: true
+      xyz_multires: 6
+      use_view_dir: true
+      view_multires: 4
+      use_modulated_carrier: true
+      local_gate_to_region: true
+      inject_scale: 0.46
+      shared_mlp:
+        enable: true
+        scale: 0.70
+        mlp:
+          n_neurons: 96
+          n_hidden_layers: 1
+          multires: 0
+          skip_in: []
+          cond_in: []
+          last_layer_init: true
+      structure_mlp:
+        enable: true
+        scale: 0.64
+        mlp:
+          n_neurons: 96
+          n_hidden_layers: 1
+          multires: 0
+          skip_in: []
+          cond_in: []
+          last_layer_init: true
+      local_mlp:
+        enable: true
+        scale: 0.46
+        mlp:
+          n_neurons: 96
+          n_hidden_layers: 1
+          multires: 0
+          skip_in: []
+          cond_in: []
+          last_layer_init: true
+      structure_carrier:
+        enable: true
+        detach: true
+        inject_scale: 0.46
+        features:
+          - name: layer
+            attr: binding_weights_raw
+            center: 0.333333
+            scale: 1.8
+          - name: region
+            attr: binding_region_probs_raw
+            center: 0.333333
+            scale: 1.8
+          - name: semantic
+            attr: binding_compact_semantic_probs_raw
+            center: 0.166667
+            scale: 2.2
+          - name: surface
+            attr: binding_surface_distance
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: boundary
+            attr: binding_boundary_score
+            center: 0.25
+            scale: 2.2
+          - name: nonrigid_delta
+            attr: binding_non_rigid_delta
+            scale: 90.0
+            clamp: 1.5
+            multires: 3
+          - name: rigid_carry
+            attr: binding_non_rigid_rigid_carry
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: soft_carry
+            attr: binding_non_rigid_soft_carry
+            scale: 90.0
+            clamp: 1.5
+            multires: 2
+          - name: geometry_shift
+            attr: binding_non_rigid_geometry_shift
+            scale: 90.0
+            clamp: 1.5
+            multires: 3
+      local_carriers:
+        - name: face
+          enable: true
+          inject_scale: 0.48
+          mlp_scale: 0.58
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 9
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [face, 1.00]
+              - [skin, 1.00]
+              - [upper, 0.35]
+            semantic_id_weights:
+              - [1, 1.00]
+              - [2, 1.00]
+              - [3, 0.35]
+            joint_id_weights:
+              - [15, 1.00]
+              - [12, 1.00]
+              - [13, 1.00]
+              - [14, 1.00]
+              - [16, 0.40]
+              - [17, 0.40]
+              - [18, 0.10]
+              - [19, 0.10]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.002
+        - name: shoulder_upper
+          enable: true
+          inject_scale: 0.30
+          mlp_scale: 0.50
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 8
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [upper, 1.00]
+              - [skin, 0.35]
+              - [cloth, 0.35]
+            joint_id_weights:
+              - [13, 1.00]
+              - [14, 1.00]
+              - [16, 1.00]
+              - [17, 1.00]
+              - [18, 0.45]
+              - [19, 0.45]
+              - [12, 0.25]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.002
+        - name: upper_torso
+          enable: true
+          inject_scale: 0.28
+          mlp_scale: 0.46
+          gate_to_region: true
+          use_canonical_xyz: true
+          use_view_dir: false
+          use_radius: true
+          xyz_multires: 8
+          radius_multires: 4
+          region:
+            enable: true
+            semantic_name_weights:
+              - [upper, 1.00]
+              - [cloth, 0.70]
+              - [skin, 0.30]
+            joint_id_weights:
+              - [0, 0.35]
+              - [3, 0.55]
+              - [6, 0.75]
+              - [9, 1.00]
+              - [12, 1.00]
+              - [13, 0.60]
+              - [14, 0.60]
+            combine_mode: max
+            fallback_to_full: true
+            fallback_to_global: true
+            min_gate_mean: 0.003
+    detail_residual:
+      high_frequency:
+        scale: 0.40
+        face_branch:
+          scale: 0.08
+
+opt:
+  iterations: 4200
+  clarity_debug_enable: true
+  clarity_debug_interval: 100
+
+save_iterations: [1800, 3000, 4200]
+test_interval: 300

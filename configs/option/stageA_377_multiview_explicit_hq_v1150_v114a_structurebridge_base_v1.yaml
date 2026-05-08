@@ -1,0 +1,23 @@
+# @package _global_
+
+# v1150: structure-side follow-up on top of v114a.
+# Keep the repaired explicit-binding deformation fixed, and only test whether
+# a zero-init structure-to-texture bridge can let the shared HF carrier read
+# the continuous binding statistics that v114a already recovers.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - texture.detail_high_freq_structure_
+
+opt:
+  iterations: 3600
+
+  clarity_debug_enable: true
+  clarity_debug_interval: 100
+
+save_iterations: [1200, 2400, 3600]
+test_interval: 300

@@ -1,0 +1,45 @@
+# @package _global_
+
+# v165: root-cause sampler probe after v164b.
+#
+# Keep the v164b model/loss recipe, but replace camera-frame random sampling
+# with frame-balanced + camera-quality weighted sampling. This tests whether
+# multiview sample dilution and poor-camera overexposure are the main clarity
+# bottlenecks before introducing slower K-view gradient accumulation.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+opt:
+  iterations: 6000
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_camera_min_prob: 0.025
+  train_sample_camera_max_prob: 0.100
+  train_sample_log_interval: 500
+  train_sample_camera_weights:
+    "1": 1.52
+    "2": 0.54
+    "3": 0.90
+    "4": 0.60
+    "5": 1.44
+    "6": 1.09
+    "7": 1.21
+    "8": 1.24
+    "9": 1.32
+    "10": 1.41
+    "11": 0.80
+    "12": 0.89
+    "13": 1.05
+    "14": 1.19
+    "15": 0.82
+    "16": 0.87
+    "17": 0.77
+    "18": 0.68
+    "19": 0.95
+    "20": 0.74
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000, 5000, 6000]
+save_iterations: [1000, 2000, 3000, 4000, 5000, 6000]
+checkpoint_iterations: [1000, 2000, 3000, 4000, 5000, 6000]

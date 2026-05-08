@@ -1,0 +1,221 @@
+# @package _global_
+
+# v156a: resume from v155b and stop changing the forward-trunk geometry path.
+# This probe only attacks the remaining sharpness gap:
+# 1. activate owner-head boundary output + boundary takeover
+# 2. raise hf / face-branch output authority
+# 3. strengthen owner-aware edge / patch / boundary supervision
+# 4. weaken tiny cleanup so the run does not blur recovered support again
+#
+# 3k probe expectations:
+# - boundary_takeover should rise above 0.08 by 1k and above 0.18 by 2k
+# - hf_scale should no longer behave like a near-zero residual branch
+# - face_raw / face should leave the ~0 regime seen in v155b
+# - ClarityOwnerBoost edge / boundary scales should exceed 1.15 once takeover stabilizes
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_refresh_require_boundary_tag: false
+    binding_risk_gate_require_boundary_tag: false
+  deformer:
+    non_rigid:
+      delay: 800
+    rigid:
+      forward_trunk_blend_alpha: [0.94, 800, 1.00]
+      forward_trunk_anchor_alpha_scale: 1.0
+      forward_trunk_support_alpha_scale: 1.0
+      forward_trunk_layer_alpha_scale: [0.18, 600, 0.30, 1400, 0.45, 2400, 0.55]
+      forward_trunk_xbar_alpha_scale: [0.90, 800, 1.00]
+      forward_trunk_layer_logit_scale: 0.65
+      forward_trunk_layer_delta_logit_max: 0.45
+      forward_trunk_layer_min_prob: 0.08
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                enable: true
+                strength: [0.22, 120, 0.50, 600, 0.78, 1400, 0.94, 2200, 1.00]
+                support_offset: 0.24
+                support_gain: 8.0
+                support_power: 1.25
+                region_strength:
+                  face: 1.00
+                  shoulder_upper: 0.98
+                  upper_torso: 0.88
+                legacy_decay:
+                  enable: true
+                  power: 1.15
+                  min_scale: 0.18
+                  apply_to_coarse: true
+                  apply_to_hf: true
+              boundary:
+                enable: true
+                scale: [0.18, 150, 0.42, 800, 0.72, 1600, 0.96, 2600, 1.00]
+                gate_gain: 1.20
+                gate_bias: -0.04
+                min_gate: 0.05
+                use_local_color_input: true
+                use_local_color_output: false
+                use_local_geometry_raw: true
+                use_support_feature: true
+                use_region_gate_feature: true
+                use_boundary_feature: true
+                focus_threshold: 0.12
+                focus_power: 1.35
+                focus_min: 0.0
+                focus_max: 1.0
+                focus_use_region_gate: true
+                focus_use_support: true
+                focus_support_detach: true
+                init_from_local_color: true
+                init_scale: 0.22
+                takeover:
+                  enable: true
+                  scale: [0.12, 150, 0.35, 800, 0.62, 1600, 0.85, 2400, 0.95]
+                  max: 0.90
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.045
+      high_frequency:
+        enable: true
+        tiny_repair_scale: 0.020
+        scale: 0.048
+        gate_bias: -0.04
+        min_gate: 0.02
+        face_branch:
+          enable: true
+          tiny_repair_scale: 0.010
+          scale: 0.18
+          gate_bias: -0.10
+          min_gate: 0.05
+
+opt:
+  iterations: 3000
+
+  grad_clip: 0.035
+
+  position_lr_init: 0.000010
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0015
+  scaling_lr: 0.00018
+  rotation_lr: 0.00004
+
+  rigid_lr: 0.00007
+  non_rigid_lr: 0.00045
+  texture_lr: 0.00036
+  tex_latent_lr: 0.00016
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 80
+  owner_local_detail_boost_takeover_floor: 0.24
+  owner_local_detail_boost_takeover_gain: 1.28
+  owner_local_detail_boost_takeover_power: 1.36
+  owner_local_detail_boost_min_signal: 0.05
+  owner_local_detail_boost_detail_max_extra: [0.35, 200, 0.80, 900, 1.20, 1800, 1.50, 2600, 1.70]
+  owner_local_detail_boost_luma_max_extra: [0.50, 200, 1.10, 900, 1.65, 1800, 2.05, 2600, 2.25]
+  owner_local_detail_boost_patch_max_extra: [0.35, 200, 0.90, 900, 1.30, 1800, 1.60, 2600, 1.80]
+  owner_local_detail_boost_edge_max_extra: [0.20, 200, 0.55, 900, 0.95, 1800, 1.20, 2600, 1.35]
+  owner_local_detail_boost_boundary_max_extra: [0.18, 200, 0.48, 900, 0.82, 1800, 1.05, 2600, 1.20]
+  owner_local_detail_boost_face_strength: 1.00
+  owner_local_detail_boost_shoulder_strength: 1.00
+  owner_local_detail_boost_upper_torso_strength: 0.92
+  owner_local_detail_boost_upper_torso_core_strength: 1.00
+  owner_local_detail_boost_face_edge_strength: 1.00
+  owner_local_detail_boost_shoulder_edge_strength: 1.10
+  owner_local_detail_boost_shoulder_boundary_strength: 1.10
+  owner_local_detail_boost_upper_torso_boundary_strength: 1.00
+
+  lambda_edge_face: 0.036
+  lambda_detail_face_luma_dog: 0.068
+  lambda_perceptual_face_patch: 0.044
+  lambda_edge_shoulder_arm: 0.060
+  lambda_detail_shoulder_arm_luma_dog: 0.048
+  lambda_perceptual_shoulder_arm_patch: 0.016
+  lambda_detail_upper_torso_luma_dog: 0.028
+  lambda_perceptual_upper_torso_patch: 0.013
+  lambda_mask_shoulder_arm_boundary_hard: 0.018
+  lambda_mask_upper_torso_boundary_hard: 0.015
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.05
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_update_interval: 60
+  boundary_tag_update_until_iter: 2200
+  boundary_tag_threshold: 0.42
+  boundary_tag_min_ratio: 0.03
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.12
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.08
+  boundary_image_error_score_prior_floor: 0.12
+
+  boundary_signed_mixed_loss_scale: 0.06
+  boundary_signed_shrink_loss_scale: 1.15
+  boundary_signed_grow_loss_scale: 0.35
+  boundary_signed_share_gain: 1.00
+  boundary_signed_share_power: 1.10
+  boundary_signed_shrink_share_gain: 1.10
+  boundary_signed_shrink_share_power: 1.20
+
+  boundary_aware_opacity_scale: 0.10
+  boundary_aware_scaling_scale: 0.030
+  boundary_aware_boundary_opacity_residual_scale: 0.28
+  boundary_aware_boundary_scaling_residual_scale: 0.20
+
+  boundary_opacity_residual_lr: 0.00009
+  boundary_scaling_residual_lr: 0.00003
+  lambda_boundary_opacity_residual_reg: 0.0005
+  lambda_boundary_scaling_residual_reg: 0.0001
+  lambda_boundary_opacity_residual_smooth: 0.0008
+  lambda_boundary_scaling_residual_smooth: 0.0005
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0014
+  lambda_binding_forward_trunk_support_reg: 0.0015
+  lambda_binding_forward_trunk_layer_reg: 0.0025
+  lambda_binding_forward_trunk_xbar_reg: 0.0010
+  lambda_binding_layer_balance: 0.045
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [3000]
+checkpoint_iterations: [3000]

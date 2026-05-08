@@ -1,0 +1,148 @@
+# @package _global_
+
+# v173a: texture-only owner/boundary residual amplitude from v170e best.
+#
+# v172a showed that enabling layer-sharpen alone is numerically safe, but v172b
+# showed that training boundary opacity/scaling residuals together with layer
+# sharpen damages validation quality and can introduce head/background leakage.
+# This run returns to the v170e anchor, freezes geometry/opacity/scaling and the
+# boundary residual tensors, and trains only the owner/boundary texture heads.
+# The purpose is to test whether boundary/head residuals can gain visible
+# amplitude without creating new silhouette artifacts.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              # Keep the broad owner path close to v170e/v171a; v172b's owner
+              # cap lowered owner_takeover too much and hurt LPIPS.
+              scale: 0.84
+              local_color_output_scale: 0.22
+              gate_gain: 1.06
+              gate_bias: -0.03
+              min_gate: 0.05
+              max_gate: 0.76
+              takeover:
+                enable: true
+                scale: 1.0
+                strength: 0.92
+                max: 0.92
+                use_support: true
+              boundary:
+                focus_source: boundary_tag
+                focus_use_region_gate: false
+                focus_use_support: false
+                focus_threshold: 0.0
+                focus_power: 1.0
+                focus_min: 0.0
+                focus_max: 1.0
+                scale: [0.92, 1, 1.18, 500, 1.36, 1200, 1.46]
+                gate_gain: 1.16
+                gate_bias: 0.06
+                min_gate: 0.10
+                max_gate: 0.72
+                use_local_color_input: true
+                use_local_color_output: true
+                local_color_output_scale: 0.36
+                use_local_geometry_raw: true
+                use_support_feature: true
+                use_region_gate_feature: true
+                use_boundary_feature: true
+                init_scale: 0.58
+                takeover:
+                  enable: true
+                  scale: [0.66, 1, 0.82, 500, 0.96, 1200, 1.02]
+                  max: 1.0
+                  use_region_gate: false
+
+opt:
+  iterations: 2000
+  grad_clip: 0.018
+
+  # Geometry and opacity are locked. This preserves v170e's shape anchor and is
+  # the explicit guard against the v172b head-top/background leakage.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+
+  texture_lr: 0.00010
+  texture_trainable_name_patterns:
+    - structured_trunk_output_head_local_color_owner_head_mlps.*
+    - structured_trunk_output_head_local_color_owner_head_gate_mlps.*
+    - structured_trunk_output_head_local_color_owner_head_boundary_mlps.*
+    - structured_trunk_output_head_local_color_owner_head_boundary_gate_mlps.*
+  texture_frozen_name_patterns: null
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.08
+  boundary_tag_min_ratio: 0.05
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1200
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_union_with_existing: false
+
+  # Keep v170e's photometric/uncertainty correction, but make it slightly less
+  # aggressive so texture heads do not learn camera-specific overcorrections.
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.34
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.84
+  photometric_correction_max_scale: 1.18
+  photometric_correction_max_shift: 0.070
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.56
+
+  # Preserve existing v170e residual effect, but do not continue training it.
+  boundary_aware_boundary_opacity_residual_scale: 0.65
+  boundary_aware_boundary_scaling_residual_scale: 0.40
+  lambda_boundary_opacity_residual_reg: 0.0
+  lambda_boundary_scaling_residual_reg: 0.0
+  lambda_boundary_opacity_residual_smooth: 0.0
+  lambda_boundary_scaling_residual_smooth: 0.0
+
+  # Keep the mask/silhouette penalties active as diagnostics and as a safety
+  # guard if any checkpoint-loaded residual remains visible.
+  lambda_silhouette_outer: [0.006, 1, 0.009, 900, 0.010]
+  lambda_silhouette_outer_shell: [0.020, 1, 0.038, 900, 0.042]
+  lambda_silhouette_upper_torso_outer_shell: [0.018, 1, 0.040, 900, 0.044]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.014, 1, 0.034, 900, 0.038]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [500, 1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

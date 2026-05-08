@@ -1,0 +1,54 @@
+# @package _global_
+
+# v154b: resume from v153a and push the sharpness handoff harder without any
+# regrow. This isolates whether the remaining blur is still mostly a texture /
+# owner / hf bottleneck after v153a.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+
+model:
+  deformer:
+    non_rigid:
+      delay: 2600
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [1.00, 3000, 1.00]
+    detail_residual:
+      tiny_repair_scale: 0.075
+      high_frequency:
+        tiny_repair_scale: 0.040
+        scale: 0.045
+        face_branch:
+          tiny_repair_scale: 0.020
+          scale: 0.16
+
+opt:
+  iterations: 3000
+
+  grad_clip: 0.035
+  rigid_lr: 0.00006
+  non_rigid_lr: 0.00018
+  texture_lr: 0.00036
+  tex_latent_lr: 0.00016
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 60
+  owner_local_detail_boost_takeover_floor: 0.40
+  owner_local_detail_boost_takeover_gain: 1.38
+  owner_local_detail_boost_takeover_power: 1.48
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [3000]
+checkpoint_iterations: [3000]

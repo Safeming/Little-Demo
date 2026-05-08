@@ -1,0 +1,125 @@
+# @package _global_
+
+# v157a: fresh geometry/support stage.
+# Keep the v152a fresh geometry regime, but add only the minimum forward-trunk
+# staging needed to stop learned routing from collapsing into soft-path too
+# early. This stage should recover contour support; it is not allowed to chase
+# sharpness yet.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+model:
+  deformer:
+    non_rigid:
+      delay: 5000
+    rigid:
+      forward_trunk_enable: true
+      forward_trunk_anchor_enable: true
+      forward_trunk_support_enable: true
+      forward_trunk_layer_enable: true
+      forward_trunk_xbar_enable: true
+      forward_trunk_update_dominant_joint: true
+      forward_trunk_feature_detach: false
+      forward_trunk_blend_alpha: [0.18, 200, 0.35, 700, 0.58, 1400, 0.78, 2400, 0.92, 3200, 1.00]
+      forward_trunk_confidence_suppress: 0.0
+      forward_trunk_output_clamp: 4.0
+      forward_trunk_anchor_alpha_scale: [0.78, 300, 1.00]
+      forward_trunk_support_alpha_scale: [0.82, 300, 1.00]
+      forward_trunk_layer_alpha_scale: [0.0, 1800, 0.0, 2400, 0.06, 3000, 0.14, 3600, 0.24]
+      forward_trunk_xbar_alpha_scale: [0.35, 800, 0.62, 1600, 0.88, 2600, 1.00]
+      forward_trunk_anchor_logit_scale: 1.20
+      forward_trunk_layer_logit_scale: 0.58
+      forward_trunk_anchor_residual: true
+      forward_trunk_layer_residual: true
+      forward_trunk_anchor_delta_logit_max: 3.0
+      forward_trunk_layer_delta_logit_max: 0.28
+      forward_trunk_layer_min_prob: 0.08
+      forward_trunk_support_scale: 0.0065
+      forward_trunk_support_max: 0.0130
+      forward_trunk_support_tangent_scale: 1.0
+      forward_trunk_support_normal_scale: 0.65
+      forward_trunk_xbar_scale: 0.0042
+      forward_trunk_xbar_max: 0.0085
+      forward_trunk_xbar_tangent_scale: 1.0
+      forward_trunk_xbar_normal_scale: 0.70
+
+      hybrid_field_enable: false
+      hybrid_field_anchor_enable: false
+      hybrid_field_support_enable: false
+      hybrid_field_layer_enable: false
+
+      residual_field_enable: false
+      residual_field_anchor_enable: false
+      residual_field_xbar_enable: false
+
+      forward_trunk_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.0, 4000, 0.0]
+              boundary:
+                enable: false
+    detail_residual:
+      tiny_repair_scale: 0.04
+      high_frequency:
+        tiny_repair_scale: 0.015
+        scale: 0.015
+        face_branch:
+          tiny_repair_scale: 0.0
+          scale: 0.0
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.045
+
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.001
+  opacity_lr: 0.05
+  scaling_lr: 0.005
+  rotation_lr: 0.001
+
+  rigid_lr: 0.00010
+  non_rigid_lr: 0.00070
+
+  lambda_mask: 0.1
+  lambda_skinning: [10, 1000, 0.1]
+  lambda_aiap_xyz: 1.0
+  lambda_aiap_cov: 100.0
+  aiap_interval: 10
+  aiap_max_points: 20000
+
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 3000
+  densify_from_iter: 500
+  densify_until_iter: 3600
+  densify_grad_threshold: 0.00018
+
+  owner_local_detail_boost_enable: false
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0012
+  lambda_binding_forward_trunk_support_reg: 0.0014
+  lambda_binding_forward_trunk_layer_reg: 0.0026
+  lambda_binding_forward_trunk_xbar_reg: 0.0008
+  lambda_binding_layer_balance: 0.050
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

@@ -1,0 +1,167 @@
+# @package _global_
+
+# v164b: texture/HF restore after v164a contour repair.
+#
+# Reopen the appearance path after the contour alpha stage, but keep direct
+# silhouette pressure on so the repaired side contour does not inflate again.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            takeover:
+              strength: [0.48, 1, 0.56, 700, 0.62, 1600, 0.66]
+              max: 0.62
+            head:
+              boundary:
+                enable: true
+                scale: [0.42, 1, 0.58, 600, 0.70, 1400, 0.78, 2000, 0.82]
+                gate_gain: 1.10
+                gate_bias: -0.02
+                min_gate: 0.04
+                focus_threshold: 0.035
+                focus_power: 1.00
+                focus_min: 0.0
+                focus_max: 1.0
+                takeover:
+                  enable: true
+                  scale: [0.40, 1, 0.54, 600, 0.66, 1400, 0.74, 2000, 0.78]
+                  max: 0.78
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.040
+      high_frequency:
+        tiny_repair_scale: 0.016
+        scale: 0.042
+        gate_bias: -0.035
+        face_branch:
+          gate_bias: -0.065
+
+opt:
+  iterations: 2000
+
+  grad_clip: 0.030
+
+  position_lr_init: 0.000003
+  position_lr_final: 0.0000005
+  opacity_lr: 0.00045
+  scaling_lr: 0.000055
+  rotation_lr: 0.000016
+
+  rigid_lr: 0.000020
+  non_rigid_lr: 0.000120
+  texture_lr: 0.000220
+  tex_latent_lr: 0.000080
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 120
+  owner_local_detail_boost_takeover_floor: 0.28
+  owner_local_detail_boost_takeover_gain: 0.95
+  owner_local_detail_boost_takeover_power: 1.18
+  owner_local_detail_boost_detail_max_extra: [0.10, 600, 0.32, 1400, 0.50, 2000, 0.58]
+  owner_local_detail_boost_luma_max_extra: [0.16, 600, 0.52, 1400, 0.82, 2000, 0.96]
+  owner_local_detail_boost_patch_max_extra: [0.10, 600, 0.36, 1400, 0.58, 2000, 0.66]
+  owner_local_detail_boost_edge_max_extra: [0.08, 400, 0.26, 1200, 0.46, 2000, 0.56]
+  owner_local_detail_boost_boundary_max_extra: [0.08, 400, 0.28, 1200, 0.48, 2000, 0.58]
+
+  boundary_live_score_cache_enable: true
+  boundary_live_score_cache_require_texture_boundary_head: true
+  boundary_live_score_cache_key: camera
+  boundary_live_score_cache_max_entries: 32
+  boundary_live_score_cache_ema: 0.68
+  boundary_live_score_cache_clear_missing: true
+  boundary_live_score_cache_clear_before_eval: true
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.035
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.09
+  boundary_tag_min_ratio: 0.07
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1600
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.14
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 5
+  boundary_image_error_score_band_width: 5
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.10
+  boundary_image_error_score_prior_floor: 0.10
+
+  boundary_signed_mixed_loss_scale: 0.08
+  boundary_signed_shrink_loss_scale: 0.95
+  boundary_signed_grow_loss_scale: 0.28
+  boundary_signed_share_gain: 1.02
+  boundary_signed_share_power: 1.12
+  boundary_signed_shrink_share_gain: 1.10
+  boundary_signed_shrink_share_power: 1.24
+
+  boundary_aware_opacity_scale: 0.10
+  boundary_aware_scaling_scale: 0.032
+  boundary_aware_boundary_opacity_residual_scale: 0.45
+  boundary_aware_boundary_scaling_residual_scale: 0.28
+  boundary_opacity_residual_lr: 0.000090
+  boundary_scaling_residual_lr: 0.000030
+  lambda_boundary_opacity_residual_reg: 0.00075
+  lambda_boundary_scaling_residual_reg: 0.00018
+  lambda_boundary_opacity_residual_smooth: 0.0010
+  lambda_boundary_scaling_residual_smooth: 0.00070
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  silhouette_outer_ring_width: 4
+  silhouette_outer_shell_start_width: 1
+  silhouette_outer_shell_end_width: 10
+  silhouette_outer_shell_soft_weights: true
+  silhouette_outer_shell_weight_min: 0.22
+  lambda_silhouette_outer: [0.002, 1, 0.004, 800, 0.005]
+  lambda_silhouette_outer_shell: [0.008, 1, 0.014, 800, 0.018, 1600, 0.020]
+  lambda_silhouette_upper_torso_outer_shell: [0.008, 1, 0.018, 800, 0.022, 1600, 0.024]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.006, 1, 0.014, 800, 0.018, 1600, 0.020]
+  lambda_silhouette_outer_spike: [0.004, 1, 0.010, 1000, 0.014]
+  silhouette_outer_spike_opacity_threshold: 0.055
+  silhouette_outer_spike_support_threshold: 0.30
+  silhouette_outer_spike_power: 1.08
+  silhouette_inner_ring_width: 4
+  lambda_silhouette_inner: [0.004, 1, 0.008, 800, 0.010, 1600, 0.012]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

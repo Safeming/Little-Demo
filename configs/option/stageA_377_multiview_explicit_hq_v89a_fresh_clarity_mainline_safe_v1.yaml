@@ -1,0 +1,68 @@
+# @package _global_
+
+# Fresh mainline clarity recipe.
+# Keep the proven fresh structural path unchanged, but move the useful
+# appearance-side factors from the later resume probes earlier into training:
+# parser-backed ROI, stronger whole-foreground perceptual, and a gentler
+# low-noise carrier schedule.
+
+dataset:
+  parsing_prior:
+    roi_enable: true
+    parser_root: /remote-home/ming/3dgs-avatar-release-main/data/parsers_from_hulk_multiview
+    parser_layout: cihp_subject
+    use_direct_parser_labels: true
+    compact_mapping_file: ""
+    skip_empty_samples: false
+
+model:
+  texture:
+    view_noise: [18, 2500, 10, 5000, 6]
+
+opt:
+  lambda_binding_parsing: 0.0
+  latent_weight_decay: 0.01
+
+  foreground_mask_source: hard
+  global_mask_source: hard
+
+  lambda_l1_fg: [0.20, 1200, 0.24]
+  lambda_l1_face: [0.18, 1200, 0.22]
+  lambda_edge_face: [0.0, 1200, 0.020]
+  lambda_perceptual_face: [0.015, 1200, 0.030]
+  lambda_l1_shoulder_arm: [0.14, 1200, 0.15]
+  lambda_edge_shoulder_arm: 0.065
+  lambda_perceptual_shoulder_arm: [0.0, 1200, 0.018]
+
+  boundary_band_width: 5
+  face_region_min_pixels: 48
+  face_perceptual_crop_pad: 12
+
+  shoulder_arm_region_source: parser_prefer
+  shoulder_arm_region_parser_dilate: 5
+  shoulder_arm_region_min_pixels: 96
+  shoulder_arm_region_source_aware_validity_enable: true
+  shoulder_arm_region_min_pixels_parser: 40
+  shoulder_arm_region_min_pixels_joint: 96
+  shoulder_arm_region_min_pixels_heuristic: 96
+  shoulder_arm_perceptual_masked: true
+  shoulder_arm_image_region_mode: focus_union_collar
+  shoulder_arm_image_region_pattern: raw
+  shoulder_arm_image_region_min_pixels: 24
+  shoulder_arm_perceptual_region_mode: focus_union_collar
+  shoulder_arm_perceptual_region_pattern: raw
+  shoulder_arm_perceptual_region_min_pixels: 18
+  shoulder_arm_perceptual_crop_pad: 6
+  shoulder_arm_perceptual_mask_dilate: 1
+
+  lambda_dssim: [0.0, 1200, 0.010, 3000, 0.016]
+  lambda_perceptual: [0.010, 1200, 0.016, 3000, 0.020]
+  perceptual_crop_pad: 20
+  perceptual_masked: false
+  perceptual_mask_dilate: 0
+
+  lpips_min_size: 32
+  perceptual_min_size: 32
+  face_perceptual_min_size: 32
+  shoulder_arm_perceptual_min_size: 32
+  waist_perceptual_min_size: 32

@@ -1,0 +1,19 @@
+# @package _global_
+
+# v135a: cut the owner head's runtime dependence on the old local_color seed
+# while keeping checkpoint compatibility. The owner branch keeps the same input
+# shape for resume, but the old local_color output is zeroed at runtime and the
+# region support stops using local_color as evidence.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        dual_head:
+          region_support:
+            source: gated_feature+raw_feature+geometry+gate_feature
+        local_color:
+          owner:
+            head:
+              local_color_output_scale: 0.0
+              init_from_local_color: false

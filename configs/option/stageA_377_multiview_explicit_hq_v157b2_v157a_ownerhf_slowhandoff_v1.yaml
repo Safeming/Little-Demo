@@ -1,0 +1,145 @@
+# @package _global_
+
+# v157b2: stage2 retry from v157a.
+# Goal: preserve the support/geometry recovered in v157a, then let sharp-output
+# authority rise more slowly so stage2 does not immediately blur the recovered
+# contour before face/HF branches have real signal.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_refresh_require_boundary_tag: false
+    binding_risk_gate_require_boundary_tag: false
+  deformer:
+    non_rigid:
+      delay: 5000
+    rigid:
+      forward_trunk_blend_alpha: [1.00]
+      forward_trunk_anchor_alpha_scale: 1.0
+      forward_trunk_support_alpha_scale: 1.0
+      forward_trunk_layer_alpha_scale: [0.24]
+      forward_trunk_xbar_alpha_scale: [1.00]
+      forward_trunk_layer_logit_scale: 0.58
+      forward_trunk_layer_delta_logit_max: 0.28
+      forward_trunk_layer_min_prob: 0.08
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.04, 300, 0.24, 1000, 0.40, 1800, 0.58, 2400, 0.74, 3000, 0.88]
+              boundary:
+                enable: false
+    detail_residual:
+      tiny_repair_scale: 0.050
+      high_frequency:
+        tiny_repair_scale: 0.022
+        scale: 0.044
+        gate_bias: -0.02
+        min_gate: 0.02
+        face_branch:
+          enable: true
+          tiny_repair_scale: 0.010
+          scale: 0.18
+          gate_bias: -0.08
+          min_gate: 0.05
+
+opt:
+  iterations: 3000
+
+  grad_clip: 0.038
+
+  position_lr_init: 0.000010
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0015
+  scaling_lr: 0.00018
+  rotation_lr: 0.00004
+
+  rigid_lr: 0.00004
+  non_rigid_lr: 0.00020
+  texture_lr: 0.00028
+  tex_latent_lr: 0.00012
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: false
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.05
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_update_interval: 60
+  boundary_tag_update_until_iter: 1400
+  boundary_tag_threshold: 0.45
+  boundary_tag_min_ratio: 0.03
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.12
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.08
+  boundary_image_error_score_prior_floor: 0.12
+
+  boundary_signed_mixed_loss_scale: 0.05
+  boundary_signed_shrink_loss_scale: 0.90
+  boundary_signed_grow_loss_scale: 0.28
+  boundary_signed_share_gain: 1.00
+  boundary_signed_share_power: 1.08
+  boundary_signed_shrink_share_gain: 1.05
+  boundary_signed_shrink_share_power: 1.15
+
+  boundary_aware_opacity_scale: 0.08
+  boundary_aware_scaling_scale: 0.024
+  boundary_aware_boundary_opacity_residual_scale: 0.20
+  boundary_aware_boundary_scaling_residual_scale: 0.12
+
+  boundary_opacity_residual_lr: 0.00007
+  boundary_scaling_residual_lr: 0.00002
+  lambda_boundary_opacity_residual_reg: 0.0005
+  lambda_boundary_scaling_residual_reg: 0.0001
+  lambda_boundary_opacity_residual_smooth: 0.0008
+  lambda_boundary_scaling_residual_smooth: 0.0005
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0014
+  lambda_binding_forward_trunk_support_reg: 0.0015
+  lambda_binding_forward_trunk_layer_reg: 0.0025
+  lambda_binding_forward_trunk_xbar_reg: 0.0010
+  lambda_binding_layer_balance: 0.045
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000]
+save_iterations: [1000, 2000, 3000]
+checkpoint_iterations: [1000, 2000, 3000]

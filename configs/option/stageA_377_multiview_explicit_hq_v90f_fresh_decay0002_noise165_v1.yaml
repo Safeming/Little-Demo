@@ -1,0 +1,10 @@
+# @package _global_
+
+# Same noise relaxation as v90e, but with a looser carrier regularizer.
+
+model:
+  texture:
+    view_noise: [16, 2500, 9, 5000, 5]
+
+opt:
+  latent_weight_decay: 0.002

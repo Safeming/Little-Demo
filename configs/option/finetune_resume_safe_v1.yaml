@@ -1,0 +1,13 @@
+# @package _global_
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 6000
+  densify_until_iter: 0
+
+test_interval: 500
+save_iterations: [6000]

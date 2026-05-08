@@ -1,0 +1,90 @@
+# @package _global_
+
+# v149a: explicit-prior-guided learned forward trunk.
+# This is the first probe that upgrades the learned rigid-side trunk from a
+# residual repair branch into the true forward generator:
+# 1. explicit binding still provides anchor/layer/support priors
+# 2. a learned forward trunk predicts anchor logits, layer logits and support
+# 3. the final forward path is a scheduled blend from prior -> learned logits
+# 4. texture owner/hf takeover is delayed so rigid geometry must carry more of
+#    the early contour/support burden
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.05
+  rigid_lr: 0.00012
+  non_rigid_lr: 0.00070
+
+  percent_dense: 0.008
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 400
+  densify_until_iter: 3000
+  densify_grad_threshold: 0.0002
+
+  owner_local_detail_boost_enable: false
+
+  lambda_binding_forward_trunk_anchor_reg: 0.0012
+  lambda_binding_forward_trunk_layer_reg: 0.0008
+  lambda_binding_forward_trunk_support_reg: 0.0018
+
+model:
+  deformer:
+    rigid:
+      forward_trunk_enable: true
+      forward_trunk_anchor_enable: true
+      forward_trunk_support_enable: true
+      forward_trunk_layer_enable: true
+      forward_trunk_update_dominant_joint: true
+      forward_trunk_feature_detach: false
+      forward_trunk_blend_alpha: [0.08, 400, 0.18, 1000, 0.35, 1800, 0.60, 2600, 0.85, 3400, 1.00]
+      forward_trunk_confidence_suppress: 0.0
+      forward_trunk_anchor_logit_scale: 1.40
+      forward_trunk_layer_logit_scale: 1.20
+      forward_trunk_support_scale: 0.0045
+      forward_trunk_support_max: 0.0100
+      forward_trunk_support_tangent_scale: 1.0
+      forward_trunk_support_normal_scale: 0.60
+
+      hybrid_field_enable: false
+      hybrid_field_anchor_enable: false
+      hybrid_field_support_enable: false
+      hybrid_field_layer_enable: false
+
+      residual_field_enable: false
+      residual_field_anchor_enable: false
+      residual_field_xbar_enable: false
+
+      forward_trunk_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: [0.0, 2200, 0.04, 3000, 0.10, 3600, 0.18]
+    detail_residual:
+      tiny_repair_scale: 0.05
+      high_frequency:
+        tiny_repair_scale: 0.02
+        scale: 0.02
+        face_branch:
+          tiny_repair_scale: 0.0
+          scale: 0.0
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

@@ -1,0 +1,55 @@
+# @package _global_
+
+# v144a: leave the frozen-point late-stage regime. Keep the signed boundary
+# routing from v142e, but reopen Gaussian geometry/scaling/opacity updates and a
+# short boundary-focused densify/regrow window. This isolates whether the main
+# blocker is contour support starvation rather than another routing weight.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_densify_boundary_only: true
+    binding_densify_arm_only: false
+    binding_densify_clone_candidate_seed_boundary_only: true
+    binding_densify_clone_candidate_seed_arm_only: false
+    binding_densify_child_immediate_refresh_boundary_only: true
+    binding_densify_child_immediate_refresh_arm_only: false
+
+opt:
+  iterations: 4000
+
+  position_lr_init: 0.000018
+  position_lr_final: 0.0000010
+  opacity_lr: 0.00058
+  scaling_lr: 0.00032
+  rotation_lr: 0.00006
+
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  texture_lr: 0.00040
+  tex_latent_lr: 0.00018
+
+  densify_from_iter: 200
+  densify_until_iter: 2200
+  densification_interval: 200
+  densify_grad_threshold: 0.00035
+  percent_dense: 0.0018
+  opacity_reset_interval: 1000000
+
+  boundary_aware_freeze_converter_for_boundary_loss: false
+  boundary_tag_schedule_use_local_iteration: true
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 2200
+
+test_interval: 500
+test_iterations: [2000, 4000]
+save_iterations: [4000]

@@ -1,0 +1,72 @@
+# @package _global_
+
+# v103b keeps the GT-weighted luma DoG supervision from v103a and adds
+# hard-example local LPIPS patches, so the highest-frequency misses inside
+# face / shoulder / waist regions receive direct perceptual refinement.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 1800
+  latent_weight_decay: [0.0012, 700, 0.0006, 1400, 0.0003]
+
+  lambda_detail_face_luma_dog: 0.046
+  lambda_detail_shoulder_arm_luma_dog: 0.032
+  lambda_detail_waist_luma_dog: 0.010
+
+  detail_luma_dog_scales: [1, 2, 4]
+  detail_luma_dog_scale_decay: 0.62
+  detail_luma_dog_small_kernel: 3
+  detail_luma_dog_large_kernel: 9
+  detail_luma_dog_base_weight: 0.18
+  detail_luma_dog_focus_scale: 2.2
+  detail_luma_dog_focus_power: 1.45
+  detail_luma_dog_error_mix: 0.16
+
+  face_detail_luma_dog_focus_scale: 2.8
+  face_detail_luma_dog_focus_power: 1.55
+  face_detail_luma_dog_error_mix: 0.12
+
+  shoulder_arm_detail_luma_dog_focus_scale: 2.2
+  shoulder_arm_detail_luma_dog_focus_power: 1.45
+  shoulder_arm_detail_luma_dog_error_mix: 0.20
+
+  waist_detail_luma_dog_focus_scale: 1.9
+  waist_detail_luma_dog_focus_power: 1.30
+  waist_detail_luma_dog_error_mix: 0.20
+
+  lambda_perceptual_face_patch: 0.026
+  lambda_perceptual_shoulder_arm_patch: 0.012
+  lambda_perceptual_waist_patch: 0.005
+
+  face_patch_perceptual_topk: 2
+  face_patch_perceptual_size: 56
+  face_patch_perceptual_suppress_radius: 18
+  face_patch_perceptual_masked: true
+  face_patch_perceptual_focus_power: 1.45
+  face_patch_perceptual_error_mix: 0.68
+  face_patch_perceptual_large_kernel: 11
+
+  shoulder_arm_patch_perceptual_topk: 1
+  shoulder_arm_patch_perceptual_size: 64
+  shoulder_arm_patch_perceptual_suppress_radius: 24
+  shoulder_arm_patch_perceptual_masked: true
+  shoulder_arm_patch_perceptual_focus_power: 1.35
+  shoulder_arm_patch_perceptual_error_mix: 0.70
+  shoulder_arm_patch_perceptual_large_kernel: 11
+
+  waist_patch_perceptual_topk: 1
+  waist_patch_perceptual_size: 56
+  waist_patch_perceptual_suppress_radius: 20
+  waist_patch_perceptual_masked: true
+  waist_patch_perceptual_focus_power: 1.30
+  waist_patch_perceptual_error_mix: 0.58
+  waist_patch_perceptual_large_kernel: 11
+
+save_iterations: [900, 1500, 1800]

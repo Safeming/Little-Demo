@@ -1,0 +1,40 @@
+# @package _global_
+
+# v176a: same-frame K=2 multi-view gradient accumulation from v175a best.
+#
+# v175a repaired the high-frequency source and became the first clear metric
+# breakthrough after v142e/v170e. This run keeps the v175a HF/luma/detail setup
+# unchanged and isolates the next question: once HF output has amplitude, does
+# denser same-frame multi-view supervision further improve clarity, or do
+# multi-view alignment/color inconsistencies start averaging the contour again?
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+opt:
+  # 3000 micro-views with K=2 equals 1500 optimizer updates. This is a short
+  # validation run, not the long K=4/K=8 production pass.
+  iterations: 3000
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_accumulation_steps: 2
+  train_sample_accumulation_without_replacement: true
+  train_sample_log_interval: 500
+
+  # Keep v175a learning/loss/HF setup unchanged. Only the supervision packing
+  # changes, so the result can falsify or support the sampling hypothesis.
+  grad_clip: 0.022
+
+test_interval: 1000
+test_iterations: [1000, 2000, 3000]
+save_iterations: [1000, 2000, 3000]
+checkpoint_iterations: [1000, 2000, 3000]

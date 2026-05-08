@@ -1,0 +1,54 @@
+# @package _global_
+
+# v152a: the missing high-value quadrant.
+# Keep the explicit-prior-guided forward trunk from v151, but restore
+# baseline-like early Gaussian geometry learning on the fresh line:
+# 1. xyz / opacity / scaling / rotation learn from the start
+# 2. baseline-like opacity reset + densify rhythm come back
+# 3. non-rigid is delayed past the short probe window so this run measures
+#    whether early main-geometry freedom fixes clarity before late residuals
+#    enter and confound the result
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+model:
+  deformer:
+    non_rigid:
+      delay: 5000
+
+opt:
+  iterations: 4000
+
+  grad_clip: 0.05
+
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.001
+  opacity_lr: 0.05
+  scaling_lr: 0.005
+  rotation_lr: 0.001
+
+  rigid_lr: 0.00009
+  non_rigid_lr: 0.00070
+
+  lambda_mask: 0.1
+  lambda_skinning: [10, 1000, 0.1]
+  lambda_aiap_xyz: 1.0
+  lambda_aiap_cov: 100.0
+  aiap_interval: 10
+  aiap_max_points: 20000
+
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 3000
+  densify_from_iter: 500
+  densify_until_iter: 3500
+  densify_grad_threshold: 0.0002
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500, 3000, 4000]
+save_iterations: [2000, 4000]
+checkpoint_iterations: [2000, 4000]

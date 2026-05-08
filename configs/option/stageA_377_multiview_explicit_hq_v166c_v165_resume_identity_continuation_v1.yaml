@@ -1,0 +1,46 @@
+# @package _global_
+
+# v166c: identity continuation from v165 best@1000.
+#
+# v166/v166b were invalid as root-cause tests because they loaded v165 best@1000
+# but reset schedule_iteration to local iteration 1. That rolled owner/trunk/loss
+# schedules back to an early window and immediately degraded FG_LPIPS.
+#
+# This run changes only the resume semantics:
+#   - keep checkpoint iteration as schedule offset
+#   - do not clear boundary tags
+#   - do not enable photometric correction
+#   - do not enable contour uncertainty weighting
+#
+# Expected schedule:
+#   local 500  -> schedule 1500
+#   local 1000 -> schedule 2000
+#   local 1500 -> schedule 2500
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+
+opt:
+  iterations: 1500
+
+  photometric_correction_enable: false
+  contour_uncertainty_enable: false
+
+  # Keep v165 sampler exactly. This is an identity/continuation check, not a
+  # new sampling or loss experiment.
+  train_sample_camera_min_prob: 0.025
+  train_sample_camera_max_prob: 0.100
+  train_sample_log_interval: 500
+
+test_interval: 500
+test_iterations: [1500, 2000, 2500]
+save_iterations: [1500, 2000, 2500]
+checkpoint_iterations: [1500, 2000, 2500]

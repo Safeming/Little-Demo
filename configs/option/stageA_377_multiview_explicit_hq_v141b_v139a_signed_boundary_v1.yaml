@@ -1,0 +1,19 @@
+# @package _global_
+
+# v141b: keep the frozen-point v139a regime, but split boundary routing into
+# grow / shrink / candidate using signed alpha disagreement.
+
+opt:
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.12
+  boundary_tag_score_smooth_blend: 0.20
+  boundary_image_error_score_prior_floor: 0.12
+
+test_interval: 500
+test_iterations: [2000, 4000]
+save_iterations: [4000]

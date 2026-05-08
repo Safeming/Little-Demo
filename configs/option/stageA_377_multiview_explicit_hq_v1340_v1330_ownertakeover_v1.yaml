@@ -1,0 +1,29 @@
+# @package _global_
+
+# v1340: promote explicit_binding trunk-owner from additive repair to regional
+# takeover. In key regions, the owner head now softly replaces the old
+# coarse/hf trunk contribution instead of stacking after it, so the explicit
+# trunk can directly own final high-frequency color.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                enable: true
+                scale: 1.0
+                strength: [0.12, 500, 0.38, 1400, 0.62, 2600, 0.88, 3600, 1.00]
+                base_mix: 0.0
+                max: 1.0
+                use_support: true
+                support_detach: true
+                support_offset: 0.28
+                support_gain: 7.5
+                support_power: 1.2
+                region_strength:
+                  face: 1.00
+                  shoulder_upper: 0.92
+                  upper_torso: 0.78

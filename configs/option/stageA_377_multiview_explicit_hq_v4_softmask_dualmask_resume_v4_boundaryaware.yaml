@@ -1,0 +1,106 @@
+# @package _global_
+
+best_metric: psnr_fg
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+dataset:
+  val_frames: [0, 570, 30]
+
+opt:
+  iterations: 1200
+  grad_clip: 0.06
+
+  position_lr_init: 0.00003
+  position_lr_final: 0.0000003
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.0002
+  opacity_lr: 0.009
+  scaling_lr: 0.001
+  rotation_lr: 0.0002
+
+  pose_correction_lr: 0.00002
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0002
+  texture_lr: 0.0002
+  tex_latent_lr: 0.0002
+  lr_ratio: 0.1
+
+  foreground_mask_source: hard
+  global_mask_source: hard
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_soft_low: 0.08
+  boundary_soft_high: 0.92
+
+  lambda_l1: 1.0
+  lambda_l1_fg: 0.18
+  lambda_l1_boundary: 0.06
+  lambda_l1_face: 0.12
+  lambda_perceptual_face: 0.010
+  lambda_l1_shoulder_arm: 0.08
+  lambda_edge_shoulder_arm: 0.03
+  boundary_band_width: 5
+  face_region_min_pixels: 48
+  face_perceptual_crop_pad: 12
+  shoulder_arm_region_min_pixels: 96
+  lambda_dssim: 0.0
+  lambda_perceptual: 0.008
+  perceptual_crop_pad: 16
+
+  mask_loss_type: l1
+  lambda_mask: 0.08
+  lambda_mask_boundary: 0.10
+  lambda_mask_boundary_hard: 0.02
+  lambda_silhouette_outer: 0.012
+  lambda_silhouette_inner: 0.0
+  silhouette_outer_ring_width: 3
+  silhouette_inner_ring_width: 0
+  lambda_opacity: 0.0
+
+  lambda_skinning: 0.1
+  lambda_pose: 0.0
+  lambda_aiap_xyz: 1.0
+  lambda_aiap_cov: 100.0
+  aiap_interval: 20
+  aiap_max_points: 12000
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.05
+
+  boundary_aware_enable: true
+  boundary_aware_gate_l1_boundary: false
+  boundary_aware_gate_mask_boundary: true
+  boundary_aware_gate_mask_boundary_hard: true
+  boundary_aware_gate_silhouette_outer: true
+  boundary_aware_gate_silhouette_inner: true
+  boundary_aware_freeze_converter_for_boundary_loss: true
+  boundary_aware_threshold: 0.20
+  boundary_aware_score_power: 1.25
+  boundary_aware_min_keep: 0.0
+  boundary_aware_xyz_scale: 0.35
+  boundary_aware_opacity_scale: 1.0
+  boundary_aware_scaling_scale: 0.70
+  boundary_aware_rotation_scale: 0.25
+  boundary_aware_feature_dc_scale: 0.0
+  boundary_aware_feature_rest_scale: 0.0
+
+rigid:
+  boundary_score_soft_weight: 0.72
+  boundary_score_shell_weight: 0.18
+  boundary_score_thin_weight: 0.10
+  boundary_score_surface_threshold: 0.026
+  boundary_score_surface_width: 0.010
+  boundary_score_confidence_suppress: 0.12
+
+test_interval: 300
+save_iterations: [1200]

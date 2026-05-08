@@ -1,0 +1,57 @@
+# @package _global_
+
+# v115b: richer structure bridge.
+# Add semantic routing and non-rigid carry statistics on top of v115a to check
+# whether a broader structure descriptor can recover more face/torso/shoulder
+# detail without touching the core explicit-binding deformation again.
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        structure_carrier:
+          enable: true
+          detach: true
+          inject_scale: 0.48
+          features:
+            - name: layer
+              attr: binding_weights_raw
+              center: 0.333333
+              scale: 1.8
+            - name: region
+              attr: binding_region_probs_raw
+              center: 0.333333
+              scale: 1.8
+            - name: semantic
+              attr: binding_compact_semantic_probs_raw
+              center: 0.166667
+              scale: 2.2
+            - name: surface
+              attr: binding_surface_distance
+              scale: 90.0
+              clamp: 1.5
+              multires: 2
+            - name: boundary
+              attr: binding_boundary_score
+              center: 0.25
+              scale: 2.2
+            - name: nonrigid_delta
+              attr: binding_non_rigid_delta
+              scale: 90.0
+              clamp: 1.5
+              multires: 3
+            - name: rigid_carry
+              attr: binding_non_rigid_rigid_carry
+              scale: 90.0
+              clamp: 1.5
+              multires: 2
+            - name: soft_carry
+              attr: binding_non_rigid_soft_carry
+              scale: 90.0
+              clamp: 1.5
+              multires: 2
+            - name: geometry_shift
+              attr: binding_non_rigid_geometry_shift
+              scale: 90.0
+              clamp: 1.5
+              multires: 3

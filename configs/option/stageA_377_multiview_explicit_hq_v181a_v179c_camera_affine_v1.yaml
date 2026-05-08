@@ -1,0 +1,83 @@
+# @package _global_
+
+# v181a: root-cause test for remaining multiview color/exposure averaging.
+#
+# v180a/v180b showed that alignment-aware loss masks can hit the contour but do
+# not make the main output draw harder boundaries. This run keeps the v179c
+# anchor recipe and adds only a tightly bounded per-camera RGB affine residual,
+# so the shared texture no longer has to average low-frequency camera exposure
+# and white-balance differences.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - camera_affine.
+
+opt:
+  iterations: 2500
+  texture_lr: 0.000040
+  camera_affine_lr: 0.000180
+  grad_clip: 0.014
+
+  camera_affine_enable: true
+  camera_affine_train_camera_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  camera_affine_max_camera_id: 23
+  camera_affine_strength: [0.25, 1, 0.55, 700, 0.80, 1600, 1.00]
+  camera_affine_scale_max_delta: 0.060
+  camera_affine_shift_max_abs: 0.030
+  camera_affine_clamp_colors: true
+  camera_affine_apply_unknown: false
+  camera_affine_scale_reg_weight: 1.0
+  camera_affine_shift_reg_weight: 1.0
+  lambda_camera_affine_reg: 0.0025
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_accumulation_steps: 6
+  train_sample_accumulation_without_replacement: true
+  train_sample_camera_min_prob: 0.025
+  train_sample_camera_max_prob: 0.105
+  train_sample_log_interval: 500
+  train_sample_camera_weights:
+    "1": 1.80
+    "2": 0.35
+    "3": 0.85
+    "4": 0.45
+    "5": 1.70
+    "6": 1.15
+    "7": 1.25
+    "8": 1.35
+    "9": 1.50
+    "10": 1.65
+    "11": 0.70
+    "12": 0.80
+    "13": 1.05
+    "14": 1.25
+    "15": 0.70
+    "16": 0.75
+    "17": 0.60
+    "18": 0.50
+    "19": 0.90
+    "20": 0.60
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.34
+  photometric_correction_erode_kernel_size: 11
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.88
+  photometric_correction_max_scale: 1.13
+  photometric_correction_max_shift: 0.050
+  photometric_contour_debug_interval: 500
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500]
+save_iterations: [500, 1000, 1500, 2000, 2500]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500]

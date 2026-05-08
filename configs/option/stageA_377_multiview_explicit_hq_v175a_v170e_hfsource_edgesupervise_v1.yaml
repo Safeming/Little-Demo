@@ -1,0 +1,180 @@
+# @package _global_
+
+# v175a: high-frequency source repair from v170e best.
+#
+# v174a proved that final boundary RGB composition is not the main bottleneck:
+# the effective gate reached 1.0, but boundary_color stayed around 0.001-0.002.
+# This run stops tuning boundary routing and directly tests whether the existing
+# detail_high_freq / trunk HF residual source can grow visible luma/detail
+# amplitude under image-space high-frequency supervision.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+model:
+  texture:
+    detail_residual:
+      high_frequency:
+        enable: true
+        schedule_use_local_iteration: true
+        # v170e inherited a very small 0.035 HF scale. Raise it enough to test
+        # whether the residual source can actually carry visible luma detail.
+        scale: [0.08, 1, 0.13, 500, 0.18, 1200, 0.22, 2200, 0.24]
+        max_residual: 0.12
+        gate_bias: -0.10
+        min_gate: 0.14
+        chroma_center: true
+        chroma_scale: 0.20
+        tiny_repair_scale: [0.82, 1, 1.00, 700, 1.14, 1600, 1.20]
+        luma_branch:
+          enable: true
+          scale: 0.92
+        face_branch:
+          enable: true
+          scale: 0.34
+          gate_bias: -0.12
+          min_gate: 0.12
+          tiny_repair_scale: [0.86, 1, 1.06, 700, 1.18, 1600, 1.24]
+        boundary_floor:
+          enable: true
+          value: [1.00, 1, 1.10, 700, 1.22, 1600, 1.30]
+          threshold: 0.02
+          power: 0.85
+          max: 1.30
+          detach: true
+    structured_trunk:
+      output_head:
+        disable_input_residual: true
+        dual_head:
+          hf_head:
+            enable: true
+            use_local_color: false
+            # Keep trunk-HF present but not dominant; this run is primarily
+            # about making the HF source learn, not a broad owner/trunk regrow.
+            scale: [0.30, 1, 0.36, 700, 0.44, 1600, 0.50]
+            gate_gain: 1.18
+            gate_bias: -0.02
+            min_gate: 0.06
+
+opt:
+  iterations: 2500
+  grad_clip: 0.022
+
+  # Geometry/opacity/scaling stay fixed. v172b showed that reopening those paths
+  # can create head/background leakage.
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  pose_correction_lr: 0.0
+  tex_latent_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+
+  texture_lr: 0.00012
+  texture_trainable_name_patterns:
+    - detail_high_freq_context_proj.*
+    - detail_high_freq_carrier_proj.*
+    - detail_high_freq_mlp.*
+    - detail_high_freq_gate_mlp.*
+    - detail_high_freq_luma_mlp.*
+    - detail_high_freq_face_mlp.*
+    - detail_high_freq_face_gate_mlp.*
+    - detail_high_freq_face_local_proj.*
+    - detail_high_freq_face_extra_local_projs.*
+    - detail_high_freq_structure_proj.*
+    - structured_trunk_output_head_hf_head_mlp.*
+    - structured_trunk_output_head_hf_head_gate_mlp.*
+  texture_frozen_name_patterns: null
+
+  percent_dense: 0.0
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  opacity_reset_interval: 1000000
+
+  train_sample_mode: frame_balanced_camera_weighted
+  train_sample_camera_min_prob: 0.035
+  train_sample_camera_max_prob: 0.080
+  train_sample_log_interval: 500
+  train_sample_camera_weights:
+    "1": 1.52
+    "2": 0.54
+    "3": 0.90
+    "4": 0.60
+    "5": 1.44
+    "6": 1.09
+    "7": 1.21
+    "8": 1.24
+    "9": 1.32
+    "10": 1.41
+    "11": 0.80
+    "12": 0.89
+    "13": 1.05
+    "14": 1.19
+    "15": 0.82
+    "16": 0.87
+    "17": 0.77
+    "18": 0.68
+    "19": 0.95
+    "20": 0.74
+
+  photometric_correction_enable: true
+  photometric_correction_strength: 0.34
+  photometric_correction_erode_kernel_size: 9
+  photometric_correction_min_pixels: 512
+  photometric_correction_min_scale: 0.84
+  photometric_correction_max_scale: 1.18
+  photometric_correction_max_shift: 0.070
+  photometric_contour_debug_interval: 500
+
+  contour_uncertainty_enable: true
+  contour_uncertainty_band_width: 9
+  contour_uncertainty_outer_width: 6
+  contour_uncertainty_min_weight: 0.56
+
+  detail_multiscale_scales: [1, 2, 4]
+  detail_highpass_kernel: 5
+  detail_scale_decay: 0.55
+  detail_gradient_mix: 0.35
+
+  lambda_l1_fg: 0.18
+  lambda_l1_face: 0.10
+  lambda_edge_face: 0.026
+  lambda_detail_face: 0.040
+  lambda_detail_face_luma_dog: 0.030
+  lambda_l1_shoulder_arm: 0.070
+  lambda_edge_shoulder_arm: 0.046
+  lambda_detail_shoulder_arm: 0.050
+  lambda_detail_shoulder_arm_luma_dog: 0.036
+  lambda_detail_upper_torso_luma_dog: 0.034
+  lambda_detail_upper_torso_core_luma_dog: 0.030
+  lambda_l1_waist: 0.045
+  lambda_edge_waist: 0.022
+  lambda_detail_waist: 0.034
+  lambda_detail_waist_luma_dog: 0.026
+
+  # Keep boundary residual tensors present from v170e but frozen.
+  boundary_aware_boundary_opacity_residual_scale: 0.65
+  boundary_aware_boundary_scaling_residual_scale: 0.40
+  lambda_boundary_opacity_residual_reg: 0.0
+  lambda_boundary_scaling_residual_reg: 0.0
+  lambda_boundary_opacity_residual_smooth: 0.0
+  lambda_boundary_scaling_residual_smooth: 0.0
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000, 2500]
+save_iterations: [500, 1000, 1500, 2000, 2500]
+checkpoint_iterations: [500, 1000, 1500, 2000, 2500]

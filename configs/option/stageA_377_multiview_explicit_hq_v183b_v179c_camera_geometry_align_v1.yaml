@@ -1,0 +1,104 @@
+# @package _global_
+
+# v183b: first real alignment experiment after v182.
+#
+# Freeze Gaussian geometry, texture, non-rigid, pose embeddings, and color
+# affine. Optimize only a tiny per-camera SE(3)-like residual applied to the
+# deformed Gaussian coordinates. This targets cross-view silhouette/edge
+# alignment instead of asking the texture network to average misregistered
+# high-frequency supervision.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - camera_geometry.
+  restore_converter_optimizer_state: true
+  restore_converter_scheduler_state: false
+  restore_converter_optimizer_preserve_config_lrs: true
+
+opt:
+  iterations: 1800
+
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  nr_latent_lr: 0.0
+  pose_correction_lr: 0.0
+  texture_lr: 0.0
+  tex_latent_lr: 0.0
+  camera_affine_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+  latent_weight_decay: 0.0
+
+  camera_geometry_enable: true
+  camera_geometry_train_camera_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  camera_geometry_max_camera_id: 23
+  camera_geometry_strength: [0.00, 1, 0.35, 300, 0.70, 900, 1.00]
+  camera_geometry_rot_max_deg: 0.16
+  camera_geometry_trans_max: 0.004
+  camera_geometry_rot_reg_weight: 1.0
+  camera_geometry_trans_reg_weight: 1.0
+  camera_geometry_lr: 0.00035
+  lambda_camera_geometry_reg: 0.015
+
+  lambda_l1: 0.12
+  lambda_l1_fg: 0.35
+  lambda_perceptual: 0.0
+  lambda_dssim: 0.0
+  lambda_l1_boundary: 0.55
+  lambda_mask: 0.0
+  lambda_mask_boundary: 0.035
+  lambda_mask_boundary_hard: 0.055
+  lambda_silhouette_outer: 0.030
+  lambda_silhouette_outer_shell: 0.045
+  lambda_silhouette_inner: 0.018
+  silhouette_outer_ring_width: 9
+  silhouette_outer_shell_start_width: 1
+  silhouette_outer_shell_end_width: 19
+  silhouette_inner_ring_width: 7
+  boundary_band_width: 13
+
+  lambda_edge_face: 0.0
+  lambda_edge_shoulder_arm: 0.0
+  lambda_edge_waist: 0.0
+  lambda_detail_face: 0.0
+  lambda_detail_shoulder_arm: 0.0
+  lambda_detail_waist: 0.0
+  lambda_detail_face_luma_dog: 0.0
+  lambda_detail_shoulder_arm_luma_dog: 0.0
+  lambda_detail_waist_luma_dog: 0.0
+  lambda_detail_upper_torso_luma_dog: 0.0
+  lambda_detail_upper_torso_core_luma_dog: 0.0
+  lambda_perceptual_face: 0.0
+  lambda_perceptual_shoulder_arm: 0.0
+  lambda_perceptual_waist: 0.0
+  lambda_perceptual_face_patch: 0.0
+  lambda_perceptual_shoulder_arm_patch: 0.0
+  lambda_perceptual_waist_patch: 0.0
+  lambda_perceptual_upper_torso_patch: 0.0
+  lambda_perceptual_upper_torso_core_patch: 0.0
+
+  photometric_correction_enable: false
+  camera_affine_enable: false
+  grad_clip: 0.02
+  photometric_contour_debug_interval: 250
+
+test_interval: 300
+test_iterations: [300, 600, 900, 1200, 1500, 1800]
+save_iterations: [900, 1800]
+checkpoint_iterations: [300, 600, 900, 1200, 1500, 1800]

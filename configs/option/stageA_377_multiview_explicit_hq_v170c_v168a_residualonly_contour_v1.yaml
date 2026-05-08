@@ -1,0 +1,47 @@
+# @package _global_
+
+# v170c: residual-only contour actuator. This isolates whether opacity/scaling
+# residuals can improve silhouette/edge geometry without any texture boundary
+# head. If L1/PSNR improve but LPIPS does not, geometry motion exists but needs
+# a separate texture restore.
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              boundary:
+                enable: false
+
+opt:
+  iterations: 2000
+  texture_lr: 0.0
+  tex_latent_lr: 0.0
+  grad_clip: 0.024
+
+  boundary_live_score_cache_require_texture_boundary_head: false
+
+  boundary_signed_mixed_loss_scale: 0.10
+  boundary_signed_shrink_loss_scale: 1.35
+  boundary_signed_grow_loss_scale: 0.24
+  boundary_signed_share_gain: 1.08
+  boundary_signed_share_power: 1.18
+  boundary_signed_shrink_share_gain: 1.24
+  boundary_signed_shrink_share_power: 1.38
+
+  boundary_aware_boundary_opacity_residual_scale: 0.82
+  boundary_aware_boundary_scaling_residual_scale: 0.50
+  boundary_opacity_residual_lr: 0.00022
+  boundary_scaling_residual_lr: 0.000075
+
+  lambda_silhouette_outer: [0.005, 1, 0.009, 700, 0.010]
+  lambda_silhouette_outer_shell: [0.018, 1, 0.034, 700, 0.040, 1600, 0.042]
+  lambda_silhouette_upper_torso_outer_shell: [0.016, 1, 0.034, 700, 0.042, 1600, 0.044]
+  lambda_silhouette_shoulder_arm_outer_shell: [0.012, 1, 0.028, 700, 0.036, 1600, 0.038]
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [500, 1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

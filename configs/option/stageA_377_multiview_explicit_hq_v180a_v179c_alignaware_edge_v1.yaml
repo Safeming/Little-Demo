@@ -1,0 +1,47 @@
+# @package _global_
+
+# v180a: conservative alignment-aware hard-contour supervision from v179c best.
+# This does not reopen geometry/opacity/scaling. It only reweights shoulder/arm
+# and waist edge supervision near stable hard contours, while suppressing
+# high-error contour pixels that are likely caused by local view/SMPL mismatch.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+
+opt:
+  iterations: 2000
+  texture_lr: 0.000045
+  grad_clip: 0.014
+
+  alignment_aware_contour_enable: true
+  alignment_aware_contour_apply_waist: true
+  alignment_aware_contour_apply_luma: false
+  alignment_aware_contour_apply_l1: false
+  alignment_aware_contour_band_width: 11
+  alignment_aware_contour_stable_boost: 0.35
+  alignment_aware_contour_misaligned_suppress: 0.22
+  alignment_aware_contour_error_power: 1.25
+  alignment_aware_contour_edge_protect: 0.75
+  alignment_aware_contour_min_weight: 0.78
+  alignment_aware_contour_max_weight: 1.35
+
+  lambda_edge_shoulder_arm: 0.052
+  lambda_detail_shoulder_arm_luma_dog: 0.038
+  lambda_edge_waist: 0.026
+  lambda_detail_waist_luma_dog: 0.028
+
+  photometric_contour_debug_interval: 250
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [500, 1000, 1500, 2000]
+checkpoint_iterations: [500, 1000, 1500, 2000]

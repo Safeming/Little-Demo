@@ -1,0 +1,54 @@
+# @package _global_
+
+# v183a: continuation invariance audit from v179c.
+#
+# This is not a clarity-improvement run. It validates that a resumed v179c
+# checkpoint can pass through the current train loop without hidden parameter
+# drift. It restores converter optimizer/scheduler state, preserves configured
+# zero LRs, validates immediately after load, runs forward/backward, and skips
+# optimizer steps.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+  clear_boundary_tags_on_resume: false
+  clear_binding_state_on_resume: false
+  require_no_densify_on_resume: true
+  allow_partial_converter_load: true
+  restore_converter_optimizer_state: true
+  restore_converter_scheduler_state: true
+  restore_converter_optimizer_preserve_config_lrs: true
+
+opt:
+  iterations: 500
+
+  position_lr_init: 0.0
+  position_lr_final: 0.0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0
+  nr_latent_lr: 0.0
+  pose_correction_lr: 0.0
+  texture_lr: 0.0
+  tex_latent_lr: 0.0
+  camera_affine_lr: 0.0
+  camera_geometry_lr: 0.0
+  boundary_opacity_residual_lr: 0.0
+  boundary_scaling_residual_lr: 0.0
+  latent_weight_decay: 0.0
+
+  diagnostic_validate_at_start: true
+  diagnostic_skip_optimizer_step: true
+  diagnostic_log_interval: 100
+
+test_interval: 250
+test_iterations: [250, 500]
+save_iterations: []
+checkpoint_iterations: [500]

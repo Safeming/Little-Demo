@@ -1,0 +1,139 @@
+# @package _global_
+
+# v160a: C-stage boundary finishing from v158a.
+# Keep the validated v158a owner/HF state, but route the live image-error
+# boundary signal into the texture boundary path and narrow tags to the hardest
+# contour subset.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              boundary:
+                enable: true
+                scale: [0.18, 100, 0.42, 600, 0.66, 1200, 0.82, 1800, 0.92]
+                gate_gain: 1.12
+                gate_bias: -0.02
+                min_gate: 0.05
+                focus_threshold: 0.04
+                focus_power: 1.05
+                focus_min: 0.0
+                focus_max: 1.0
+                takeover:
+                  enable: true
+                  scale: [0.14, 100, 0.34, 600, 0.54, 1200, 0.70, 1800, 0.82]
+                  max: 0.82
+                  use_region_gate: true
+    detail_residual:
+      tiny_repair_scale: 0.042
+      high_frequency:
+        tiny_repair_scale: 0.018
+        scale: 0.044
+        gate_bias: -0.03
+        face_branch:
+          gate_bias: -0.06
+
+opt:
+  iterations: 2000
+
+  grad_clip: 0.032
+
+  position_lr_init: 0.000004
+  position_lr_final: 0.0000008
+  opacity_lr: 0.0008
+  scaling_lr: 0.00008
+  rotation_lr: 0.000025
+
+  rigid_lr: 0.000045
+  non_rigid_lr: 0.00022
+  texture_lr: 0.00024
+  tex_latent_lr: 0.00010
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 80
+  owner_local_detail_boost_takeover_floor: 0.24
+  owner_local_detail_boost_takeover_gain: 1.08
+  owner_local_detail_boost_takeover_power: 1.24
+  owner_local_detail_boost_detail_max_extra: [0.20, 600, 0.55, 1400, 0.86]
+  owner_local_detail_boost_luma_max_extra: [0.30, 600, 0.82, 1400, 1.22]
+  owner_local_detail_boost_patch_max_extra: [0.20, 600, 0.58, 1400, 0.90]
+  owner_local_detail_boost_edge_max_extra: [0.12, 300, 0.36, 900, 0.62, 1600, 0.76]
+  owner_local_detail_boost_boundary_max_extra: [0.12, 300, 0.38, 900, 0.64, 1600, 0.78]
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.04
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+  boundary_tag_schedule_use_local_iteration: true
+
+  boundary_tag_enable: true
+  boundary_tag_mode: topk_ratio
+  boundary_tag_topk_ratio: 0.10
+  boundary_tag_min_ratio: 0.08
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 1600
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.16
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.10
+  boundary_image_error_score_prior_floor: 0.10
+
+  boundary_signed_mixed_loss_scale: 0.08
+  boundary_signed_shrink_loss_scale: 1.18
+  boundary_signed_grow_loss_scale: 0.36
+  boundary_signed_share_gain: 1.04
+  boundary_signed_share_power: 1.12
+  boundary_signed_shrink_share_gain: 1.12
+  boundary_signed_shrink_share_power: 1.22
+
+  boundary_aware_opacity_scale: 0.10
+  boundary_aware_scaling_scale: 0.032
+  boundary_aware_boundary_opacity_residual_scale: 0.30
+  boundary_aware_boundary_scaling_residual_scale: 0.20
+  boundary_opacity_residual_lr: 0.00008
+  boundary_scaling_residual_lr: 0.000025
+  lambda_boundary_opacity_residual_reg: 0.0006
+  lambda_boundary_scaling_residual_reg: 0.00015
+  lambda_boundary_opacity_residual_smooth: 0.0009
+  lambda_boundary_scaling_residual_smooth: 0.0006
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [1000, 2000]
+checkpoint_iterations: [1000, 2000]

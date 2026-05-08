@@ -1,0 +1,49 @@
+# @package _global_
+
+# v146a: early/fresh hybrid explicit-skinning trunk.
+# Start from the fresh explicit-binding mainline up to v136a, then let a
+# learned forward anchor-weight branch participate from the beginning.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+opt:
+  iterations: 20000
+
+  rigid_lr: 0.00010
+  non_rigid_lr: 0.00080
+
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 3000
+  densify_from_iter: 500
+  densify_until_iter: 12000
+  densify_grad_threshold: 0.0002
+
+  lambda_binding_hybrid_anchor_reg: 0.0015
+
+model:
+  deformer:
+    rigid:
+      hybrid_field_enable: true
+      hybrid_field_anchor_enable: true
+      hybrid_field_support_enable: false
+      hybrid_field_update_dominant_joint: true
+      hybrid_field_feature_detach: false
+      hybrid_field_detach_gate: false
+      hybrid_field_gate_mode: softfree
+      hybrid_field_gate_min: 0.25
+      hybrid_anchor_delta_scale: 0.16
+      hybrid_anchor_delta_max: 0.25
+      hybrid_field_mlp:
+        n_neurons: 128
+        n_hidden_layers: 4
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+test_interval: 1000
+test_iterations: [4000, 8000, 12000, 16000, 20000]
+save_iterations: [12000, 20000]
+checkpoint_iterations: [12000]

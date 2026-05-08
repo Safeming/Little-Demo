@@ -1,0 +1,279 @@
+defaults:
+  - _self_
+  - dataset: zjumocap_377_mono
+  - pose_correction: direct
+  - texture: shallow_mlp
+  - rigid: explicit_binding
+  - non_rigid: hashgrid
+  - option:
+      - iter15k
+
+hydra:
+  run:
+    dir: exp/${name}
+  job:
+    chdir: false
+
+name: ${dataset_name}-${pose_name}-${rigid_name}-${non_rigid_name}-${texture_name}-${tag}-${now:%m%d-%H%M}
+tag: default
+
+model:
+  gaussian:
+    use_sh: true
+    sh_degree: 3
+    delay: 1000
+    # Keep the stable fresh-train newborn path aligned with the
+    # historical rootfix baseline: predictive split is on, while the
+    # stronger attenuation branch stays opt-in.
+    binding_densify_predictive_directional_split_enable: true
+    binding_densify_child_attenuate_enable: false
+    binding_densify_child_mark_refresh_from_attenuation: false
+    binding_densify_child_mark_risky_from_attenuation: false
+    binding_densify_source_firewall_enable: true
+    binding_densify_source_firewall_joint_ids: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23]
+    binding_densify_child_immediate_refresh_enable: true
+    binding_densify_child_immediate_refresh_boundary_only: false
+    binding_densify_child_immediate_refresh_local_lineage_enable: true
+    binding_densify_child_immediate_refresh_require_source_consensus: false
+    binding_densify_child_immediate_refresh_require_local_boundary_band: true
+    binding_densify_child_immediate_refresh_require_parent_locality: true
+    binding_densify_child_immediate_refresh_arm_gate_mode: source_or_current
+    binding_densify_child_immediate_refresh_arm_gate_require_source_consensus: false
+    binding_densify_child_immediate_refresh_parent_boundary_threshold: 0.04
+    binding_densify_child_immediate_refresh_parent_radius_scale: 2.5
+    binding_densify_child_immediate_refresh_parent_radius_bias: 0.006
+    binding_densify_child_immediate_refresh_max_child_age: 2
+    binding_densify_child_immediate_refresh_local_lineage_score_bonus: 0.75
+    binding_densify_child_immediate_refresh_max_points_per_lineage: 48
+    binding_densify_child_immediate_refresh_max_points: 512
+    binding_densify_child_immediate_refresh_max_ratio: 0.03
+    binding_densify_child_immediate_refresh_min_score: 0.10
+    binding_densify_child_immediate_refresh_include_extra_risk_mask: false
+    binding_densify_child_immediate_refresh_extra_risk_score_bonus: 0.35
+    binding_densify_clone_immediate_refresh_parent_risk_enable: false
+    binding_densify_clone_immediate_refresh_parent_risk_boundary_only: true
+    binding_densify_clone_immediate_refresh_parent_risk_include_refresh_mask: true
+    binding_densify_clone_immediate_refresh_parent_risk_arm_gate_mode: source_or_current
+    binding_densify_clone_candidate_seed_enable: true
+    binding_densify_clone_candidate_seed_start_iter: 0
+    binding_densify_clone_candidate_seed_end_iter: -1
+    binding_densify_clone_candidate_seed_min_child_age: 0
+    binding_densify_clone_candidate_seed_max_child_age: 600
+    binding_densify_clone_candidate_seed_boundary_only: false
+    binding_densify_clone_candidate_seed_boundary_threshold: 0.05
+    binding_densify_clone_candidate_seed_arm_only: true
+    binding_densify_clone_candidate_seed_arm_gate_mode: source_or_current
+    binding_densify_clone_candidate_seed_require_source_consensus: false
+    binding_densify_clone_candidate_seed_include_refresh_mask: true
+    binding_densify_clone_candidate_seed_semantic_distance_scale: 1.0
+    binding_densify_clone_candidate_seed_surface_distance_scale: 1.0
+    binding_densify_clone_candidate_seed_confidence_margin: 0.0
+    binding_densify_clone_candidate_seed_weight_gap_scale: 1.0
+    binding_densify_clone_candidate_seed_age_score_bonus: 0.25
+    binding_densify_clone_candidate_seed_source_score_bonus: 0.25
+    binding_densify_clone_candidate_seed_max_points_per_lineage: 24
+    binding_densify_clone_candidate_seed_max_points: 256
+    binding_densify_clone_candidate_seed_max_ratio: 0.01
+    binding_densify_clone_candidate_seed_min_risk_score: 0.05
+    binding_densify_clone_candidate_seed_verbose: false
+    binding_refresh_require_boundary_tag: false
+    binding_risk_gate_require_boundary_tag: false
+    binding_densify_immediate_refresh_enable: true
+    binding_densify_risk_filter_enable: false
+    binding_densify_boundary_only: true
+    binding_densify_require_boundary_tag: false
+    binding_densify_arm_only: true
+    binding_densify_block_refresh_points: true
+    binding_densify_risk_filter_start_iter: 0
+    binding_densify_risk_filter_end_iter: -1
+    binding_densify_semantic_distance_scale: 1.0
+    binding_densify_surface_distance_scale: 1.0
+    binding_densify_confidence_margin: 0.0
+    binding_densify_weight_gap_scale: 1.0
+    binding_densify_lineage_offender_allow_recent_newborn_reentry: true
+    binding_densify_lineage_offender_reentry_max_child_age: 250
+    binding_densify_lineage_offender_reentry_arm_gate_mode: source_or_current
+    binding_densify_lineage_offender_score_bonus: 0.35
+    binding_densify_filter_verbose: false
+    binding_densify_debug_verbose: false
+    binding_densify_postrebind_reset_enable: true
+    binding_densify_postrebind_prune_enable: false
+    binding_densify_postrebind_reset_require_still_risky: true
+    binding_densify_postrebind_reset_require_joint_change: true
+    binding_densify_postrebind_reset_arm_only: true
+    binding_densify_postrebind_reset_boundary_threshold: 0.05
+    binding_densify_postrebind_reset_semantic_distance_scale: 1.0
+    binding_densify_postrebind_reset_surface_distance_scale: 1.0
+    binding_densify_postrebind_reset_confidence_margin: 0.0
+    binding_densify_postrebind_reset_weight_gap_scale: 1.0
+    binding_densify_postrebind_target_max_points: 384
+    binding_densify_postrebind_target_max_ratio: 0.0
+    binding_densify_postrebind_target_min_shift: 0.008
+    binding_densify_postrebind_keep_prior_min_best_shift: 0.03
+    binding_densify_postrebind_keep_prior_require_best_joint_change: true
+    binding_densify_postrebind_keep_prior_allow_face_change_fallback: false
+    binding_densify_postrebind_target_keep_prior_max_points: 12
+    binding_densify_postrebind_target_arm_only: true
+    binding_densify_postrebind_target_arm_gate_mode: source_or_current
+    binding_densify_postrebind_target_joint_ids: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23]
+    binding_densify_postrebind_target_require_source_consensus: false
+    binding_densify_postrebind_reset_max_points: 256
+    binding_densify_postrebind_reset_max_ratio: 0.0
+    binding_densify_postrebind_reset_min_shift: 0.012
+    binding_densify_postrebind_reset_face_change_shift_threshold: 0.03
+    binding_densify_postrebind_reset_face_rescue_require_joint_signal: true
+    binding_densify_postrebind_reset_require_switched_signal: true
+    binding_densify_postrebind_reset_keep_prior_assist_only: true
+    binding_densify_postrebind_reset_switched_support_mode: lineage_or_parent
+    binding_densify_postrebind_reset_switched_support_fallback_to_switched: true
+    binding_densify_postrebind_reset_appearance_enable: false
+    binding_densify_postrebind_reset_include_kept_prior: true
+    binding_densify_postrebind_reset_persistent_only: true
+    binding_densify_postrebind_reset_min_child_age: 0
+    binding_densify_postrebind_reset_min_lineage_observations: 1.0
+    binding_densify_keep_parent_for_risky_split_enable: false
+    binding_densify_risky_parent_clone_enable: false
+    binding_stale_refresh_enable: false
+  pose_correction:
+    name: direct
+  deformer:
+    rigid:
+      name: identity
+    non_rigid:
+      name: identity
+
+dataset:
+  preload: true
+  train_smpl: false
+  parsing_prior:
+    enable: false
+    roi_enable: false
+    root_dir: ""
+    body_dirname: body
+    cloth_dirname: cloth
+    valid_dirname: valid
+    uncertain_dirname: uncertain
+    mask_suffix: .png
+    parser_root: ""
+    parser_layout: cihp_subject
+    use_direct_parser_labels: false
+    compact_mapping_file: ""
+    skip_empty_samples: false
+    skip_empty_min_pixels: 64
+    confidence_threshold: 0.5
+    weight_gamma: 1.0
+    uncertain_ignore: true
+    use_opacity_support: false
+    body_pos_weight: 3.0
+    cloth_pos_weight: 3.0
+    negative_weight: 0.35
+    bce_weight: 1.0
+    dice_weight: 0.75
+    exclusive_weight: 0.75
+    occupancy_weight: 0.35
+    soft_weight: 0.25
+    entropy_weight: 0.05
+    compact_semantic_weight: 1.0
+    compact_semantic_schedule: 1.0
+    compact_pos_weight: 4.0
+    compact_negative_weight: 0.20
+    compact_bce_weight: 1.0
+    compact_dice_weight: 0.75
+    compact_occupancy_weight: 0.25
+    min_depth: 0.0001
+  person_crop:
+    enable: false
+    padding_ratio: 0.15
+    square: true
+    min_size: 512
+
+  mode: ${mode}
+  test_mode: view
+  predict_seq: 0
+  freeview: false
+
+  resolution: -1
+  padding: 0.1
+  white_background: false
+  data_device: cuda
+  eval: false
+
+opt:
+  iterations: 60000
+  grad_clip: 0.1
+
+  # learning rates
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.0025
+  opacity_lr: 0.05
+  scaling_lr: 0.005
+  rotation_lr: 0.001
+
+  pose_correction_lr: 1e-4
+  rigid_lr: 1e-4
+  non_rigid_lr: 1e-3
+  lr_ratio: 0.01
+
+  # loss weights
+  lambda_l1: 1.
+  lambda_dssim: 0.
+  lambda_perceptual: 1e-2
+  mask_loss_type: l1
+#  lambda_mask: [0.1,5000,0]
+  lambda_mask: 0.1
+  lambda_opacity: 0.
+  lambda_skinning: [10,1000,0.1]
+  lambda_pose: 0.
+  lambda_aiap_xyz: 1.
+  lambda_aiap_cov: 100.
+
+  # densification configs
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 3000
+  densify_from_iter: 500
+  densify_until_iter: 45000
+  densify_grad_threshold: 0.0002
+  opacity_threshold: 0.05
+
+pipeline:
+  convert_SHs_python: true
+  compute_cov3D_python: true
+  debug: false
+
+  pose_noise: 0.1
+
+debug_from: -1
+detect_anomaly: false
+test_iterations: []
+test_interval: 2000
+save_iterations: [30000]
+seed: -1
+checkpoint_iterations: []
+start_checkpoint: null
+wandb_disable: false
+best_eval_split: test
+best_metric_source: best_eval
+
+mode: train
+load_ckpt: null
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: false
+  use_checkpoint_iteration_as_offset: false
+evaluate: true
+clean: true
+
+export_interpretability: false
+export_semantic_editable_assets: false
+semantic_editable_assets_dirname: semantic_editable_assets
+semantic_editable_save_view_masks: true
+semantic_editable_save_motion_npz: true
+semantic_editable_include_binding_summary: true
+semantic_editable_export_compact_head: true
+semantic_editable_parser_root: ""
+semantic_editable_parser_layout: cihp_subject
+semantic_editable_direct_parser_mode: false

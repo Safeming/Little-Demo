@@ -1,0 +1,11 @@
+# @package _global_
+
+# v114a: let layer/region routing see a conservative fraction of the learned
+# non-rigid geometry, but do not sharpen routing yet. This isolates whether
+# the remaining blur is still caused by canonical-only binding state.
+
+model:
+  deformer:
+    rigid:
+      non_rigid_geometry_blend: 0.35
+      non_rigid_geometry_delta_clip: 0.010

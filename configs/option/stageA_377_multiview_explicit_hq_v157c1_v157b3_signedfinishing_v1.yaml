@@ -1,0 +1,129 @@
+# @package _global_
+
+# v157c1: signed boundary finishing stage on top of the validated v157b3 base.
+# Stage B already proved owner/HF handoff can materially improve sharpness.
+# This stage keeps that successful handoff as the substrate, then applies the
+# strong signed-boundary actuator only as a late finisher.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+
+model:
+  gaussian:
+    binding_refresh_require_boundary_tag: false
+    binding_risk_gate_require_boundary_tag: false
+  deformer:
+    non_rigid:
+      delay: 600
+  texture:
+    structured_trunk:
+      output_head:
+        local_color:
+          owner:
+            head:
+              takeover:
+                strength: 1.0
+              boundary:
+                enable: false
+    detail_residual:
+      tiny_repair_scale: 0.040
+      high_frequency:
+        tiny_repair_scale: 0.022
+        scale: 0.036
+        face_branch:
+          tiny_repair_scale: 0.010
+          scale: 0.12
+
+opt:
+  iterations: 2000
+
+  grad_clip: 0.030
+
+  position_lr_init: 0.000006
+  position_lr_final: 0.0000010
+  opacity_lr: 0.0010
+  scaling_lr: 0.00010
+  rotation_lr: 0.00003
+
+  rigid_lr: 0.00005
+  non_rigid_lr: 0.00025
+  texture_lr: 0.00024
+  tex_latent_lr: 0.00010
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 200
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.060
+
+  owner_local_detail_boost_enable: true
+  owner_local_detail_boost_warmup_iters: 1
+  owner_local_detail_boost_takeover_floor: 0.30
+  owner_local_detail_boost_takeover_gain: 1.20
+  owner_local_detail_boost_takeover_power: 1.30
+
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_aware_enable: true
+  boundary_aware_threshold: 0.05
+  boundary_aware_score_power: 1.0
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  boundary_image_error_score_enable: true
+  boundary_image_error_score_signed_enable: true
+  boundary_signed_routing_enable: true
+
+  boundary_tag_schedule_use_local_iteration: true
+  boundary_tag_enable: true
+  boundary_tag_update_interval: 40
+  boundary_tag_update_until_iter: 2000
+  boundary_tag_threshold: 0.42
+  boundary_tag_min_ratio: 0.03
+  boundary_tag_binary: true
+  boundary_tag_use_score_within_subset: true
+  boundary_tag_score_smooth_blend: 0.20
+  boundary_tag_score_smooth_k: 12
+  boundary_tag_support_k: 8
+  boundary_tag_support_threshold: 0.24
+
+  boundary_band_width: 4
+  boundary_image_error_score_band_width: 4
+  boundary_image_error_score_focus_dilate: 2
+  boundary_image_error_score_smooth_blend: 0.12
+  boundary_image_error_score_prior_floor: 0.12
+
+  boundary_signed_mixed_loss_scale: 0.15
+  boundary_signed_shrink_loss_scale: 2.10
+  boundary_signed_grow_loss_scale: 0.70
+  boundary_signed_share_gain: 1.20
+  boundary_signed_share_power: 1.35
+  boundary_signed_shrink_share_gain: 1.55
+  boundary_signed_shrink_share_power: 1.70
+
+  boundary_aware_opacity_scale: 0.20
+  boundary_aware_scaling_scale: 0.07
+  boundary_aware_boundary_opacity_residual_scale: 1.60
+  boundary_aware_boundary_scaling_residual_scale: 1.05
+
+  boundary_opacity_residual_lr: 0.00034
+  boundary_scaling_residual_lr: 0.00011
+  lambda_boundary_opacity_residual_reg: 0.0008
+  lambda_boundary_scaling_residual_reg: 0.0002
+  lambda_boundary_opacity_residual_smooth: 0.0011
+  lambda_boundary_scaling_residual_smooth: 0.0009
+  boundary_residual_smooth_k: 10
+  boundary_residual_smooth_distance_quantile: 0.50
+
+test_interval: 500
+test_iterations: [500, 1000, 1500, 2000]
+save_iterations: [2000]
+checkpoint_iterations: [2000]

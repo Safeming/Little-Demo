@@ -1,0 +1,47 @@
+# @package _global_
+
+best_metric: psnr_fg
+
+resume:
+  disable_densify_on_resume: false
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 6000
+  grad_clip: 0.08
+
+  position_lr_init: 0.00006
+  position_lr_final: 0.0000006
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.0012
+  opacity_lr: 0.015
+  scaling_lr: 0.0015
+  rotation_lr: 0.0005
+
+  pose_correction_lr: 0.00005
+  rigid_lr: 0.0
+  non_rigid_lr: 0.0008
+  lr_ratio: 0.1
+
+  lambda_l1: 1.0
+  lambda_dssim: 0.05
+  lambda_perceptual: 0.02
+  mask_loss_type: bce
+  lambda_mask: 0.20
+  lambda_opacity: 0.0
+  lambda_skinning: [10, 1000, 0.1]
+  lambda_pose: 0.0
+  lambda_aiap_xyz: 0.3
+  lambda_aiap_cov: 30.0
+
+  densify_from_iter: 6500
+  densify_until_iter: 8500
+  densification_interval: 200
+  densify_grad_threshold: 0.00030
+  percent_dense: 0.0035
+  opacity_reset_interval: 1000000
+
+test_interval: 500
+save_iterations: [6000]

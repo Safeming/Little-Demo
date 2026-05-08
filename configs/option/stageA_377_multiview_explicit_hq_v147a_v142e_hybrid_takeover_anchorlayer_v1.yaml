@@ -1,0 +1,59 @@
+# @package _global_
+
+# v147a: make hybrid field a true forward trunk takeover instead of a
+# residual patch. It directly predicts forward anchor weights and forward
+# rigid/soft/free mixing weights before x_bar is composed.
+
+best_metric: lpips_fg
+best_metric_mode: min
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: false
+  clear_boundary_tags_on_resume: true
+  clear_binding_state_on_resume: true
+  allow_partial_converter_load: true
+  partial_converter_missing_keys_allow_patterns:
+    - deformer.rigid.hybrid_field_mlp
+
+model:
+  deformer:
+    rigid:
+      hybrid_field_enable: true
+      hybrid_field_anchor_enable: true
+      hybrid_field_support_enable: false
+      hybrid_field_layer_enable: true
+      hybrid_field_update_dominant_joint: true
+      hybrid_field_feature_detach: false
+      hybrid_field_detach_gate: false
+      hybrid_field_gate_mode: boundary_softfree
+      hybrid_field_gate_min: 0.0
+      hybrid_field_gate_power: 1.5
+      hybrid_field_confidence_suppress: 0.15
+      hybrid_anchor_mode: direct
+      hybrid_anchor_direct_logit_scale: 1.2
+      hybrid_layer_mode: direct
+      hybrid_layer_direct_logit_scale: 1.2
+      hybrid_field_mlp:
+        n_neurons: 64
+        n_hidden_layers: 2
+        multires: 0
+        skip_in: []
+        cond_in: []
+        last_layer_init: true
+
+opt:
+  iterations: 4000
+
+  rigid_lr: 0.00010
+  non_rigid_lr: 0.0
+
+  boundary_aware_freeze_converter_for_boundary_loss: false
+
+  lambda_binding_hybrid_anchor_reg: 0.0020
+  lambda_binding_hybrid_layer_reg: 0.0015
+
+test_interval: 500
+test_iterations: [1000, 2000, 4000]
+save_iterations: [4000]

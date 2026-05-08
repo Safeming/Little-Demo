@@ -1,0 +1,78 @@
+# @package _global_
+
+best_metric: psnr_fg
+
+resume:
+  disable_densify_on_resume: true
+  disable_opacity_reset_on_resume: true
+  use_checkpoint_iteration_as_offset: true
+
+opt:
+  iterations: 1000
+  grad_clip: 0.06
+
+  # Stay close to the proven dual-mask v1 optimizer structure.
+  position_lr_init: 0.00002
+  position_lr_final: 0.0000002
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.00015
+  opacity_lr: 0.008
+  scaling_lr: 0.0008
+  rotation_lr: 0.00015
+
+  pose_correction_lr: 0.00001
+  rigid_lr: 0.0
+  non_rigid_lr: 0.00015
+  texture_lr: 0.00015
+  tex_latent_lr: 0.00015
+  lr_ratio: 0.1
+
+  foreground_mask_source: hard
+  global_mask_source: hard
+  boundary_region_source: soft_alpha
+  boundary_target_mask_source: soft
+  boundary_soft_low: 0.10
+  boundary_soft_high: 0.90
+
+  lambda_l1: 1.0
+  lambda_l1_fg: 0.20
+  lambda_l1_boundary: 0.045
+  lambda_l1_face: 0.13
+  lambda_perceptual_face: 0.012
+  lambda_edge_face: 0.010
+  lambda_l1_shoulder_arm: 0.085
+  lambda_edge_shoulder_arm: 0.035
+  boundary_band_width: 5
+  face_region_min_pixels: 48
+  face_perceptual_crop_pad: 12
+  shoulder_arm_region_min_pixels: 96
+  lambda_dssim: 0.0
+  lambda_perceptual: 0.010
+  perceptual_crop_pad: 16
+
+  mask_loss_type: l1
+  lambda_mask: 0.08
+  lambda_mask_boundary: 0.07
+  lambda_mask_boundary_hard: 0.0
+  lambda_silhouette_outer: 0.0
+  lambda_silhouette_inner: 0.0
+  lambda_opacity: 0.0
+
+  lambda_skinning: 0.1
+  lambda_pose: 0.0
+  lambda_aiap_xyz: 1.0
+  lambda_aiap_cov: 100.0
+  aiap_interval: 20
+  aiap_max_points: 12000
+
+  percent_dense: 0.0
+  densification_interval: 100
+  opacity_reset_interval: 1000000
+  densify_from_iter: 1000000
+  densify_until_iter: 0
+  densify_grad_threshold: 1.0
+  opacity_threshold: 0.05
+
+test_interval: 250
+save_iterations: [1000]
