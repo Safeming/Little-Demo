@@ -50,12 +50,18 @@ def closest_point_on_triangles(points, tri_verts):
     closest = torch.zeros_like(p.expand(-1, tri_verts.shape[1], -1))
     assigned = torch.zeros(tri_verts.shape[:2], dtype=torch.bool, device=tri_verts.device)
 
+    def assign_bary_constant(mask, values):
+        count = int(mask.sum().item())
+        if count <= 0:
+            return
+        bary[mask] = bary.new_tensor(values).view(1, 3).expand(count, 3)
+
     ap = p - a
     d1 = (ab * ap).sum(dim=-1)
     d2 = (ac * ap).sum(dim=-1)
 
     mask = (d1 <= 0.0) & (d2 <= 0.0) & (~assigned)
-    bary[mask] = bary.new_tensor((1.0, 0.0, 0.0))
+    assign_bary_constant(mask, (1.0, 0.0, 0.0))
     closest[mask] = a[mask]
     assigned |= mask
 
@@ -63,7 +69,7 @@ def closest_point_on_triangles(points, tri_verts):
     d3 = (ab * bp).sum(dim=-1)
     d4 = (ac * bp).sum(dim=-1)
     mask = (d3 >= 0.0) & (d4 <= d3) & (~assigned)
-    bary[mask] = bary.new_tensor((0.0, 1.0, 0.0))
+    assign_bary_constant(mask, (0.0, 1.0, 0.0))
     closest[mask] = b[mask]
     assigned |= mask
 
@@ -80,7 +86,7 @@ def closest_point_on_triangles(points, tri_verts):
     d5 = (ab * cp).sum(dim=-1)
     d6 = (ac * cp).sum(dim=-1)
     mask = (d6 >= 0.0) & (d5 <= d6) & (~assigned)
-    bary[mask] = bary.new_tensor((0.0, 0.0, 1.0))
+    assign_bary_constant(mask, (0.0, 0.0, 1.0))
     closest[mask] = c[mask]
     assigned |= mask
 

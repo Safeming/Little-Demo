@@ -3601,6 +3601,13 @@ def _collect_texture_clarity_stats(texture_module):
         'detail_high_freq_structure_abs_mean': 'last_detail_high_freq_structure_abs_mean',
         'detail_high_freq_structure_raw_abs_mean': 'last_detail_high_freq_structure_raw_abs_mean',
         'detail_high_freq_boundary_floor_mean': 'last_detail_high_freq_boundary_floor_mean',
+        'detail_high_freq_view_conflict_scale': 'last_detail_high_freq_view_conflict_scale',
+        'detail_high_freq_view_conflict_abs_mean': 'last_detail_high_freq_view_conflict_abs_mean',
+        'detail_high_freq_view_conflict_raw_abs_mean': 'last_detail_high_freq_view_conflict_raw_abs_mean',
+        'detail_high_freq_view_conflict_gate_mean': 'last_detail_high_freq_view_conflict_gate_mean',
+        'detail_high_freq_view_conflict_gate_fraction': 'last_detail_high_freq_view_conflict_gate_fraction',
+        'detail_high_freq_view_conflict_point_gate_mean': 'last_detail_high_freq_view_conflict_point_gate_mean',
+        'detail_high_freq_view_conflict_point_gate_fraction': 'last_detail_high_freq_view_conflict_point_gate_fraction',
     }
     for key, attr_name in attr_map.items():
         value = _optional_float(getattr(texture_module, attr_name, None))
@@ -3918,7 +3925,12 @@ def _maybe_log_clarity_debug(config_opt, schedule_iteration, debug_info):
                 f"face_gated={_format_optional_float(texture_stats.get('detail_high_freq_face_after_gate_abs_mean'), '.5f')} "
                 f"face={_format_optional_float(texture_stats.get('detail_high_freq_face_abs_mean'), '.5f')} "
                 f"face_gate={_format_optional_float(texture_stats.get('detail_high_freq_face_gate_mean'), '.4f')} "
-                f"face_point={_format_optional_float(texture_stats.get('detail_high_freq_face_point_gate_mean'), '.4f')}"
+                f"face_point={_format_optional_float(texture_stats.get('detail_high_freq_face_point_gate_mean'), '.4f')} "
+                f"view_conflict_scale={_format_optional_float(texture_stats.get('detail_high_freq_view_conflict_scale'), '.3f')} "
+                f"view_conflict={_format_optional_float(texture_stats.get('detail_high_freq_view_conflict_abs_mean'), '.5f')} "
+                f"view_conflict_raw={_format_optional_float(texture_stats.get('detail_high_freq_view_conflict_raw_abs_mean'), '.5f')} "
+                f"view_conflict_gate={_format_optional_float(texture_stats.get('detail_high_freq_view_conflict_gate_mean'), '.4f')} "
+                f"view_conflict_point={_format_optional_float(texture_stats.get('detail_high_freq_view_conflict_point_gate_mean'), '.4f')}"
             ),
             flush=True,
         )
@@ -6039,6 +6051,11 @@ def training(config):
 
         # perceptual loss
         lambda_perceptual = C(schedule_iteration, config.opt.get('lambda_perceptual', 0.))
+        if (
+            bool(reliable_view_debug.get('enabled', False))
+            and bool(config.opt.get('reliable_view_apply_global_perceptual', False))
+        ):
+            lambda_perceptual *= reliable_highfreq_weight
         if lambda_perceptual > 0:
             crop_pad = int(config.opt.get('perceptual_crop_pad', 0))
             perceptual_mask = fg_mask
@@ -7916,6 +7933,36 @@ def training(config):
             if torch.is_tensor(detail_high_freq_boundary_floor_mean):
                 log_loss['loss/texture_detail_high_freq_boundary_floor_mean'] = (
                     detail_high_freq_boundary_floor_mean.item()
+                )
+            detail_high_freq_view_conflict_abs_mean = getattr(
+                scene.converter.texture,
+                'last_detail_high_freq_view_conflict_abs_mean',
+                None,
+            )
+            if torch.is_tensor(detail_high_freq_view_conflict_abs_mean):
+                log_loss['loss/texture_detail_high_freq_view_conflict_abs_mean'] = (
+                    detail_high_freq_view_conflict_abs_mean.item()
+                )
+                log_loss['loss/texture_detail_high_freq_view_conflict_scale'] = float(
+                    getattr(scene.converter.texture, 'last_detail_high_freq_view_conflict_scale', 0.0)
+                )
+            detail_high_freq_view_conflict_gate_mean = getattr(
+                scene.converter.texture,
+                'last_detail_high_freq_view_conflict_gate_mean',
+                None,
+            )
+            if torch.is_tensor(detail_high_freq_view_conflict_gate_mean):
+                log_loss['loss/texture_detail_high_freq_view_conflict_gate_mean'] = (
+                    detail_high_freq_view_conflict_gate_mean.item()
+                )
+            detail_high_freq_view_conflict_point_gate_mean = getattr(
+                scene.converter.texture,
+                'last_detail_high_freq_view_conflict_point_gate_mean',
+                None,
+            )
+            if torch.is_tensor(detail_high_freq_view_conflict_point_gate_mean):
+                log_loss['loss/texture_detail_high_freq_view_conflict_point_gate_mean'] = (
+                    detail_high_freq_view_conflict_point_gate_mean.item()
                 )
             detail_high_freq_carrier_abs_mean = getattr(
                 scene.converter.texture,

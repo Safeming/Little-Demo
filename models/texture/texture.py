@@ -360,6 +360,20 @@ def _copy_mlp_parameters(src_module, dst_module):
     return True, "ok"
 
 
+def _scale_mlp_output_layer(module, scale):
+    scale = float(scale)
+    if abs(scale - 1.0) <= 1.0e-8:
+        return False
+    layers = _iter_named_linear_layers(module)
+    if len(layers) <= 0:
+        return False
+    with torch.no_grad():
+        last_layer = layers[-1][1]
+        last_layer.weight.data.mul_(scale)
+        last_layer.bias.data.mul_(scale)
+    return True
+
+
 def _copy_mlp_parameters_with_input_subset(src_module, dst_module, input_columns, output_scale=1.0):
     src_layers = _iter_named_linear_layers(src_module)
     dst_layers = _iter_named_linear_layers(dst_module)
@@ -2622,6 +2636,21 @@ class ColorMLP(ColorPrecompute):
         self.detail_high_freq_structure_inject_scale = 0.0
         self.detail_high_freq_structure_features = []
         self.detail_high_freq_structure_proj = None
+        self.detail_high_freq_view_conflict_cfg = None
+        self.detail_high_freq_view_conflict_enable = False
+        self.detail_high_freq_view_conflict_mlp = None
+        self.detail_high_freq_view_conflict_gate_mlp = None
+        self.detail_high_freq_view_conflict_scale_cfg = 0.0
+        self.detail_high_freq_view_conflict_tiny_repair_scale_cfg = 1.0
+        self.detail_high_freq_view_conflict_max_residual = 0.0
+        self.detail_high_freq_view_conflict_gate_bias = 0.0
+        self.detail_high_freq_view_conflict_min_gate = 0.0
+        self.detail_high_freq_view_conflict_chroma_center = False
+        self.detail_high_freq_view_conflict_input_detach = True
+        self.detail_high_freq_view_conflict_inherit_point_gate = True
+        self.detail_high_freq_view_conflict_point_gate_cfg = None
+        self.detail_high_freq_view_conflict_point_gate_enable = False
+        self.detail_high_freq_view_conflict_point_gate_combine_mode = 'mul'
         self.detail_tiny_repair_scale_cfg = 1.0
         self.detail_high_freq_tiny_repair_scale_cfg = 1.0
         self.detail_high_freq_face_tiny_repair_scale_cfg = 1.0
@@ -2664,6 +2693,13 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_structure_raw_abs_mean = None
         self.last_detail_high_freq_structure_debug = ''
         self.last_detail_high_freq_boundary_floor_mean = None
+        self.last_detail_high_freq_view_conflict_scale = 0.0
+        self.last_detail_high_freq_view_conflict_abs_mean = None
+        self.last_detail_high_freq_view_conflict_raw_abs_mean = None
+        self.last_detail_high_freq_view_conflict_gate_mean = None
+        self.last_detail_high_freq_view_conflict_gate_fraction = None
+        self.last_detail_high_freq_view_conflict_point_gate_mean = None
+        self.last_detail_high_freq_view_conflict_point_gate_fraction = None
         self.last_partial_load_init_events = []
         self._detail_schedule_local_iteration = None
         if self.detail_residual_enable:
@@ -2992,6 +3028,104 @@ class ColorMLP(ColorPrecompute):
                     else:
                         self.detail_high_freq_structure_enable = False
 
+                self.detail_high_freq_view_conflict_cfg = self.detail_high_freq_cfg.get(
+                    'view_conflict_residual',
+                    None,
+                )
+                self.detail_high_freq_view_conflict_enable = bool(
+                    self.detail_high_freq_view_conflict_cfg.get('enable', False)
+                ) if self.detail_high_freq_view_conflict_cfg is not None else False
+                if self.detail_high_freq_view_conflict_enable:
+                    self.detail_high_freq_view_conflict_scale_cfg = (
+                        self.detail_high_freq_view_conflict_cfg.get('scale', 0.0)
+                    )
+                    self.detail_high_freq_view_conflict_tiny_repair_scale_cfg = (
+                        self.detail_high_freq_view_conflict_cfg.get(
+                            'tiny_repair_scale',
+                            self.detail_high_freq_view_conflict_cfg.get(
+                                'repair_scale',
+                                1.0,
+                            ),
+                        )
+                    )
+                    self.detail_high_freq_view_conflict_max_residual = float(
+                        self.detail_high_freq_view_conflict_cfg.get('max_residual', 0.025)
+                    )
+                    self.detail_high_freq_view_conflict_gate_bias = float(
+                        self.detail_high_freq_view_conflict_cfg.get('gate_bias', -0.45)
+                    )
+                    self.detail_high_freq_view_conflict_min_gate = float(
+                        self.detail_high_freq_view_conflict_cfg.get('min_gate', 0.0)
+                    )
+                    self.detail_high_freq_view_conflict_chroma_center = bool(
+                        self.detail_high_freq_view_conflict_cfg.get('chroma_center', True)
+                    )
+                    self.detail_high_freq_view_conflict_input_detach = bool(
+                        self.detail_high_freq_view_conflict_cfg.get('input_detach', True)
+                    )
+                    self.detail_high_freq_view_conflict_inherit_point_gate = bool(
+                        self.detail_high_freq_view_conflict_cfg.get('inherit_point_gate', True)
+                    )
+                    self.detail_high_freq_view_conflict_point_gate_combine_mode = str(
+                        self.detail_high_freq_view_conflict_cfg.get(
+                            'point_gate_combine_mode',
+                            'mul',
+                        )
+                    ).lower()
+                    self.detail_high_freq_view_conflict_point_gate_cfg = (
+                        self.detail_high_freq_view_conflict_cfg.get('point_gate', None)
+                    )
+                    self.detail_high_freq_view_conflict_point_gate_enable = bool(
+                        self.detail_high_freq_view_conflict_point_gate_cfg.get('enable', False)
+                    ) if self.detail_high_freq_view_conflict_point_gate_cfg is not None else False
+                    self.detail_high_freq_view_conflict_init_from = str(
+                        self.detail_high_freq_view_conflict_cfg.get('init_from', 'none')
+                    )
+                    self.detail_high_freq_view_conflict_gate_init_from = str(
+                        self.detail_high_freq_view_conflict_cfg.get('gate_init_from', 'none')
+                    )
+                    self.detail_high_freq_view_conflict_init_missing_only = bool(
+                        self.detail_high_freq_view_conflict_cfg.get('init_missing_only', True)
+                    )
+                    self.detail_high_freq_view_conflict_init_output_scale = float(
+                        self.detail_high_freq_view_conflict_cfg.get('init_output_scale', 1.0)
+                    )
+                    self.detail_high_freq_view_conflict_gate_init_output_scale = float(
+                        self.detail_high_freq_view_conflict_cfg.get('gate_init_output_scale', 1.0)
+                    )
+                    view_conflict_mlp_cfg = self.detail_high_freq_view_conflict_cfg.get(
+                        'mlp',
+                        detail_high_freq_mlp_cfg if 'detail_high_freq_mlp_cfg' in locals() else detail_mlp_cfg,
+                    )
+                    view_conflict_mlp_cfg = OmegaConf.create(
+                        OmegaConf.to_container(view_conflict_mlp_cfg, resolve=True)
+                    )
+                    view_conflict_mlp_cfg.last_layer_init = bool(
+                        view_conflict_mlp_cfg.get('last_layer_init', True)
+                    )
+                    self.detail_high_freq_view_conflict_mlp = VanillaCondMLP(
+                        high_freq_in_dim,
+                        0,
+                        d_out,
+                        view_conflict_mlp_cfg,
+                    )
+                    view_conflict_gate_mlp_cfg = self.detail_high_freq_view_conflict_cfg.get(
+                        'gate_mlp',
+                        view_conflict_mlp_cfg,
+                    )
+                    view_conflict_gate_mlp_cfg = OmegaConf.create(
+                        OmegaConf.to_container(view_conflict_gate_mlp_cfg, resolve=True)
+                    )
+                    view_conflict_gate_mlp_cfg.last_layer_init = bool(
+                        view_conflict_gate_mlp_cfg.get('last_layer_init', True)
+                    )
+                    self.detail_high_freq_view_conflict_gate_mlp = VanillaCondMLP(
+                        high_freq_in_dim,
+                        0,
+                        1,
+                        view_conflict_gate_mlp_cfg,
+                    )
+
                 face_local_raw_dim = 0
                 if self.detail_high_freq_face_local_enable:
                     if self.detail_high_freq_face_local_use_canonical_xyz:
@@ -3252,6 +3386,29 @@ class ColorMLP(ColorPrecompute):
             self.detail_high_freq_cfg.get('point_gate_combine_mode', 'mul')
         ).lower() if self.detail_high_freq_cfg is not None else 'mul'
         return _combine_gate_terms([point_gate, extra_gate], mode=combine_mode)
+
+    def _build_detail_high_freq_view_conflict_point_gate(self, gaussians, base_gate=None):
+        point_gate = None
+        if self.detail_high_freq_view_conflict_inherit_point_gate and torch.is_tensor(base_gate):
+            point_gate = base_gate
+
+        extra_gate = None
+        if (
+            self.detail_high_freq_view_conflict_point_gate_enable
+            and self.detail_high_freq_view_conflict_point_gate_cfg is not None
+        ):
+            extra_gate = self._build_point_gate(
+                gaussians,
+                self.detail_high_freq_view_conflict_point_gate_cfg,
+            )
+        if point_gate is None:
+            return extra_gate
+        if extra_gate is None:
+            return point_gate
+        return _combine_gate_terms(
+            [point_gate, extra_gate],
+            mode=self.detail_high_freq_view_conflict_point_gate_combine_mode,
+        )
 
     def _get_binding_boundary_score(self, gaussians, template, detach=True):
         if gaussians is None or not torch.is_tensor(template):
@@ -4052,6 +4209,103 @@ class ColorMLP(ColorPrecompute):
         if carrier_monitor is None:
             carrier_monitor = high_freq_input
         return high_freq_input, carrier_monitor, structure_raw, structure_delta, structure_debug
+
+    def _apply_detail_high_freq_view_conflict_residual(
+        self,
+        output,
+        high_freq_input,
+        gaussians,
+        base_point_gate,
+        schedule_iteration,
+    ):
+        zero = output.new_tensor(0.0)
+        if self.detail_high_freq_view_conflict_mlp is None:
+            self.last_detail_high_freq_view_conflict_scale = 0.0
+            self.last_detail_high_freq_view_conflict_abs_mean = zero
+            self.last_detail_high_freq_view_conflict_raw_abs_mean = zero
+            self.last_detail_high_freq_view_conflict_gate_mean = zero
+            self.last_detail_high_freq_view_conflict_gate_fraction = zero
+            self.last_detail_high_freq_view_conflict_point_gate_mean = zero
+            self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+            return None
+
+        view_conflict_scale = _resolve_scheduled_scalar(
+            schedule_iteration,
+            self.detail_high_freq_view_conflict_scale_cfg,
+            default=0.0,
+        )
+        view_conflict_tiny_scale = _resolve_scheduled_scalar(
+            schedule_iteration,
+            self.detail_high_freq_view_conflict_tiny_repair_scale_cfg,
+            default=1.0,
+        )
+        self.last_detail_high_freq_view_conflict_scale = float(view_conflict_scale)
+        if (
+            view_conflict_scale <= 0.0
+            or self.detail_high_freq_view_conflict_max_residual <= 0.0
+            or view_conflict_tiny_scale <= 0.0
+            or not torch.is_tensor(high_freq_input)
+        ):
+            self.last_detail_high_freq_view_conflict_abs_mean = zero
+            self.last_detail_high_freq_view_conflict_raw_abs_mean = zero
+            self.last_detail_high_freq_view_conflict_gate_mean = zero
+            self.last_detail_high_freq_view_conflict_gate_fraction = zero
+            self.last_detail_high_freq_view_conflict_point_gate_mean = zero
+            self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+            return None
+
+        residual_input = high_freq_input.detach() if self.detail_high_freq_view_conflict_input_detach else high_freq_input
+        amplitude = self.detail_high_freq_view_conflict_max_residual * view_conflict_scale
+        view_conflict_raw = torch.tanh(
+            self.detail_high_freq_view_conflict_mlp(residual_input)
+        )
+        if self.detail_high_freq_view_conflict_chroma_center:
+            view_conflict_raw = view_conflict_raw - view_conflict_raw.mean(
+                dim=-1,
+                keepdim=True,
+            )
+        view_conflict_raw = view_conflict_raw * amplitude
+
+        if self.detail_high_freq_view_conflict_gate_mlp is not None:
+            view_conflict_gate = torch.sigmoid(
+                self.detail_high_freq_view_conflict_gate_mlp(residual_input)
+                + self.detail_high_freq_view_conflict_gate_bias
+            )
+            if self.detail_high_freq_view_conflict_min_gate > 0.0:
+                view_conflict_gate = (
+                    view_conflict_gate
+                    * (1.0 - self.detail_high_freq_view_conflict_min_gate)
+                    + self.detail_high_freq_view_conflict_min_gate
+                )
+        else:
+            view_conflict_gate = output.new_ones((output.shape[0], 1))
+
+        point_gate = self._build_detail_high_freq_view_conflict_point_gate(
+            gaussians,
+            base_gate=base_point_gate,
+        )
+        if torch.is_tensor(point_gate):
+            point_gate = point_gate.to(device=output.device, dtype=output.dtype)
+            self.last_detail_high_freq_view_conflict_point_gate_mean = point_gate.detach().mean()
+            self.last_detail_high_freq_view_conflict_point_gate_fraction = (
+                point_gate.detach() > 0.0
+            ).float().mean()
+        else:
+            self.last_detail_high_freq_view_conflict_point_gate_mean = zero
+            self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+
+        view_conflict_residual = view_conflict_raw * view_conflict_gate
+        if torch.is_tensor(point_gate):
+            view_conflict_residual = view_conflict_residual * point_gate.unsqueeze(-1)
+        view_conflict_residual = view_conflict_residual * view_conflict_tiny_scale
+
+        self.last_detail_high_freq_view_conflict_raw_abs_mean = view_conflict_raw.detach().abs().mean()
+        self.last_detail_high_freq_view_conflict_abs_mean = view_conflict_residual.detach().abs().mean()
+        self.last_detail_high_freq_view_conflict_gate_mean = view_conflict_gate.detach().mean()
+        self.last_detail_high_freq_view_conflict_gate_fraction = (
+            view_conflict_gate.detach() > 0.5
+        ).float().mean()
+        return view_conflict_residual
 
     def _compose_single_region_local_delta(self, gaussians, camera, local_cfg, local_proj, iteration=0):
         if local_cfg is None or local_proj is None:
@@ -5791,6 +6045,13 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_structure_raw_abs_mean = zero
         self.last_detail_high_freq_structure_debug = ''
         self.last_detail_high_freq_boundary_floor_mean = zero
+        self.last_detail_high_freq_view_conflict_scale = 0.0
+        self.last_detail_high_freq_view_conflict_abs_mean = zero
+        self.last_detail_high_freq_view_conflict_raw_abs_mean = zero
+        self.last_detail_high_freq_view_conflict_gate_mean = zero
+        self.last_detail_high_freq_view_conflict_gate_fraction = zero
+        self.last_detail_high_freq_view_conflict_point_gate_mean = zero
+        self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
 
     def _apply_structured_trunk_output_head(self, output, gaussians, camera, base_input, iteration=0):
         if self.structured_trunk_output_head_mlp is None:
@@ -6357,6 +6618,12 @@ class ColorMLP(ColorPrecompute):
             return self.detail_high_freq_face_gate_mlp, 'face_gate'
         return None, source_name
 
+    def _resolve_view_conflict_init_source_module(self, source_name):
+        return self._resolve_face_init_source_module(source_name)
+
+    def _resolve_view_conflict_gate_init_source_module(self, source_name):
+        return self._resolve_face_gate_init_source_module(source_name)
+
     def on_partial_load(self, missing_keys=None, unexpected_keys=None):
         del unexpected_keys
 
@@ -6364,6 +6631,64 @@ class ColorMLP(ColorPrecompute):
         missing_keys = set(missing_keys or [])
         if not missing_keys:
             return
+
+        if self.detail_high_freq_view_conflict_enable:
+            view_conflict_mlp_missing = any(
+                'detail_high_freq_view_conflict_mlp.' in key
+                for key in missing_keys
+            )
+            view_conflict_gate_missing = any(
+                'detail_high_freq_view_conflict_gate_mlp.' in key
+                for key in missing_keys
+            )
+
+            if not self.detail_high_freq_view_conflict_init_missing_only:
+                view_conflict_mlp_missing = True
+                view_conflict_gate_missing = True
+
+            if view_conflict_mlp_missing and self.detail_high_freq_view_conflict_mlp is not None:
+                src_module, src_name = self._resolve_view_conflict_init_source_module(
+                    self.detail_high_freq_view_conflict_init_from
+                )
+                if src_module is not None and src_module is not self.detail_high_freq_view_conflict_mlp:
+                    copied, reason = _copy_mlp_parameters(src_module, self.detail_high_freq_view_conflict_mlp)
+                    if copied:
+                        scaled = _scale_mlp_output_layer(
+                            self.detail_high_freq_view_conflict_mlp,
+                            self.detail_high_freq_view_conflict_init_output_scale,
+                        )
+                        event = f"view_conflict_mlp<-{src_name}"
+                        if scaled:
+                            event += f"*{self.detail_high_freq_view_conflict_init_output_scale:.3g}"
+                        self.last_partial_load_init_events.append(event)
+                        print(f"[ClarityInit] {event}", flush=True)
+                    else:
+                        print(
+                            f"[ClarityInit] view_conflict_mlp init from {src_name} skipped ({reason})",
+                            flush=True,
+                        )
+
+            if view_conflict_gate_missing and self.detail_high_freq_view_conflict_gate_mlp is not None:
+                src_module, src_name = self._resolve_view_conflict_gate_init_source_module(
+                    self.detail_high_freq_view_conflict_gate_init_from
+                )
+                if src_module is not None and src_module is not self.detail_high_freq_view_conflict_gate_mlp:
+                    copied, reason = _copy_mlp_parameters(src_module, self.detail_high_freq_view_conflict_gate_mlp)
+                    if copied:
+                        scaled = _scale_mlp_output_layer(
+                            self.detail_high_freq_view_conflict_gate_mlp,
+                            self.detail_high_freq_view_conflict_gate_init_output_scale,
+                        )
+                        event = f"view_conflict_gate<-{src_name}"
+                        if scaled:
+                            event += f"*{self.detail_high_freq_view_conflict_gate_init_output_scale:.3g}"
+                        self.last_partial_load_init_events.append(event)
+                        print(f"[ClarityInit] {event}", flush=True)
+                    else:
+                        print(
+                            f"[ClarityInit] view_conflict_gate init from {src_name} skipped ({reason})",
+                            flush=True,
+                        )
 
         if self.detail_high_freq_face_branch_enable:
             face_mlp_missing = any('detail_high_freq_face_mlp.' in key for key in missing_keys)
@@ -6657,6 +6982,13 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_structure_raw_abs_mean = None
         self.last_detail_high_freq_structure_debug = ''
         self.last_detail_high_freq_boundary_floor_mean = None
+        self.last_detail_high_freq_view_conflict_scale = 0.0
+        self.last_detail_high_freq_view_conflict_abs_mean = None
+        self.last_detail_high_freq_view_conflict_raw_abs_mean = None
+        self.last_detail_high_freq_view_conflict_gate_mean = None
+        self.last_detail_high_freq_view_conflict_gate_fraction = None
+        self.last_detail_high_freq_view_conflict_point_gate_mean = None
+        self.last_detail_high_freq_view_conflict_point_gate_fraction = None
 
     def compose_input(self, gaussians, camera, iteration=0):
         features = gaussians.get_features.squeeze(-1)
@@ -6935,6 +7267,16 @@ class ColorMLP(ColorPrecompute):
                 tiny_repair = tiny_repair + detail_high_freq_residual
                 has_tiny_repair = True
                 self.last_detail_high_freq_residual_abs_mean = detail_high_freq_residual.detach().abs().mean()
+                view_conflict_residual = self._apply_detail_high_freq_view_conflict_residual(
+                    output,
+                    detail_high_freq_inp,
+                    gaussians,
+                    detail_high_freq_point_gate,
+                    detail_high_freq_schedule_iteration,
+                )
+                if torch.is_tensor(view_conflict_residual):
+                    tiny_repair = tiny_repair + view_conflict_residual
+                    has_tiny_repair = True
                 if self.detail_high_freq_face_mlp is not None and self.detail_high_freq_face_scale > 0.0:
                     detail_high_freq_face_tiny_repair_scale = _resolve_scheduled_scalar(
                         detail_high_freq_schedule_iteration,
@@ -7055,6 +7397,13 @@ class ColorMLP(ColorPrecompute):
                 if self.last_detail_high_freq_face_point_gate_fraction is None:
                     self.last_detail_high_freq_face_point_gate_fraction = output.new_tensor(0.0)
                 self.last_detail_high_freq_boundary_floor_mean = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_scale = 0.0
+                self.last_detail_high_freq_view_conflict_abs_mean = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_raw_abs_mean = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_gate_mean = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_gate_fraction = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_point_gate_mean = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_point_gate_fraction = output.new_tensor(0.0)
         if has_tiny_repair:
             output = output + tiny_repair
             self.last_detail_tiny_repair_abs_mean = tiny_repair.detach().abs().mean()
