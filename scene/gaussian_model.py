@@ -385,6 +385,8 @@ class GaussianModel:
         self._boundary_tag = torch.empty(0)
         self._boundary_opacity_residual = torch.empty(0)
         self._boundary_scaling_residual = torch.empty(0)
+        self._semantic_region_logits_residual = torch.empty(0)
+        self._semantic_compact_logits_residual = torch.empty(0)
         self._offender_score_accum = torch.empty(0)
         self._offender_count_accum = torch.empty(0)
         self._offender_refill_score = torch.empty(0)
@@ -418,9 +420,12 @@ class GaussianModel:
                       "binding_barycentric",
                       "binding_layer_ids",
                       "binding_region_probs",
+                      "binding_region_probs_raw",
                       "binding_region_ids",
                       "binding_compact_semantic_probs",
+                      "binding_compact_semantic_probs_raw",
                       "binding_compact_semantic_ids",
+                      "binding_compact_semantic_names",
                       "binding_semantic_score",
                       "binding_semantic_distance",
                       "binding_thin_score",
@@ -440,7 +445,9 @@ class GaussianModel:
                       "_opacity",
                       "_boundary_tag",
                       "_boundary_opacity_residual",
-                      "_boundary_scaling_residual"]
+                      "_boundary_scaling_residual",
+                      "_semantic_region_logits_residual",
+                      "_semantic_compact_logits_residual"]
         for parameter in parameters:
             setattr(cloned, parameter, getattr(self, parameter) + 0.)
 
@@ -4628,6 +4635,96 @@ class GaussianModel:
             )
         return len(changed) > 0
 
+    def _semantic_adapter_enabled(self):
+        return bool(self.cfg.get('semantic_logits_adapter_enable', False))
+
+    def _ensure_semantic_adapter_state_matches_points(self, verbose=False):
+        point_count = int(self.get_xyz.shape[0]) if torch.is_tensor(self._xyz) and self._xyz.ndim >= 2 else 0
+        device = self._xyz.device if torch.is_tensor(self._xyz) and self._xyz.numel() > 0 else None
+        changed = []
+
+        region_shape = (point_count, 3)
+        compact_shape = (point_count, int(self.cfg.get('semantic_logits_adapter_compact_classes', 6)))
+
+        if point_count <= 0:
+            if not torch.is_tensor(self._semantic_region_logits_residual) or self._semantic_region_logits_residual.numel() > 0:
+                self._semantic_region_logits_residual = torch.empty(0, 3, device=device)
+                changed.append("semantic_region_logits_residual")
+            if not torch.is_tensor(self._semantic_compact_logits_residual) or self._semantic_compact_logits_residual.numel() > 0:
+                self._semantic_compact_logits_residual = torch.empty(0, compact_shape[1], device=device)
+                changed.append("semantic_compact_logits_residual")
+            return len(changed) > 0
+
+        if (
+            not torch.is_tensor(self._semantic_region_logits_residual)
+            or tuple(self._semantic_region_logits_residual.shape) != region_shape
+        ):
+            region_residual = self._resize_pointwise_state(
+                self._semantic_region_logits_residual,
+                point_count,
+                tail_shape=region_shape[1:],
+                dtype=self._xyz.dtype,
+                device=device,
+            )
+            self._semantic_region_logits_residual = self._replace_optimizer_parameter(
+                "semantic_region_logits_residual",
+                region_residual,
+            )
+            changed.append("semantic_region_logits_residual")
+
+        if (
+            not torch.is_tensor(self._semantic_compact_logits_residual)
+            or tuple(self._semantic_compact_logits_residual.shape) != compact_shape
+        ):
+            compact_residual = self._resize_pointwise_state(
+                self._semantic_compact_logits_residual,
+                point_count,
+                tail_shape=compact_shape[1:],
+                dtype=self._xyz.dtype,
+                device=device,
+            )
+            self._semantic_compact_logits_residual = self._replace_optimizer_parameter(
+                "semantic_compact_logits_residual",
+                compact_residual,
+            )
+            changed.append("semantic_compact_logits_residual")
+
+        if verbose and changed:
+            print(
+                "[GaussianModel] semantic adapter state resynced for "
+                f"{point_count} points: {', '.join(changed)}"
+            )
+        return len(changed) > 0
+
+    def apply_semantic_logits_adapter(self, region_probs, compact_probs):
+        if not self._semantic_adapter_enabled():
+            return region_probs, compact_probs
+        self._ensure_semantic_adapter_state_matches_points(verbose=False)
+
+        max_delta = float(self.cfg.get('semantic_logits_adapter_max_delta', 1.25))
+        if torch.is_tensor(region_probs) and region_probs.shape == self._semantic_region_logits_residual.shape:
+            delta = self._semantic_region_logits_residual.to(device=region_probs.device, dtype=region_probs.dtype)
+            if max_delta > 0.0:
+                delta = torch.tanh(delta) * max_delta
+            region_probs = F.softmax(torch.log(region_probs.clamp_min(1e-6)) + delta, dim=-1)
+
+        if torch.is_tensor(compact_probs) and compact_probs.shape == self._semantic_compact_logits_residual.shape:
+            delta = self._semantic_compact_logits_residual.to(device=compact_probs.device, dtype=compact_probs.dtype)
+            if max_delta > 0.0:
+                delta = torch.tanh(delta) * max_delta
+            compact_probs = F.softmax(torch.log(compact_probs.clamp_min(1e-6)) + delta, dim=-1)
+
+        return region_probs, compact_probs
+
+    def semantic_logits_adapter_regularization(self):
+        if not self._semantic_adapter_enabled():
+            device = self._xyz.device if torch.is_tensor(self._xyz) else "cuda"
+            return torch.tensor(0.0, device=device)
+        self._ensure_semantic_adapter_state_matches_points(verbose=False)
+        reg = self._semantic_region_logits_residual.pow(2).mean()
+        reg = reg + self._semantic_compact_logits_residual.pow(2).mean()
+        return reg
+
     def reset_boundary_residuals(self):
         if self.get_xyz.numel() <= 0:
             self._boundary_opacity_residual = torch.empty(0, device=self._xyz.device if torch.is_tensor(self._xyz) else None)
@@ -4750,6 +4847,7 @@ class GaussianModel:
     def capture(self):
         self.ensure_boundary_state_matches_points(verbose=False)
         self.ensure_offender_state_matches_points(verbose=False)
+        self._ensure_semantic_adapter_state_matches_points(verbose=False)
         return (
             self.active_sh_degree,
             self._xyz,
@@ -4761,6 +4859,8 @@ class GaussianModel:
             self._boundary_tag,
             self._boundary_opacity_residual,
             self._boundary_scaling_residual,
+            self._semantic_region_logits_residual,
+            self._semantic_compact_logits_residual,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -4817,9 +4917,30 @@ class GaussianModel:
             denom,
             opt_dict,
             self.spatial_lr_scale) = model_args
+            self._semantic_region_logits_residual = nn.Parameter(torch.zeros((self._xyz.shape[0], 3), dtype=self._xyz.dtype, device=self._xyz.device).requires_grad_(True))
+            self._semantic_compact_logits_residual = nn.Parameter(torch.zeros((self._xyz.shape[0], 6), dtype=self._xyz.dtype, device=self._xyz.device).requires_grad_(True))
+        elif len(model_args) == 17:
+            (self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self._boundary_tag,
+            self._boundary_opacity_residual,
+            self._boundary_scaling_residual,
+            self._semantic_region_logits_residual,
+            self._semantic_compact_logits_residual,
+            self.max_radii2D,
+            xyz_gradient_accum,
+            denom,
+            opt_dict,
+            self.spatial_lr_scale) = model_args
         else:
             raise ValueError(f'Unexpected GaussianModel checkpoint format with {len(model_args)} entries.')
         self.ensure_boundary_state_matches_points(verbose=True)
+        self._ensure_semantic_adapter_state_matches_points(verbose=True)
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -4912,6 +5033,7 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.ensure_boundary_state_matches_points(verbose=False)
         self.ensure_offender_state_matches_points(verbose=False)
+        self._ensure_semantic_adapter_state_matches_points(verbose=False)
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -4925,7 +5047,9 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             {'params': [self._boundary_opacity_residual], 'lr': training_args.get('boundary_opacity_residual_lr', 0.0), "name": "boundary_opacity_residual"},
-            {'params': [self._boundary_scaling_residual], 'lr': training_args.get('boundary_scaling_residual_lr', 0.0), "name": "boundary_scaling_residual"}
+            {'params': [self._boundary_scaling_residual], 'lr': training_args.get('boundary_scaling_residual_lr', 0.0), "name": "boundary_scaling_residual"},
+            {'params': [self._semantic_region_logits_residual], 'lr': training_args.get('semantic_region_logits_lr', 0.0), "name": "semantic_region_logits_residual"},
+            {'params': [self._semantic_compact_logits_residual], 'lr': training_args.get('semantic_compact_logits_lr', 0.0), "name": "semantic_compact_logits_residual"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -5183,6 +5307,8 @@ class GaussianModel:
         self._boundary_scaling_residual = optimizable_tensors["boundary_scaling_residual"]
         self._boundary_opacity_residual = optimizable_tensors["boundary_opacity_residual"]
         self._boundary_scaling_residual = optimizable_tensors["boundary_scaling_residual"]
+        self._semantic_region_logits_residual = optimizable_tensors["semantic_region_logits_residual"]
+        self._semantic_compact_logits_residual = optimizable_tensors["semantic_compact_logits_residual"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -5252,6 +5378,14 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_binding_state=None, new_boundary_tags=None, new_boundary_opacity_residual=None, new_boundary_scaling_residual=None, new_live_boundary_score=None):
+        if new_xyz is not None:
+            new_count = new_xyz.shape[0]
+            device = new_xyz.device
+            dtype = self._xyz.dtype if torch.is_tensor(self._xyz) and self._xyz.numel() > 0 else new_xyz.dtype
+        else:
+            new_count = 0
+            device = self._xyz.device if torch.is_tensor(self._xyz) else "cuda"
+            dtype = self._xyz.dtype if torch.is_tensor(self._xyz) else torch.float32
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -5259,7 +5393,9 @@ class GaussianModel:
         "scaling" : new_scaling,
         "rotation" : new_rotation,
         "boundary_opacity_residual": new_boundary_opacity_residual,
-        "boundary_scaling_residual": new_boundary_scaling_residual}
+        "boundary_scaling_residual": new_boundary_scaling_residual,
+        "semantic_region_logits_residual": torch.zeros((new_count, 3), dtype=dtype, device=device),
+        "semantic_compact_logits_residual": torch.zeros((new_count, int(self.cfg.get('semantic_logits_adapter_compact_classes', 6))), dtype=dtype, device=device)}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -5270,6 +5406,8 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
         self._boundary_opacity_residual = optimizable_tensors["boundary_opacity_residual"]
         self._boundary_scaling_residual = optimizable_tensors["boundary_scaling_residual"]
+        self._semantic_region_logits_residual = optimizable_tensors["semantic_region_logits_residual"]
+        self._semantic_compact_logits_residual = optimizable_tensors["semantic_compact_logits_residual"]
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")

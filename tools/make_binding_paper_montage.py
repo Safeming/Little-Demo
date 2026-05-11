@@ -20,6 +20,7 @@ PANEL_SPECS = {
     'region': ('Region', 'binding_maps/region'),
     'thin': ('Thin', 'binding_maps/thin'),
     'semantic': ('Semantic', 'binding_maps/semantic'),
+    'compact_semantic': ('Compact', 'binding_maps/compact_semantic'),
     'temporal': ('Temporal', 'binding_maps/temporal'),
     'body_prob': ('Body Prob', 'binding_maps/body_prob'),
     'soft_prob': ('Soft Prob', 'binding_maps/soft_prob'),

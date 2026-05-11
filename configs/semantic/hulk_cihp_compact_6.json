@@ -1,0 +1,12 @@
+{
+  "class_names": ["hair", "face", "skin", "upper", "lower", "shoes"],
+  "groups": {
+    "hair": [2],
+    "face": [13],
+    "skin": [14, 15, 16, 17],
+    "upper": [5, 6, 7, 11],
+    "lower": [9, 10, 12],
+    "shoes": [8, 18, 19]
+  },
+  "ignore_labels": [0, 1, 3, 4]
+}

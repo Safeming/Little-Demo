@@ -42,6 +42,28 @@ from tools.export_semantic_editable_assets import (
 )
 
 
+def _configure_torch_threads_from_env():
+    raw = os.environ.get('TORCH_NUM_THREADS') or os.environ.get('OMP_NUM_THREADS')
+    if not raw:
+        return
+    try:
+        threads = max(1, int(raw))
+    except ValueError:
+        return
+    torch.set_num_threads(threads)
+    try:
+        torch.set_num_interop_threads(max(1, min(threads, 4)))
+    except RuntimeError:
+        pass
+
+
+_configure_torch_threads_from_env()
+try:
+    cv2.setNumThreads(max(1, int(os.environ.get('OPENCV_FOR_THREADS_NUM', os.environ.get('OMP_NUM_THREADS', '1')))))
+except Exception:
+    pass
+
+
 LAYER_COLORS = torch.tensor([
     [0.96, 0.28, 0.22],
     [0.98, 0.83, 0.25],

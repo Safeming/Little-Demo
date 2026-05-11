@@ -2651,6 +2651,12 @@ class ColorMLP(ColorPrecompute):
         self.detail_high_freq_view_conflict_point_gate_cfg = None
         self.detail_high_freq_view_conflict_point_gate_enable = False
         self.detail_high_freq_view_conflict_point_gate_combine_mode = 'mul'
+        self.detail_high_freq_view_conflict_boundary_suppress_enable = False
+        self.detail_high_freq_view_conflict_boundary_suppress_strength_cfg = 0.0
+        self.detail_high_freq_view_conflict_boundary_suppress_threshold = 0.0
+        self.detail_high_freq_view_conflict_boundary_suppress_power = 1.0
+        self.detail_high_freq_view_conflict_boundary_suppress_min_scale = 0.0
+        self.detail_high_freq_view_conflict_boundary_suppress_detach = True
         self.detail_tiny_repair_scale_cfg = 1.0
         self.detail_high_freq_tiny_repair_scale_cfg = 1.0
         self.detail_high_freq_face_tiny_repair_scale_cfg = 1.0
@@ -2700,6 +2706,7 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_view_conflict_gate_fraction = None
         self.last_detail_high_freq_view_conflict_point_gate_mean = None
         self.last_detail_high_freq_view_conflict_point_gate_fraction = None
+        self.last_detail_high_freq_view_conflict_boundary_suppress_mean = None
         self.last_partial_load_init_events = []
         self._detail_schedule_local_iteration = None
         if self.detail_residual_enable:
@@ -3078,6 +3085,29 @@ class ColorMLP(ColorPrecompute):
                     self.detail_high_freq_view_conflict_point_gate_enable = bool(
                         self.detail_high_freq_view_conflict_point_gate_cfg.get('enable', False)
                     ) if self.detail_high_freq_view_conflict_point_gate_cfg is not None else False
+                    boundary_suppress_cfg = self.detail_high_freq_view_conflict_cfg.get(
+                        'boundary_suppress',
+                        None,
+                    )
+                    if boundary_suppress_cfg is not None:
+                        self.detail_high_freq_view_conflict_boundary_suppress_enable = bool(
+                            boundary_suppress_cfg.get('enable', False)
+                        )
+                        self.detail_high_freq_view_conflict_boundary_suppress_strength_cfg = (
+                            boundary_suppress_cfg.get('strength', 0.0)
+                        )
+                        self.detail_high_freq_view_conflict_boundary_suppress_threshold = float(
+                            boundary_suppress_cfg.get('threshold', 0.0)
+                        )
+                        self.detail_high_freq_view_conflict_boundary_suppress_power = float(
+                            boundary_suppress_cfg.get('power', 1.0)
+                        )
+                        self.detail_high_freq_view_conflict_boundary_suppress_min_scale = float(
+                            boundary_suppress_cfg.get('min_scale', 0.0)
+                        )
+                        self.detail_high_freq_view_conflict_boundary_suppress_detach = bool(
+                            boundary_suppress_cfg.get('detach', True)
+                        )
                     self.detail_high_freq_view_conflict_init_from = str(
                         self.detail_high_freq_view_conflict_cfg.get('init_from', 'none')
                     )
@@ -4227,6 +4257,7 @@ class ColorMLP(ColorPrecompute):
             self.last_detail_high_freq_view_conflict_gate_fraction = zero
             self.last_detail_high_freq_view_conflict_point_gate_mean = zero
             self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+            self.last_detail_high_freq_view_conflict_boundary_suppress_mean = zero
             return None
 
         view_conflict_scale = _resolve_scheduled_scalar(
@@ -4252,6 +4283,7 @@ class ColorMLP(ColorPrecompute):
             self.last_detail_high_freq_view_conflict_gate_fraction = zero
             self.last_detail_high_freq_view_conflict_point_gate_mean = zero
             self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+            self.last_detail_high_freq_view_conflict_boundary_suppress_mean = zero
             return None
 
         residual_input = high_freq_input.detach() if self.detail_high_freq_view_conflict_input_detach else high_freq_input
@@ -4297,6 +4329,47 @@ class ColorMLP(ColorPrecompute):
         view_conflict_residual = view_conflict_raw * view_conflict_gate
         if torch.is_tensor(point_gate):
             view_conflict_residual = view_conflict_residual * point_gate.unsqueeze(-1)
+        boundary_suppress = None
+        if self.detail_high_freq_view_conflict_boundary_suppress_enable:
+            boundary_strength = _resolve_scheduled_scalar(
+                schedule_iteration,
+                self.detail_high_freq_view_conflict_boundary_suppress_strength_cfg,
+                default=0.0,
+            )
+            if boundary_strength > 0.0:
+                boundary_score = self._get_binding_boundary_score(
+                    gaussians,
+                    output,
+                    detach=self.detail_high_freq_view_conflict_boundary_suppress_detach,
+                )
+                if torch.is_tensor(boundary_score):
+                    boundary_focus = self._build_boundary_focus(
+                        boundary_score,
+                        threshold=self.detail_high_freq_view_conflict_boundary_suppress_threshold,
+                        power=self.detail_high_freq_view_conflict_boundary_suppress_power,
+                        min_focus=0.0,
+                        max_focus=1.0,
+                    )
+                    if torch.is_tensor(boundary_focus):
+                        boundary_suppress = (
+                            1.0 - float(boundary_strength) * boundary_focus
+                        ).clamp(
+                            min=float(self.detail_high_freq_view_conflict_boundary_suppress_min_scale),
+                            max=1.0,
+                        )
+                        if boundary_suppress.dim() == 1:
+                            boundary_suppress_apply = boundary_suppress.unsqueeze(-1)
+                        else:
+                            boundary_suppress_apply = boundary_suppress
+                        view_conflict_residual = (
+                            view_conflict_residual * boundary_suppress_apply
+                        )
+        if torch.is_tensor(boundary_suppress):
+            self.last_detail_high_freq_view_conflict_boundary_suppress_mean = (
+                boundary_suppress.detach().mean()
+            )
+        else:
+            self.last_detail_high_freq_view_conflict_boundary_suppress_mean = zero
         view_conflict_residual = view_conflict_residual * view_conflict_tiny_scale
 
         self.last_detail_high_freq_view_conflict_raw_abs_mean = view_conflict_raw.detach().abs().mean()
@@ -6052,6 +6125,7 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_view_conflict_gate_fraction = zero
         self.last_detail_high_freq_view_conflict_point_gate_mean = zero
         self.last_detail_high_freq_view_conflict_point_gate_fraction = zero
+        self.last_detail_high_freq_view_conflict_boundary_suppress_mean = zero
 
     def _apply_structured_trunk_output_head(self, output, gaussians, camera, base_input, iteration=0):
         if self.structured_trunk_output_head_mlp is None:
@@ -6989,6 +7063,7 @@ class ColorMLP(ColorPrecompute):
         self.last_detail_high_freq_view_conflict_gate_fraction = None
         self.last_detail_high_freq_view_conflict_point_gate_mean = None
         self.last_detail_high_freq_view_conflict_point_gate_fraction = None
+        self.last_detail_high_freq_view_conflict_boundary_suppress_mean = None
 
     def compose_input(self, gaussians, camera, iteration=0):
         features = gaussians.get_features.squeeze(-1)
@@ -7404,6 +7479,7 @@ class ColorMLP(ColorPrecompute):
                 self.last_detail_high_freq_view_conflict_gate_fraction = output.new_tensor(0.0)
                 self.last_detail_high_freq_view_conflict_point_gate_mean = output.new_tensor(0.0)
                 self.last_detail_high_freq_view_conflict_point_gate_fraction = output.new_tensor(0.0)
+                self.last_detail_high_freq_view_conflict_boundary_suppress_mean = output.new_tensor(0.0)
         if has_tiny_repair:
             output = output + tiny_repair
             self.last_detail_tiny_repair_abs_mean = tiny_repair.detach().abs().mean()

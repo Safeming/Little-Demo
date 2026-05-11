@@ -3469,6 +3469,14 @@ class ExplicitBinding(RigidDeform):
             semantic_distance,
             thin_score,
         )
+        semantic_adapter_reg = None
+        if hasattr(gaussians, 'apply_semantic_logits_adapter'):
+            region_probs, compact_semantic_probs = gaussians.apply_semantic_logits_adapter(
+                region_probs,
+                compact_semantic_probs,
+            )
+            if hasattr(gaussians, 'semantic_logits_adapter_regularization'):
+                semantic_adapter_reg = gaussians.semantic_logits_adapter_regularization()
 
         forward_anchor_weights = anchor_weights
         forward_layer_weights = layer_weights
@@ -3877,6 +3885,8 @@ class ExplicitBinding(RigidDeform):
             'binding_residual_xbar_reg': residual_xbar_shift.mean(),
             'binding_residual_xbar_abs_mean': residual_xbar_delta_local.abs().mean(),
         }
+        if torch.is_tensor(semantic_adapter_reg):
+            self.loss_reg['binding_semantic_adapter_reg'] = semantic_adapter_reg
 
         if (
             self.training

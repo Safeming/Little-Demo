@@ -33,6 +33,28 @@ import lpips
 from utils.pytorch3d_compat import ops
 
 
+def _configure_torch_threads_from_env():
+    raw = os.environ.get('TORCH_NUM_THREADS') or os.environ.get('OMP_NUM_THREADS')
+    if not raw:
+        return
+    try:
+        threads = max(1, int(raw))
+    except ValueError:
+        return
+    torch.set_num_threads(threads)
+    try:
+        torch.set_num_interop_threads(max(1, min(threads, 4)))
+    except RuntimeError:
+        pass
+
+
+_configure_torch_threads_from_env()
+try:
+    cv2.setNumThreads(max(1, int(os.environ.get('OPENCV_FOR_THREADS_NUM', os.environ.get('OMP_NUM_THREADS', '1')))))
+except Exception:
+    pass
+
+
 PARSER_FACE_LABELS = (13,)
 PARSER_ARM_LABELS = (14, 15)
 PARSER_UPPER_TORSO_LABELS = (5, 6, 7, 11)
@@ -2686,6 +2708,205 @@ def _parser_region_mask(data, fg_mask, label_ids):
     return region_mask
 
 
+def _rasterize_probability_channels(data, pc, pipe, background, probs):
+    if probs is None or not torch.is_tensor(probs) or probs.numel() == 0:
+        return None, None
+    rendered_chunks = []
+    opacity = None
+    channel_count = probs.shape[-1]
+    for start in range(0, channel_count, 3):
+        chunk = probs[:, start:start + 3]
+        if chunk.shape[-1] < 3:
+            pad = torch.zeros(
+                chunk.shape[0],
+                3 - chunk.shape[-1],
+                dtype=chunk.dtype,
+                device=chunk.device,
+            )
+            chunk = torch.cat([chunk, pad], dim=-1)
+        pkg = rasterize_gaussians(
+            data,
+            pc,
+            pipe,
+            background,
+            colors_precomp=chunk,
+            return_opacity=opacity is None,
+        )
+        rendered_chunks.append(pkg['render'][:min(3, channel_count - start)].clamp(0.0, 1.0))
+        if opacity is None:
+            opacity = pkg.get('opacity_render', None)
+            if opacity is not None:
+                opacity = opacity[:1].clamp(0.0, 1.0)
+    return torch.cat(rendered_chunks, dim=0), opacity
+
+
+def _masked_dice_loss(pred, target, mask):
+    pred = pred.clamp(0.0, 1.0)
+    target = target.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
+    mask = mask.to(device=pred.device, dtype=pred.dtype)
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)
+    if target.dim() == 2:
+        target = target.unsqueeze(0)
+    if mask.shape[0] == 1 and pred.shape[0] != 1:
+        mask = mask.expand(pred.shape[0], -1, -1)
+    if target.shape[0] == 1 and pred.shape[0] != 1:
+        target = target.expand_as(pred)
+    intersection = (pred * target * mask).sum(dim=(1, 2))
+    denom = ((pred + target) * mask).sum(dim=(1, 2)).clamp_min(1.0)
+    return (1.0 - (2.0 * intersection + 1.0) / (denom + 1.0)).mean()
+
+
+def _semantic_parser_valid_mask(data, fg_mask, opt, opacity=None):
+    valid = getattr(data, 'parsing_valid_mask', None)
+    if torch.is_tensor(valid):
+        valid = valid[:1].to(device=fg_mask.device, dtype=fg_mask.dtype).clamp(0.0, 1.0)
+    else:
+        valid = fg_mask.clone()
+
+    uncertain = getattr(data, 'parsing_uncertain_mask', None)
+    if torch.is_tensor(uncertain) and bool(opt.get('stageB_semantic_ignore_uncertain', True)):
+        valid = valid * (1.0 - uncertain[:1].to(device=fg_mask.device, dtype=fg_mask.dtype).clamp(0.0, 1.0))
+
+    boundary_width = int(opt.get('stageB_semantic_ignore_boundary_width', 7))
+    if boundary_width > 1:
+        valid = valid * (1.0 - _foreground_boundary_mask(fg_mask, boundary_width)).clamp(0.0, 1.0)
+
+    if opacity is not None and bool(opt.get('stageB_semantic_use_opacity_support', True)):
+        opacity_threshold = float(opt.get('stageB_semantic_opacity_threshold', 0.04))
+        valid = valid * (opacity[:1].to(device=fg_mask.device, dtype=fg_mask.dtype) > opacity_threshold).float()
+
+    return (valid * fg_mask).clamp(0.0, 1.0)
+
+
+def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_mask, opt):
+    zero = fg_mask.new_tensor(0.0)
+    stats = {
+        'enabled': 0.0,
+        'valid_pixels': 0.0,
+        'body_cloth': 0.0,
+        'compact': 0.0,
+        'parent': 0.0,
+        'exclusive': 0.0,
+        'smooth': 0.0,
+    }
+    if not bool(opt.get('stageB_semantic_loss_enable', False)):
+        return zero, stats
+
+    pc = render_pkg["deformed_gaussian"]
+    region_probs = getattr(pc, 'binding_region_probs_raw', None)
+    if region_probs is None:
+        region_probs = getattr(pc, 'binding_region_probs', None)
+    if region_probs is None:
+        return zero, stats
+
+    compact_probs = getattr(pc, 'binding_compact_semantic_probs_raw', None)
+    if compact_probs is None:
+        compact_probs = getattr(pc, 'binding_compact_semantic_probs', None)
+
+    opacity = render_pkg.get("opacity_render", None)
+    valid_mask = _semantic_parser_valid_mask(data, fg_mask, opt, opacity=opacity)
+    min_pixels = float(opt.get('stageB_semantic_min_valid_pixels', 64))
+    valid_pixels = float(valid_mask.sum().detach().item())
+    stats['enabled'] = 1.0
+    stats['valid_pixels'] = valid_pixels
+    if valid_pixels < min_pixels:
+        return zero, stats
+
+    semantic_background = torch.zeros(3, dtype=region_probs.dtype, device=region_probs.device)
+    region_2d, semantic_opacity = _rasterize_probability_channels(
+        data,
+        pc,
+        pipe,
+        semantic_background,
+        region_probs,
+    )
+    if region_2d is None:
+        return zero, stats
+    if semantic_opacity is not None and opacity is None:
+        valid_mask = _semantic_parser_valid_mask(data, fg_mask, opt, opacity=semantic_opacity)
+        valid_pixels = float(valid_mask.sum().detach().item())
+        stats['valid_pixels'] = valid_pixels
+        if valid_pixels < min_pixels:
+            return zero, stats
+
+    total = zero
+    body_mask = getattr(data, 'parsing_body_mask', None)
+    cloth_mask = getattr(data, 'parsing_cloth_mask', None)
+    if torch.is_tensor(body_mask) and torch.is_tensor(cloth_mask):
+        body_target = body_mask[:1].to(device=region_2d.device, dtype=region_2d.dtype).clamp(0.0, 1.0)
+        cloth_target = cloth_mask[:1].to(device=region_2d.device, dtype=region_2d.dtype).clamp(0.0, 1.0)
+        parent_pred = torch.stack([region_2d[0], region_2d[2]], dim=0)
+        parent_target = torch.cat([body_target, cloth_target], dim=0)
+        parent_valid = valid_mask.to(device=region_2d.device, dtype=region_2d.dtype)
+        bce_weight = float(opt.get('stageB_semantic_body_cloth_bce_weight', 1.0))
+        dice_weight = float(opt.get('stageB_semantic_body_cloth_dice_weight', 0.75))
+        body_cloth_loss = (
+            bce_weight * _masked_binary_cross_entropy(parent_pred, parent_target, parent_valid)
+            + dice_weight * _masked_dice_loss(parent_pred, parent_target, parent_valid)
+        )
+        total = total + float(opt.get('stageB_semantic_body_cloth_weight', 1.0)) * body_cloth_loss
+        stats['body_cloth'] = float(body_cloth_loss.detach().item())
+
+    compact_loss = zero
+    compact_masks = getattr(data, 'parsing_compact_masks', None)
+    if torch.is_tensor(compact_probs) and torch.is_tensor(compact_masks):
+        compact_2d, _ = _rasterize_probability_channels(
+            data,
+            pc,
+            pipe,
+            semantic_background,
+            compact_probs,
+        )
+        if compact_2d is not None:
+            compact_target = compact_masks.to(device=compact_2d.device, dtype=compact_2d.dtype).clamp(0.0, 1.0)
+            class_count = min(compact_2d.shape[0], compact_target.shape[0])
+            if class_count > 0:
+                compact_pred = compact_2d[:class_count]
+                compact_target = compact_target[:class_count]
+                compact_valid = valid_mask.to(device=compact_2d.device, dtype=compact_2d.dtype)
+                compact_loss = (
+                    float(opt.get('stageB_semantic_compact_bce_weight', 1.0))
+                    * _masked_binary_cross_entropy(compact_pred, compact_target, compact_valid)
+                    + float(opt.get('stageB_semantic_compact_dice_weight', 0.75))
+                    * _masked_dice_loss(compact_pred, compact_target, compact_valid)
+                )
+                total = total + float(opt.get('stageB_semantic_compact_weight', 1.0)) * compact_loss
+                stats['compact'] = float(compact_loss.detach().item())
+
+                if bool(opt.get('stageB_semantic_parent_consistency_enable', True)) and class_count >= 5:
+                    compact_body = compact_pred[1:3].sum(dim=0, keepdim=True).clamp(0.0, 1.0)
+                    compact_cloth = compact_pred[3:5].sum(dim=0, keepdim=True).clamp(0.0, 1.0)
+                    parent_from_compact = torch.cat([compact_body, compact_cloth], dim=0)
+                    parent_from_region = torch.stack([region_2d[0], region_2d[2]], dim=0)
+                    parent_loss = ((parent_from_region - parent_from_compact).abs() * compact_valid).sum() / compact_valid.sum().clamp_min(1.0)
+                    total = total + float(opt.get('stageB_semantic_parent_consistency_weight', 0.35)) * parent_loss
+                    stats['parent'] = float(parent_loss.detach().item())
+
+    exclusive_weight = float(opt.get('stageB_semantic_exclusive_weight', 0.0))
+    if exclusive_weight > 0.0:
+        exclusive_loss = (region_2d[0:1] * region_2d[2:3] * valid_mask.to(device=region_2d.device, dtype=region_2d.dtype)).sum() / valid_mask.sum().clamp_min(1.0)
+        total = total + exclusive_weight * exclusive_loss
+        stats['exclusive'] = float(exclusive_loss.detach().item())
+
+    smooth_weight = float(opt.get('stageB_semantic_adapter_smooth_weight', 0.0))
+    if smooth_weight > 0.0:
+        positions = getattr(pc, 'canonical_xyz', None)
+        if not torch.is_tensor(positions) or positions.shape[0] != region_probs.shape[0]:
+            positions = pc.get_xyz
+        smooth_loss = _boundary_residual_smoothness_loss(
+            region_probs,
+            positions,
+            torch.ones((region_probs.shape[0],), dtype=torch.bool, device=region_probs.device),
+            k=int(opt.get('stageB_semantic_adapter_smooth_k', 8)),
+            distance_quantile=float(opt.get('stageB_semantic_adapter_smooth_distance_quantile', 0.5)),
+        )
+        total = total + smooth_weight * smooth_loss
+        stats['smooth'] = float(smooth_loss.detach().item())
+
+    return total, stats
+
+
 def _make_pixel_grid(mask):
     h, w = mask.shape[-2:]
     yy, xx = torch.meshgrid(
@@ -3608,6 +3829,7 @@ def _collect_texture_clarity_stats(texture_module):
         'detail_high_freq_view_conflict_gate_fraction': 'last_detail_high_freq_view_conflict_gate_fraction',
         'detail_high_freq_view_conflict_point_gate_mean': 'last_detail_high_freq_view_conflict_point_gate_mean',
         'detail_high_freq_view_conflict_point_gate_fraction': 'last_detail_high_freq_view_conflict_point_gate_fraction',
+        'detail_high_freq_view_conflict_boundary_suppress_mean': 'last_detail_high_freq_view_conflict_boundary_suppress_mean',
     }
     for key, attr_name in attr_map.items():
         value = _optional_float(getattr(texture_module, attr_name, None))
@@ -7963,6 +8185,15 @@ def training(config):
             if torch.is_tensor(detail_high_freq_view_conflict_point_gate_mean):
                 log_loss['loss/texture_detail_high_freq_view_conflict_point_gate_mean'] = (
                     detail_high_freq_view_conflict_point_gate_mean.item()
+                )
+            detail_high_freq_view_conflict_boundary_suppress_mean = getattr(
+                scene.converter.texture,
+                'last_detail_high_freq_view_conflict_boundary_suppress_mean',
+                None,
+            )
+            if torch.is_tensor(detail_high_freq_view_conflict_boundary_suppress_mean):
+                log_loss['loss/texture_detail_high_freq_view_conflict_boundary_suppress_mean'] = (
+                    detail_high_freq_view_conflict_boundary_suppress_mean.item()
                 )
             detail_high_freq_carrier_abs_mean = getattr(
                 scene.converter.texture,
