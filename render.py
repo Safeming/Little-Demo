@@ -278,15 +278,71 @@ def _rasterize_prob_channels(view, pc, pipe, background, probs):
     return torch.cat(rendered_chunks, dim=0), opacity
 
 
-def _view_fg_mask_tensor(view, ref_image):
-    mask = _prepare_mask_for_asset(getattr(view, 'original_mask', None), ref_image)
+def _view_fg_mask_tensor(view, ref_image, source='original'):
+    source = str(source or 'original').lower()
+
+    def _attr_mask(attr_name):
+        return _prepare_mask_for_asset(getattr(view, attr_name, None), ref_image)
+
+    def _parser_fg():
+        parser_mask = _prepare_view_parser_mask(view, ref_image)
+        if parser_mask is None:
+            return None
+        return (parser_mask > 0).to(device=ref_image.device, dtype=ref_image.dtype)
+
+    if source in {'hard', 'hard_mask'}:
+        mask = _attr_mask('hard_mask')
+        if mask is None:
+            mask = _attr_mask('original_mask')
+    elif source in {'soft', 'soft_mask'}:
+        mask = _attr_mask('soft_mask')
+        if mask is None:
+            mask = _attr_mask('original_mask')
+    elif source in {'parser', 'parser_foreground'}:
+        mask = _parser_fg()
+        if mask is None:
+            mask = _attr_mask('original_mask')
+    elif source in {'parser_hard', 'hard_parser'}:
+        parser = _parser_fg()
+        hard = _attr_mask('hard_mask')
+        if hard is None:
+            hard = _attr_mask('original_mask')
+        if parser is None:
+            mask = hard
+        elif hard is None:
+            mask = parser
+        else:
+            mask = parser * (hard > 0.5).to(device=ref_image.device, dtype=ref_image.dtype)
+    elif source in {'parser_original', 'original_parser'}:
+        parser = _parser_fg()
+        original = _attr_mask('original_mask')
+        if parser is None:
+            mask = original
+        elif original is None:
+            mask = parser
+        else:
+            mask = parser * (original > 0.5).to(device=ref_image.device, dtype=ref_image.dtype)
+    else:
+        mask = _attr_mask('original_mask')
+
     if mask is None:
         return torch.ones_like(ref_image[0])
     return (mask > 0.5).to(dtype=ref_image.dtype)
 
 
-def _binding_map_support_mask(view, ref_image, opacity=None, opacity_threshold=0.06, close_kernel=3, erode_kernel=0):
-    fg_mask = _view_fg_mask_tensor(view, ref_image).unsqueeze(0)
+def _binding_map_support_mask(
+    view,
+    ref_image,
+    opacity=None,
+    opacity_threshold=0.06,
+    close_kernel=3,
+    erode_kernel=0,
+    mask_source='original',
+    mask_erode_kernel=0,
+):
+    fg_mask = _view_fg_mask_tensor(view, ref_image, source=mask_source).unsqueeze(0)
+    if mask_erode_kernel and mask_erode_kernel > 1:
+        fg_mask = _binary_erode(fg_mask.unsqueeze(0), int(mask_erode_kernel))[0]
     support = fg_mask
     if opacity is not None:
         support = support * (opacity[:1] > float(opacity_threshold)).to(dtype=ref_image.dtype)
@@ -313,6 +369,11 @@ def _prepare_render_export_image(config, view, rendering, opacity=None):
         return image
 
     opacity = opacity[:1].to(device=image.device, dtype=image.dtype).clamp(0.0, 1.0)
+    mask_source = config.get(
+        'render_export_mask_source',
+        config.get('binding_map_mask_source', config.get('binding_map_hard_fg_mask_source', 'original')),
+    )
+    mask_erode_kernel = int(config.get('render_export_mask_erode_kernel', config.get('binding_map_mask_erode_kernel', 0)))
     support = _binding_map_support_mask(
         view,
         image,
@@ -320,12 +381,18 @@ def _prepare_render_export_image(config, view, rendering, opacity=None):
         opacity_threshold=float(config.get('render_export_opacity_threshold', 0.06)),
         close_kernel=int(config.get('render_export_close_kernel', 3)),
         erode_kernel=int(config.get('render_export_erode_kernel', 0)),
+        mask_source=mask_source,
+        mask_erode_kernel=mask_erode_kernel,
     )
-    fg_mask = _view_fg_mask_tensor(view, image).unsqueeze(0)
+    fg_mask = _view_fg_mask_tensor(view, image, source=mask_source).unsqueeze(0)
+    if mask_erode_kernel and mask_erode_kernel > 1:
+        fg_mask = _binary_erode(fg_mask.unsqueeze(0), mask_erode_kernel)[0]
     fill_support = _binary_close(
         torch.maximum(fg_mask, support).unsqueeze(0),
         int(config.get('render_export_fill_close_kernel', 5)),
     )[0].clamp(0.0, 1.0)
+    if bool(config.get('render_export_clip_to_mask', False)):
+        fill_support = fill_support * fg_mask
 
     power = float(config.get('render_export_opacity_power', 0.85))
     floor = float(config.get('render_export_opacity_floor', 0.30))
@@ -3692,8 +3759,10 @@ def _export_binding_maps(config, view, render_pkg, background, summary_records):
                 image,
                 opacity=opacity,
                 opacity_threshold=float(config.get('binding_map_hard_fg_opacity_threshold', 0.06)),
-                close_kernel=3,
-                erode_kernel=3,
+                close_kernel=int(config.get('binding_map_hard_fg_close_kernel', 3)),
+                erode_kernel=int(config.get('binding_map_hard_fg_erode_kernel', 3)),
+                mask_source=config.get('binding_map_mask_source', config.get('binding_map_hard_fg_mask_source', 'original')),
+                mask_erode_kernel=int(config.get('binding_map_mask_erode_kernel', config.get('binding_map_hard_fg_mask_erode_kernel', 0))),
             )
             image = image * hard_fg
             if map_name == 'layer':
@@ -3706,8 +3775,10 @@ def _export_binding_maps(config, view, render_pkg, background, summary_records):
                 image,
                 opacity=opacity,
                 opacity_threshold=float(config.get('binding_map_opacity_threshold', 0.06)),
-                close_kernel=3,
-                erode_kernel=0,
+                close_kernel=int(config.get('binding_map_support_close_kernel', 3)),
+                erode_kernel=int(config.get('binding_map_support_erode_kernel', 0)),
+                mask_source=config.get('binding_map_mask_source', config.get('binding_map_support_mask_source', 'original')),
+                mask_erode_kernel=int(config.get('binding_map_mask_erode_kernel', config.get('binding_map_support_mask_erode_kernel', 0))),
             )
             image = image * support
         out_dir = os.path.join(map_root, map_name)

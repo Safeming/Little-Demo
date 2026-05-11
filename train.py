@@ -585,7 +585,7 @@ def _alignment_aware_contour_weight_mask(image, gt_image, fg_mask, region_mask, 
     }
 
 
-def _masked_binary_cross_entropy(prediction, target, mask):
+def _masked_binary_cross_entropy(prediction, target, mask, channel_weight=None, positive_weight=None):
     if mask.dim() == 2:
         mask = mask.unsqueeze(0)
     if mask.shape[0] == 1 and prediction.shape[0] != 1:
@@ -604,6 +604,16 @@ def _masked_binary_cross_entropy(prediction, target, mask):
     norm = mask.sum().clamp_min(1.0)
     prediction = prediction.clamp(1.0e-3, 1.0 - 1.0e-3)
     loss = F.binary_cross_entropy(prediction, target, reduction='none')
+    if positive_weight is not None:
+        positive_weight = positive_weight.to(device=prediction.device, dtype=prediction.dtype)
+        if positive_weight.dim() == 1:
+            positive_weight = positive_weight.view(-1, 1, 1)
+        loss = loss * (1.0 + (positive_weight - 1.0) * target)
+    if channel_weight is not None:
+        channel_weight = channel_weight.to(device=prediction.device, dtype=prediction.dtype)
+        if channel_weight.dim() == 1:
+            channel_weight = channel_weight.view(-1, 1, 1)
+        loss = loss * channel_weight
     return (loss * mask).sum() / norm
 
 
@@ -2740,7 +2750,29 @@ def _rasterize_probability_channels(data, pc, pipe, background, probs):
     return torch.cat(rendered_chunks, dim=0), opacity
 
 
-def _masked_dice_loss(pred, target, mask):
+def _semantic_class_weight_tensor(value, class_count, device, dtype):
+    if value is None:
+        return None
+    if OmegaConf.is_config(value):
+        value = OmegaConf.to_container(value, resolve=True)
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.strip().strip('[]').split(',') if item.strip()]
+        try:
+            value = [float(item) for item in raw_items]
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        weights = [float(value)] * int(class_count)
+    elif isinstance(value, (list, tuple)):
+        weights = [float(item) for item in value[:class_count]]
+    else:
+        return None
+    if len(weights) < class_count:
+        weights.extend([1.0] * (class_count - len(weights)))
+    return torch.as_tensor(weights[:class_count], device=device, dtype=dtype)
+
+
+def _masked_dice_loss(pred, target, mask, channel_weight=None):
     pred = pred.clamp(0.0, 1.0)
     target = target.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
     mask = mask.to(device=pred.device, dtype=pred.dtype)
@@ -2754,7 +2786,13 @@ def _masked_dice_loss(pred, target, mask):
         target = target.expand_as(pred)
     intersection = (pred * target * mask).sum(dim=(1, 2))
     denom = ((pred + target) * mask).sum(dim=(1, 2)).clamp_min(1.0)
-    return (1.0 - (2.0 * intersection + 1.0) / (denom + 1.0)).mean()
+    loss = 1.0 - (2.0 * intersection + 1.0) / (denom + 1.0)
+    if channel_weight is not None:
+        channel_weight = channel_weight.to(device=pred.device, dtype=pred.dtype).flatten()[: loss.shape[0]]
+        if channel_weight.numel() < loss.shape[0]:
+            channel_weight = torch.cat([channel_weight, torch.ones(loss.shape[0] - channel_weight.numel(), device=pred.device, dtype=pred.dtype)])
+        return (loss * channel_weight).sum() / channel_weight.sum().clamp_min(1.0e-6)
+    return loss.mean()
 
 
 def _semantic_parser_valid_mask(data, fg_mask, opt, opacity=None):
@@ -2865,11 +2903,34 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
                 compact_pred = compact_2d[:class_count]
                 compact_target = compact_target[:class_count]
                 compact_valid = valid_mask.to(device=compact_2d.device, dtype=compact_2d.dtype)
+                compact_class_weight = _semantic_class_weight_tensor(
+                    opt.get('stageB_semantic_compact_class_weights', None),
+                    class_count,
+                    compact_2d.device,
+                    compact_2d.dtype,
+                )
+                compact_positive_weight = _semantic_class_weight_tensor(
+                    opt.get('stageB_semantic_compact_positive_weights', None),
+                    class_count,
+                    compact_2d.device,
+                    compact_2d.dtype,
+                )
                 compact_loss = (
                     float(opt.get('stageB_semantic_compact_bce_weight', 1.0))
-                    * _masked_binary_cross_entropy(compact_pred, compact_target, compact_valid)
+                    * _masked_binary_cross_entropy(
+                        compact_pred,
+                        compact_target,
+                        compact_valid,
+                        channel_weight=compact_class_weight,
+                        positive_weight=compact_positive_weight,
+                    )
                     + float(opt.get('stageB_semantic_compact_dice_weight', 0.75))
-                    * _masked_dice_loss(compact_pred, compact_target, compact_valid)
+                    * _masked_dice_loss(
+                        compact_pred,
+                        compact_target,
+                        compact_valid,
+                        channel_weight=compact_class_weight,
+                    )
                 )
                 total = total + float(opt.get('stageB_semantic_compact_weight', 1.0)) * compact_loss
                 stats['compact'] = float(compact_loss.detach().item())
@@ -3098,6 +3159,49 @@ def _resolve_face_region_from_data(data, fg_mask, config_opt=None):
         'heuristic_pixels': float(heuristic_face_mask.sum().item()) if heuristic_face_mask is not None else 0.0,
     }
     return region.clamp(0.0, 1.0), meta
+
+
+def _head_outer_shell_region_from_data(data, fg_mask, face_mask=None, config_opt=None):
+    source = None if face_mask is None else face_mask.float().clamp(0.0, 1.0)
+    fallback_used = False
+    if source is None or source.sum().item() < 8:
+        source = _joint_guided_face_region_mask(data, fg_mask)
+        if source is None or source.sum().item() < 8:
+            source = _heuristic_face_region_mask(fg_mask)
+            fallback_used = True
+
+    region = source.float().clamp(0.0, 1.0)
+    if config_opt is not None:
+        dilate = int(config_opt.get('silhouette_head_outer_region_dilate', 17))
+    else:
+        dilate = 17
+    if dilate > 1:
+        region = _binary_dilate(region, dilate).clamp(0.0, 1.0)
+
+    valid = fg_mask[0] > 0.5
+    coords = torch.nonzero(valid, as_tuple=False)
+    if coords.numel() > 0:
+        y_top = coords[:, 0].min().float()
+        y_bottom = coords[:, 0].max().float()
+        body_h = (y_bottom - y_top + 1.0).clamp_min(1.0)
+        yy, _ = _make_pixel_grid(fg_mask)
+        bottom_ratio = 0.34
+        if config_opt is not None:
+            bottom_ratio = float(config_opt.get('silhouette_head_outer_bottom_ratio', 0.34))
+        bottom_ratio = min(max(bottom_ratio, 0.12), 0.65)
+        upper_band = (yy <= (y_top + bottom_ratio * body_h)).float()
+        region = region * upper_band
+
+    if config_opt is not None and bool(config_opt.get('silhouette_head_outer_use_fg_clip', True)):
+        clip = _binary_dilate(fg_mask, int(config_opt.get('silhouette_head_outer_fg_clip_dilate', 35))).clamp(0.0, 1.0)
+        region = region * clip
+
+    region = region.clamp(0.0, 1.0)
+    meta = {
+        'region_pixels': float(region.sum().item()),
+        'fallback_used': fallback_used,
+    }
+    return region, meta
 
 
 def _face_region_effective_min_pixels(config_opt, region_meta=None):
@@ -5331,6 +5435,7 @@ def training(config):
         lambda_mask_shoulder_focus_small_fn_hard = C(schedule_iteration, config.opt.get('lambda_mask_shoulder_focus_small_fn_hard', 0.0))
         lambda_silhouette_outer = C(schedule_iteration, config.opt.get('lambda_silhouette_outer', 0.0))
         lambda_silhouette_outer_shell = C(schedule_iteration, config.opt.get('lambda_silhouette_outer_shell', 0.0))
+        lambda_silhouette_head_outer_shell = C(schedule_iteration, config.opt.get('lambda_silhouette_head_outer_shell', 0.0))
         lambda_silhouette_shoulder_arm_outer_shell = C(schedule_iteration, config.opt.get('lambda_silhouette_shoulder_arm_outer_shell', 0.0))
         lambda_silhouette_upper_torso_outer_shell = C(schedule_iteration, config.opt.get('lambda_silhouette_upper_torso_outer_shell', 0.0))
         lambda_silhouette_outer_spike = C(schedule_iteration, config.opt.get('lambda_silhouette_outer_spike', 0.0))
@@ -5359,6 +5464,7 @@ def training(config):
             or C(schedule_iteration, config.opt.get('lambda_edge_shoulder_arm', 0.0)) > 0.0
         )
         shoulder_perceptual_loss_active = C(schedule_iteration, config.opt.get('lambda_perceptual_shoulder_arm', 0.0)) > 0.0
+        stageB_semantic_loss_enabled = bool(config.opt.get('stageB_semantic_loss_enable', False))
         use_mask = any(
             value > 0.
             for value in (
@@ -5373,6 +5479,7 @@ def training(config):
                 lambda_mask_shoulder_focus_small_fn_hard,
                 lambda_silhouette_outer,
                 lambda_silhouette_outer_shell,
+                lambda_silhouette_head_outer_shell,
                 lambda_silhouette_shoulder_arm_outer_shell,
                 lambda_silhouette_upper_torso_outer_shell,
                 lambda_silhouette_outer_spike,
@@ -5397,6 +5504,10 @@ def training(config):
         )
         use_mask = use_mask or (shoulder_image_loss_active and image_pattern_mode in opacity_required_patterns)
         use_mask = use_mask or (shoulder_perceptual_loss_active and perceptual_pattern_mode in opacity_required_patterns)
+        use_mask = use_mask or (
+            stageB_semantic_loss_enabled
+            and bool(config.opt.get('stageB_semantic_use_opacity_support', True))
+        )
         boundary_live_cache_key, boundary_live_cache_hit = _apply_boundary_live_score_cache(
             scene,
             data,
@@ -5406,7 +5517,7 @@ def training(config):
         render_pkg = render(data, schedule_iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask)
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        opacity = render_pkg["opacity_render"] if use_mask else None
+        opacity = render_pkg.get("opacity_render", None) if use_mask else None
         live_boundary_prior_score = _get_boundary_score_tensor(
             render_pkg["deformed_gaussian"],
             prefer_mixed=False,
@@ -5541,6 +5652,13 @@ def training(config):
             fg_mask,
             config_opt=config.opt,
         )
+        head_outer_region_mask, head_outer_region_meta = _head_outer_shell_region_from_data(
+            data,
+            fg_mask,
+            face_mask=face_mask,
+            config_opt=config.opt,
+        )
+        head_outer_region_valid = head_outer_region_mask.sum().item() >= float(config.opt.get('silhouette_head_outer_min_pixels', 16))
         shoulder_arm_mask, shoulder_arm_region_meta = _resolve_shoulder_arm_region_from_data(
             data,
             fg_mask,
@@ -5652,6 +5770,7 @@ def training(config):
         gate_mask_shoulder_focus_small_fn_hard = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_mask_shoulder_focus_small_fn_hard', True))
         gate_silhouette_outer = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_outer', True))
         gate_silhouette_outer_shell = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_outer_shell', True))
+        gate_silhouette_head_outer_shell = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_head_outer_shell', True))
         gate_silhouette_shoulder_arm_outer_shell = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_shoulder_arm_outer_shell', True))
         gate_silhouette_upper_torso_outer_shell = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_upper_torso_outer_shell', True))
         gate_silhouette_outer_spike = boundary_aware_enable and bool(config.opt.get('boundary_aware_gate_silhouette_outer_spike', True))
@@ -6265,6 +6384,26 @@ def training(config):
             + lambda_l1_shoulder_focus_dark_outlier * loss_l1_shoulder_focus_dark_outlier
             + lambda_l1_shoulder_focus_bright_outlier * loss_l1_shoulder_focus_bright_outlier
         )
+        loss_stageB_semantic, stageB_semantic_stats = _compute_stageB_semantic_parser_loss(
+            data,
+            render_pkg,
+            pipe,
+            background,
+            fg_mask,
+            config.opt,
+        )
+        base_loss += loss_stageB_semantic
+
+        lambda_binding_semantic_adapter_reg = C(
+            schedule_iteration,
+            config.opt.get('lambda_binding_semantic_adapter_reg', 0.0),
+        )
+        if lambda_binding_semantic_adapter_reg > 0.0 and hasattr(scene.gaussians, 'semantic_logits_adapter_regularization'):
+            loss_binding_semantic_adapter_reg = scene.gaussians.semantic_logits_adapter_regularization()
+            base_loss += lambda_binding_semantic_adapter_reg * loss_binding_semantic_adapter_reg
+        else:
+            loss_binding_semantic_adapter_reg = torch.tensor(0., device=image.device)
+
         boundary_loss = torch.tensor(0.).cuda()
         if gate_l1_boundary:
             boundary_loss += lambda_l1_boundary * loss_l1_boundary
@@ -6551,6 +6690,7 @@ def training(config):
         loss_mask_shoulder_focus_small_fn_hard = torch.tensor(0.).cuda()
         loss_silhouette_outer = torch.tensor(0.).cuda()
         loss_silhouette_outer_shell = torch.tensor(0.).cuda()
+        loss_silhouette_head_outer_shell = torch.tensor(0.).cuda()
         loss_silhouette_shoulder_arm_outer_shell = torch.tensor(0.).cuda()
         loss_silhouette_upper_torso_outer_shell = torch.tensor(0.).cuda()
         loss_silhouette_outer_spike = torch.tensor(0.).cuda()
@@ -6651,6 +6791,10 @@ def training(config):
                 loss_silhouette_outer = _masked_binary_cross_entropy(opacity_bce, 0.0, outer_ring_mask)
             if lambda_silhouette_outer_shell > 0. and outer_shell_mask.sum().item() > 0:
                 loss_silhouette_outer_shell = _masked_binary_cross_entropy(opacity_bce, 0.0, outer_shell_mask)
+            if lambda_silhouette_head_outer_shell > 0. and outer_shell_mask.sum().item() > 0 and head_outer_region_valid:
+                head_outer_shell_mask = outer_shell_mask * head_outer_region_mask
+                if head_outer_shell_mask.sum().item() > 0:
+                    loss_silhouette_head_outer_shell = _masked_binary_cross_entropy(opacity_bce, 0.0, head_outer_shell_mask)
             if lambda_silhouette_outer_spike > 0. and outer_shell_mask.sum().item() > 0:
                 outer_spike_mask = _foreground_outer_spike_mask(
                     opacity_bce,
@@ -7092,6 +7236,10 @@ def training(config):
             boundary_loss += lambda_silhouette_outer_shell * loss_silhouette_outer_shell
         else:
             base_loss += lambda_silhouette_outer_shell * loss_silhouette_outer_shell
+        if gate_silhouette_head_outer_shell:
+            boundary_loss += lambda_silhouette_head_outer_shell * loss_silhouette_head_outer_shell
+        else:
+            base_loss += lambda_silhouette_head_outer_shell * loss_silhouette_head_outer_shell
         if gate_silhouette_shoulder_arm_outer_shell:
             boundary_loss += lambda_silhouette_shoulder_arm_outer_shell * loss_silhouette_shoulder_arm_outer_shell
         else:
@@ -7181,6 +7329,8 @@ def training(config):
             boundary_shrink_loss += lambda_silhouette_outer * loss_silhouette_outer
         if gate_silhouette_outer_shell:
             boundary_shrink_loss += lambda_silhouette_outer_shell * loss_silhouette_outer_shell
+        if gate_silhouette_head_outer_shell:
+            boundary_shrink_loss += lambda_silhouette_head_outer_shell * loss_silhouette_head_outer_shell
         if gate_silhouette_shoulder_arm_outer_shell:
             boundary_shrink_loss += lambda_silhouette_shoulder_arm_outer_shell * loss_silhouette_shoulder_arm_outer_shell
         if gate_silhouette_upper_torso_outer_shell:
@@ -7349,6 +7499,7 @@ def training(config):
             + lambda_mask_boundary_hard * loss_mask_boundary_hard
             + lambda_silhouette_outer * loss_silhouette_outer
             + lambda_silhouette_outer_shell * loss_silhouette_outer_shell
+            + lambda_silhouette_head_outer_shell * loss_silhouette_head_outer_shell
             + lambda_silhouette_outer_spike * loss_silhouette_outer_spike
             + lambda_silhouette_outer_fragment * loss_silhouette_outer_fragment
             + lambda_silhouette_outer_bead * loss_silhouette_outer_bead
@@ -7720,6 +7871,7 @@ def training(config):
                 'loss/mask_shoulder_focus_small_fn_hard_loss': loss_mask_shoulder_focus_small_fn_hard.item(),
                 'loss/silhouette_outer_loss': loss_silhouette_outer.item(),
                 'loss/silhouette_outer_shell_loss': loss_silhouette_outer_shell.item(),
+                'loss/silhouette_head_outer_shell_loss': loss_silhouette_head_outer_shell.item(),
                 'loss/silhouette_shoulder_arm_outer_shell_loss': loss_silhouette_shoulder_arm_outer_shell.item(),
                 'loss/silhouette_upper_torso_outer_shell_loss': loss_silhouette_upper_torso_outer_shell.item(),
                 'loss/silhouette_outer_spike_loss': loss_silhouette_outer_spike.item(),
@@ -7747,6 +7899,15 @@ def training(config):
                 'loss/boundary_scaling_residual_reg': loss_boundary_scaling_residual_reg.item(),
                 'loss/boundary_opacity_residual_smooth': loss_boundary_opacity_residual_smooth.item(),
                 'loss/boundary_scaling_residual_smooth': loss_boundary_scaling_residual_smooth.item(),
+                'loss/stageB_semantic_loss': loss_stageB_semantic.item(),
+                'loss/stageB_semantic_enabled': float(stageB_semantic_stats.get('enabled', 0.0)),
+                'loss/stageB_semantic_valid_pixels': float(stageB_semantic_stats.get('valid_pixels', 0.0)),
+                'loss/stageB_semantic_body_cloth': float(stageB_semantic_stats.get('body_cloth', 0.0)),
+                'loss/stageB_semantic_compact': float(stageB_semantic_stats.get('compact', 0.0)),
+                'loss/stageB_semantic_parent': float(stageB_semantic_stats.get('parent', 0.0)),
+                'loss/stageB_semantic_exclusive': float(stageB_semantic_stats.get('exclusive', 0.0)),
+                'loss/stageB_semantic_smooth': float(stageB_semantic_stats.get('smooth', 0.0)),
+                'loss/binding_semantic_adapter_reg': loss_binding_semantic_adapter_reg.item(),
                 'loss/boundary_total_loss': boundary_loss.item(),
                 'loss/boundary_mixed_loss': boundary_mixed_loss.item(),
                 'loss/boundary_grow_loss': boundary_grow_loss.item(),
@@ -7813,6 +7974,8 @@ def training(config):
                 'loss/face_region_min_pixels': float(face_region_min_pixels),
                 'loss/face_region_has_parser': float(int(bool(face_region_meta.get('has_parser', False)))),
                 'loss/face_region_has_joint': float(int(bool(face_region_meta.get('has_joint', False)))),
+                'loss/head_outer_region_pixels': float(head_outer_region_meta.get('region_pixels', head_outer_region_mask.sum().item())),
+                'loss/head_outer_region_fallback': float(int(bool(head_outer_region_meta.get('fallback_used', False)))),
                 'loss/upper_torso_region_pixels': upper_torso_region_pixels,
                 'loss/upper_torso_region_min_pixels': float(upper_torso_region_min_pixels),
                 'loss/upper_torso_region_has_parser': float(int(bool(upper_torso_region_meta.get('has_parser', False)))),

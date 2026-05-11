@@ -625,7 +625,12 @@ class ZJUMoCapDataset(Dataset):
             if parser_index_mask is not None:
                 body_prior = np.isin(parser_index_mask, np.asarray(PARSER_BODY_LABELS)).astype(np.float32) * fg
                 cloth_prior = np.isin(parser_index_mask, np.asarray(PARSER_CLOTH_LABELS)).astype(np.float32) * fg
-                parsing_valid = np.isin(parser_index_mask, np.asarray(PARSER_VALID_LABELS)).astype(np.float32) * fg
+                valid_labels = (
+                    self.compact_mapping['active_labels']
+                    if self.compact_mapping is not None
+                    else PARSER_VALID_LABELS
+                )
+                parsing_valid = np.isin(parser_index_mask, np.asarray(valid_labels)).astype(np.float32) * fg
                 parsing_parser_mask = torch.from_numpy(parser_index_mask.astype(np.float32)).unsqueeze(0).float()
                 if self.compact_mapping is not None:
                     compact_masks = []
