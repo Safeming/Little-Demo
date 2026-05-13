@@ -941,32 +941,131 @@ class ExplicitBinding(RigidDeform):
 
         head_mask = joint_group_mask(dominant_joint, [15])
         torso_mask = joint_group_mask(dominant_joint, [0, 1, 2, 3, 6, 9, 12])
-        upper_body_mask = joint_group_mask(dominant_joint, [3, 6, 9, 12, 13, 14, 16, 17, 18, 19])
         arm_mask = joint_group_mask(dominant_joint, [13, 14, 16, 17, 18, 19, 20, 21, 22, 23])
+        upper_core_mask = joint_group_mask(dominant_joint, [3, 6, 9, 12])
+        upper_arm_mask = joint_group_mask(dominant_joint, [13, 14, 16, 17, 18, 19])
+        forearm_hand_mask = joint_group_mask(dominant_joint, [20, 21, 22, 23])
+        thigh_mask = joint_group_mask(dominant_joint, [4, 5])
+        lower_leg_mask = joint_group_mask(dominant_joint, [7, 8])
         leg_mask = joint_group_mask(dominant_joint, [4, 5, 7, 8, 10, 11])
         pelvis_mask = joint_group_mask(dominant_joint, [0, 1, 2, 4, 5, 7, 8])
         foot_mask = joint_group_mask(dominant_joint, [10, 11])
 
-        face_score = head_mask * torch.clamp(body_prob * (0.52 + 0.48 * conf_score) * body_surface * (0.58 + 0.42 * body_semantic), 0.0, 1.0)
-        hair_score = head_mask * torch.clamp(0.42 * soft_prob + 0.26 * cloth_prob + 0.22 * (1.0 - conf_score) + 0.18 * cloth_surface + 0.10 * cloth_semantic, 0.0, 1.0)
-        hair_score = hair_score * (1.0 - 0.72 * face_score) + 0.01 * head_mask
+        face_body_boost = float(self.cfg.get('compact_semantic_face_body_boost', 0.0))
+        face_floor = float(self.cfg.get('compact_semantic_face_floor', 0.0))
+        hair_face_suppress = float(self.cfg.get('compact_semantic_hair_face_suppress', 0.72))
+        hair_floor = float(self.cfg.get('compact_semantic_hair_floor', 0.01))
+        skin_arm_support = float(self.cfg.get('compact_semantic_skin_arm_support', 0.88))
+        skin_leg_support = float(self.cfg.get('compact_semantic_skin_leg_support', 0.84))
+        skin_thigh_support = float(self.cfg.get('compact_semantic_skin_thigh_support', skin_leg_support))
+        skin_lower_leg_support = float(self.cfg.get('compact_semantic_skin_lower_leg_support', skin_leg_support))
+        skin_foot_support = float(self.cfg.get('compact_semantic_skin_foot_support', skin_leg_support))
+        skin_torso_support = float(self.cfg.get('compact_semantic_skin_torso_support', 0.06))
+        skin_floor = float(self.cfg.get('compact_semantic_skin_floor', 0.0))
+        skin_arm_floor = float(self.cfg.get('compact_semantic_skin_arm_floor', 0.0))
+        skin_lower_leg_floor = float(self.cfg.get('compact_semantic_skin_lower_leg_floor', 0.0))
+        upper_torso_support = float(self.cfg.get('compact_semantic_upper_torso_support', 0.96))
+        upper_body_support = float(self.cfg.get('compact_semantic_upper_body_support', 0.20))
+        upper_core_support = float(self.cfg.get('compact_semantic_upper_core_support', upper_body_support))
+        upper_arm_body_support = float(self.cfg.get('compact_semantic_upper_arm_body_support', upper_body_support))
+        upper_forearm_body_support = float(self.cfg.get('compact_semantic_upper_forearm_body_support', 0.0))
+        upper_arm_support = float(self.cfg.get('compact_semantic_upper_arm_support', 0.08))
+        upper_pelvis_suppress = float(self.cfg.get('compact_semantic_upper_pelvis_suppress', 0.42))
+        upper_leg_suppress = float(self.cfg.get('compact_semantic_upper_leg_suppress', 0.24))
+        upper_arm_suppress = float(self.cfg.get('compact_semantic_upper_arm_suppress', 0.0))
+        upper_forearm_suppress = float(self.cfg.get('compact_semantic_upper_forearm_suppress', 0.0))
+        upper_skin_suppress = float(self.cfg.get('compact_semantic_upper_skin_suppress', 0.0))
+        lower_leg_support = float(self.cfg.get('compact_semantic_lower_leg_support', 1.08))
+        lower_thigh_support = float(self.cfg.get('compact_semantic_lower_thigh_support', lower_leg_support))
+        lower_lower_leg_support = float(self.cfg.get('compact_semantic_lower_lower_leg_support', lower_leg_support))
+        lower_foot_support = float(self.cfg.get('compact_semantic_lower_foot_support', lower_leg_support))
+        lower_pelvis_support = float(self.cfg.get('compact_semantic_lower_pelvis_support', 0.92))
+        lower_torso_support = float(self.cfg.get('compact_semantic_lower_torso_support', 0.10))
+        lower_head_suppress = float(self.cfg.get('compact_semantic_lower_head_suppress', 0.18))
+        lower_lower_leg_suppress = float(self.cfg.get('compact_semantic_lower_lower_leg_suppress', 0.0))
+        lower_skin_suppress = float(self.cfg.get('compact_semantic_lower_skin_suppress', 0.0))
+        upper_lower_suppress = float(self.cfg.get('compact_semantic_upper_lower_suppress', 0.24))
+        lower_pelvis_boost = float(self.cfg.get('compact_semantic_lower_pelvis_boost', 0.18))
+        lower_leg_boost = float(self.cfg.get('compact_semantic_lower_leg_boost', 0.12))
+        upper_shoe_suppress = float(self.cfg.get('compact_semantic_upper_shoe_suppress', 0.90))
+        lower_shoe_suppress = float(self.cfg.get('compact_semantic_lower_shoe_suppress', 0.86))
+        lower_shoe_post_suppress = float(self.cfg.get('compact_semantic_lower_shoe_post_suppress', 0.0))
+        shoes_ankle_support = float(self.cfg.get('compact_semantic_shoes_ankle_support', 0.0))
+        shoes_thin_support = float(self.cfg.get('compact_semantic_shoes_thin_support', 0.0))
+        shoes_cloth_weight = float(self.cfg.get('compact_semantic_shoes_cloth_weight', 0.94))
+        shoes_thin_weight = float(self.cfg.get('compact_semantic_shoes_thin_weight', 0.20))
+        shoes_floor = float(self.cfg.get('compact_semantic_shoes_floor', 0.01))
 
-        skin_score = torch.clamp(body_prob * ((0.88 * arm_mask) + (0.84 * leg_mask) + (0.06 * torso_mask)) * (0.54 + 0.46 * conf_score) * (0.58 + 0.42 * body_surface), 0.0, 1.0)
+        ankle_mask = joint_group_mask(dominant_joint, [7, 8])
+        foot_or_ankle_mask = torch.clamp(foot_mask + ankle_mask, 0.0, 1.0)
+        shoe_support = torch.clamp(
+            foot_mask
+            + shoes_ankle_support * ankle_mask
+            + shoes_thin_support * thin_score * foot_or_ankle_mask,
+            0.0,
+            1.0,
+        )
+
+        face_score = head_mask * torch.clamp(
+            body_prob
+            * (0.52 + 0.48 * conf_score)
+            * body_surface
+            * (0.58 + 0.42 * body_semantic),
+            0.0,
+            1.0,
+        )
+        face_score = torch.clamp(face_score * (1.0 + face_body_boost * head_mask), 0.0, 1.0)
+        if face_floor > 0.0:
+            face_score = torch.clamp(
+                face_score + face_floor * head_mask * body_surface * (0.40 + 0.60 * conf_score),
+                0.0,
+                1.0,
+            )
+        hair_score = head_mask * torch.clamp(0.42 * soft_prob + 0.26 * cloth_prob + 0.22 * (1.0 - conf_score) + 0.18 * cloth_surface + 0.10 * cloth_semantic, 0.0, 1.0)
+        hair_score = hair_score * torch.clamp(1.0 - hair_face_suppress * face_score, 0.0, 1.0) + hair_floor * head_mask
+
+        skin_support = (
+            skin_arm_support * arm_mask
+            + skin_thigh_support * thigh_mask
+            + skin_lower_leg_support * lower_leg_mask
+            + skin_foot_support * foot_mask
+            + skin_torso_support * torso_mask
+        )
+        skin_score = torch.clamp(body_prob * skin_support * (0.54 + 0.46 * conf_score) * (0.58 + 0.42 * body_surface), 0.0, 1.0)
+        if skin_floor > 0.0 or skin_arm_floor > 0.0 or skin_lower_leg_floor > 0.0:
+            skin_floor_support = (
+                skin_floor * torch.clamp(torso_mask + arm_mask + leg_mask, 0.0, 1.0)
+                + skin_arm_floor * arm_mask
+                + skin_lower_leg_floor * lower_leg_mask
+            )
+            skin_score = torch.clamp(
+                skin_score
+                + skin_floor_support
+                * body_surface
+                * (0.40 + 0.60 * conf_score)
+                * (0.48 + 0.52 * body_semantic),
+                0.0,
+                1.0,
+            )
 
         upper_support = torch.clamp(
-            0.96 * torso_mask
-            + 0.20 * upper_body_mask
-            + 0.08 * arm_mask
-            - 0.42 * pelvis_mask
-            - 0.24 * leg_mask,
+            upper_torso_support * torso_mask
+            + upper_core_support * upper_core_mask
+            + upper_arm_body_support * upper_arm_mask
+            + upper_forearm_body_support * forearm_hand_mask
+            + upper_arm_support * arm_mask
+            - upper_pelvis_suppress * pelvis_mask
+            - upper_leg_suppress * leg_mask,
             0.0,
             1.0,
         )
         lower_support = torch.clamp(
-            1.08 * leg_mask
-            + 0.92 * pelvis_mask
-            + 0.10 * torso_mask
-            - 0.18 * head_mask,
+            lower_thigh_support * thigh_mask
+            + lower_lower_leg_support * lower_leg_mask
+            + lower_foot_support * foot_mask
+            + lower_pelvis_support * pelvis_mask
+            + lower_torso_support * torso_mask
+            - lower_head_suppress * head_mask,
             0.0,
             1.0,
         )
@@ -974,26 +1073,48 @@ class ExplicitBinding(RigidDeform):
         upper_score = torch.clamp(
             cloth_prob
             * upper_support
-            * (1.0 - 0.90 * foot_mask)
+            * torch.clamp(1.0 - upper_shoe_suppress * shoe_support, 0.0, 1.0)
             * (0.54 + 0.46 * cloth_surface)
             * (0.56 + 0.44 * cloth_semantic),
             0.0,
             1.0,
         )
+        if upper_arm_suppress > 0.0 or upper_forearm_suppress > 0.0 or upper_skin_suppress > 0.0:
+            upper_limb_suppress = upper_arm_suppress * upper_arm_mask + upper_forearm_suppress * forearm_hand_mask
+            upper_skin_guard = upper_skin_suppress * skin_score * arm_mask
+            upper_score = upper_score * torch.clamp(1.0 - upper_limb_suppress - upper_skin_guard, min=0.05, max=1.0)
         lower_score = torch.clamp(
             cloth_prob
             * lower_support
-            * (1.0 - 0.86 * foot_mask)
+            * torch.clamp(1.0 - lower_shoe_suppress * shoe_support, 0.0, 1.0)
             * (0.60 + 0.40 * cloth_surface)
             * (0.54 + 0.46 * cloth_semantic),
             0.0,
             1.0,
         )
-        shoes_score = torch.clamp((0.94 * cloth_prob + 0.20 * thin_score) * foot_mask * (0.60 + 0.40 * cloth_surface), 0.0, 1.0) + 0.01 * foot_mask
+        if lower_lower_leg_suppress > 0.0 or lower_skin_suppress > 0.0:
+            lower_skin_guard = lower_skin_suppress * skin_score * lower_leg_mask
+            lower_score = lower_score * torch.clamp(
+                1.0 - lower_lower_leg_suppress * lower_leg_mask - lower_skin_guard,
+                min=0.05,
+                max=1.0,
+            )
+        shoes_score = torch.clamp(
+            (shoes_cloth_weight * cloth_prob + shoes_thin_weight * thin_score)
+            * shoe_support
+            * (0.60 + 0.40 * cloth_surface),
+            0.0,
+            1.0,
+        ) + shoes_floor * shoe_support
 
         compact_scores = torch.stack([hair_score, face_score, skin_score, upper_score, lower_score, shoes_score], dim=-1)
-        compact_scores[..., 3] = compact_scores[..., 3] * (1.0 - 0.24 * lower_support)
-        compact_scores[..., 4] = compact_scores[..., 4] * (1.0 + 0.18 * pelvis_mask + 0.12 * leg_mask)
+        compact_scores[..., 3] = compact_scores[..., 3] * (1.0 - upper_lower_suppress * lower_support)
+        compact_scores[..., 4] = compact_scores[..., 4] * (1.0 + lower_pelvis_boost * pelvis_mask + lower_leg_boost * leg_mask)
+        if lower_shoe_post_suppress > 0.0:
+            compact_scores[..., 4] = compact_scores[..., 4] * torch.clamp(
+                1.0 - lower_shoe_post_suppress * shoe_support,
+                min=0.05,
+            )
         compact_scores = compact_scores + compact_scores.new_tensor(1e-6)
         return compact_scores / compact_scores.sum(dim=-1, keepdim=True).clamp_min(1e-6)
 

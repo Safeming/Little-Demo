@@ -623,8 +623,6 @@ class ZJUMoCapDataset(Dataset):
             if self.use_direct_parser_labels:
                 parser_index_mask = self._load_direct_parser_index_mask(cam_name, frame_idx, K_undistort, dist, crop_box=crop_box)
             if parser_index_mask is not None:
-                body_prior = np.isin(parser_index_mask, np.asarray(PARSER_BODY_LABELS)).astype(np.float32) * fg
-                cloth_prior = np.isin(parser_index_mask, np.asarray(PARSER_CLOTH_LABELS)).astype(np.float32) * fg
                 valid_labels = (
                     self.compact_mapping['active_labels']
                     if self.compact_mapping is not None
@@ -632,19 +630,29 @@ class ZJUMoCapDataset(Dataset):
                 )
                 parsing_valid = np.isin(parser_index_mask, np.asarray(valid_labels)).astype(np.float32) * fg
                 parsing_parser_mask = torch.from_numpy(parser_index_mask.astype(np.float32)).unsqueeze(0).float()
+                body_prior = np.isin(parser_index_mask, np.asarray(PARSER_BODY_LABELS)).astype(np.float32) * fg
+                cloth_prior = np.isin(parser_index_mask, np.asarray(PARSER_CLOTH_LABELS)).astype(np.float32) * fg
                 if self.compact_mapping is not None:
                     compact_masks = []
                     compact_names = []
+                    compact_by_name = {}
                     for class_name in self.compact_mapping['class_names']:
                         label_ids = self.compact_mapping['groups'].get(class_name, ())
                         if len(label_ids) == 0:
                             continue
                         compact_mask = np.isin(parser_index_mask, np.asarray(label_ids)).astype(np.float32) * fg
+                        compact_by_name[class_name] = compact_mask
                         compact_masks.append(compact_mask)
                         compact_names.append(class_name)
                     if compact_masks:
                         parsing_compact_masks = torch.from_numpy(np.stack(compact_masks, axis=0)).float()
                         parsing_compact_class_names = tuple(compact_names)
+                    body_parts = [compact_by_name[name] for name in ('hair', 'face', 'skin') if name in compact_by_name]
+                    cloth_parts = [compact_by_name[name] for name in ('upper', 'lower', 'shoes') if name in compact_by_name]
+                    if body_parts:
+                        body_prior = np.clip(np.stack(body_parts, axis=0).sum(axis=0), 0.0, 1.0) * fg
+                    if cloth_parts:
+                        cloth_prior = np.clip(np.stack(cloth_parts, axis=0).sum(axis=0), 0.0, 1.0) * fg
             else:
                 body_prior = self._load_parsing_prior_mask(parsing_body_file, K_undistort, dist, crop_box=crop_box)
                 cloth_prior = self._load_parsing_prior_mask(parsing_cloth_file, K_undistort, dist, crop_box=crop_box)

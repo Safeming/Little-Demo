@@ -429,6 +429,7 @@ def _compact_hard_assignment(compact_probs_2d, compact_names, fg_mask=None, opac
     dtype = compact_probs_2d.dtype
     h, w = compact_probs_2d.shape[-2:]
     support = torch.ones(h, w, device=device, dtype=torch.bool)
+    compact_probs_for_assign = compact_probs_2d
 
     if fg_mask is not None:
         if fg_mask.dim() == 3:
@@ -443,8 +444,12 @@ def _compact_hard_assignment(compact_probs_2d, compact_names, fg_mask=None, opac
         else:
             opacity_2d = opacity.squeeze()
         support = support & (opacity_2d.to(device=device) > float(opacity_threshold))
+        compact_probs_for_assign = compact_probs_2d / opacity_2d.to(device=device, dtype=dtype).unsqueeze(0).clamp_min(1.0e-6)
+    else:
+        compact_probs_for_assign = compact_probs_2d / compact_probs_2d.sum(dim=0, keepdim=True).clamp_min(1.0e-6)
+    compact_probs_for_assign = compact_probs_for_assign.clamp(0.0, 1.0)
 
-    confidence, class_ids = compact_probs_2d.max(dim=0)
+    confidence, class_ids = compact_probs_for_assign.max(dim=0)
     valid = support & (confidence > float(confidence_threshold))
 
     hard_masks = {}

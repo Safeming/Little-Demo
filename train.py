@@ -2772,6 +2772,40 @@ def _semantic_class_weight_tensor(value, class_count, device, dtype):
     return torch.as_tensor(weights[:class_count], device=device, dtype=dtype)
 
 
+def _semantic_index_list(value, default, class_count):
+    if value is None:
+        value = default
+    if OmegaConf.is_config(value):
+        value = OmegaConf.to_container(value, resolve=True)
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.strip().strip('[]').split(',') if item.strip()]
+        try:
+            value = [int(item) for item in raw_items]
+        except ValueError:
+            value = default
+    if isinstance(value, (int, float)):
+        value = [int(value)]
+    elif isinstance(value, (list, tuple)):
+        value = [int(item) for item in value]
+    else:
+        value = list(default)
+    return [idx for idx in value if 0 <= idx < int(class_count)]
+
+
+def _sum_semantic_indices(channels, indices):
+    if not indices:
+        return torch.zeros_like(channels[:1])
+    return channels[indices].sum(dim=0, keepdim=True).clamp(0.0, 1.0)
+
+
+def _normalize_probability_channels(channels, opacity=None, eps=1.0e-6):
+    if opacity is not None and torch.is_tensor(opacity):
+        denom = opacity[:1].to(device=channels.device, dtype=channels.dtype)
+    else:
+        denom = channels.sum(dim=0, keepdim=True)
+    return (channels / denom.clamp_min(eps)).clamp(0.0, 1.0)
+
+
 def _masked_dice_loss(pred, target, mask, channel_weight=None):
     pred = pred.clamp(0.0, 1.0)
     target = target.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
@@ -2793,6 +2827,41 @@ def _masked_dice_loss(pred, target, mask, channel_weight=None):
             channel_weight = torch.cat([channel_weight, torch.ones(loss.shape[0] - channel_weight.numel(), device=pred.device, dtype=pred.dtype)])
         return (loss * channel_weight).sum() / channel_weight.sum().clamp_min(1.0e-6)
     return loss.mean()
+
+
+def _masked_multiclass_cross_entropy(pred, target, mask, class_weight=None):
+    pred = pred.clamp_min(1.0e-6)
+    pred = pred / pred.sum(dim=0, keepdim=True).clamp_min(1.0e-6)
+    target = target.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
+    mask = mask.to(device=pred.device, dtype=pred.dtype)
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)
+    if target.dim() == 2:
+        target = target.unsqueeze(0)
+
+    class_count = min(pred.shape[0], target.shape[0])
+    if class_count <= 0:
+        return pred.new_tensor(0.0)
+    pred = pred[:class_count]
+    target = target[:class_count]
+
+    valid = mask[:1] * (target.sum(dim=0, keepdim=True) > 0.5).to(dtype=pred.dtype)
+    if valid.sum().item() <= 0:
+        return pred.new_tensor(0.0)
+
+    target_ids = torch.argmax(target, dim=0)
+    per_pixel = -torch.log(pred.gather(0, target_ids.unsqueeze(0)).clamp_min(1.0e-6))
+    pixel_weight = torch.ones_like(per_pixel)
+    if class_weight is not None:
+        class_weight = class_weight.to(device=pred.device, dtype=pred.dtype).flatten()[:class_count]
+        if class_weight.numel() < class_count:
+            class_weight = torch.cat([
+                class_weight,
+                torch.ones(class_count - class_weight.numel(), device=pred.device, dtype=pred.dtype),
+            ])
+        pixel_weight = class_weight[target_ids].unsqueeze(0)
+    weighted_valid = valid * pixel_weight
+    return (per_pixel * weighted_valid).sum() / weighted_valid.sum().clamp_min(1.0)
 
 
 def _semantic_parser_valid_mask(data, fg_mask, opt, opacity=None):
@@ -2824,6 +2893,7 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
         'valid_pixels': 0.0,
         'body_cloth': 0.0,
         'compact': 0.0,
+        'compact_ce': 0.0,
         'parent': 0.0,
         'exclusive': 0.0,
         'smooth': 0.0,
@@ -2861,6 +2931,11 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
     )
     if region_2d is None:
         return zero, stats
+    region_pred_prob = _normalize_probability_channels(
+        region_2d,
+        opacity=semantic_opacity,
+        eps=float(opt.get('stageB_semantic_prob_normalize_eps', 1.0e-6)),
+    )
     if semantic_opacity is not None and opacity is None:
         valid_mask = _semantic_parser_valid_mask(data, fg_mask, opt, opacity=semantic_opacity)
         valid_pixels = float(valid_mask.sum().detach().item())
@@ -2869,12 +2944,61 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
             return zero, stats
 
     total = zero
+    compact_2d = None
+    compact_target = None
+    compact_pred_prob = None
+    compact_valid = valid_mask.to(device=region_2d.device, dtype=region_2d.dtype)
+    compact_class_count = 0
+    compact_parent_body_indices = []
+    compact_parent_cloth_indices = []
+    parent_target_from_compact = None
+
+    compact_masks = getattr(data, 'parsing_compact_masks', None)
+    if torch.is_tensor(compact_probs) and torch.is_tensor(compact_masks):
+        compact_background = torch.zeros(3, dtype=compact_probs.dtype, device=compact_probs.device)
+        compact_2d, compact_opacity = _rasterize_probability_channels(
+            data,
+            pc,
+            pipe,
+            compact_background,
+            compact_probs,
+        )
+        if compact_2d is not None:
+            compact_target = compact_masks.to(device=compact_2d.device, dtype=compact_2d.dtype).clamp(0.0, 1.0)
+            compact_class_count = min(compact_2d.shape[0], compact_target.shape[0])
+            if compact_class_count > 0:
+                compact_2d = compact_2d[:compact_class_count]
+                compact_target = compact_target[:compact_class_count]
+                compact_valid = valid_mask.to(device=compact_2d.device, dtype=compact_2d.dtype)
+                compact_pred_prob = _normalize_probability_channels(
+                    compact_2d,
+                    opacity=compact_opacity,
+                    eps=float(opt.get('stageB_semantic_prob_normalize_eps', 1.0e-6)),
+                )
+                compact_parent_body_indices = _semantic_index_list(
+                    opt.get('stageB_semantic_parent_body_indices', None),
+                    default=(0, 1, 2),
+                    class_count=compact_class_count,
+                )
+                compact_parent_cloth_indices = _semantic_index_list(
+                    opt.get('stageB_semantic_parent_cloth_indices', None),
+                    default=(3, 4, 5),
+                    class_count=compact_class_count,
+                )
+                body_from_target = _sum_semantic_indices(compact_target, compact_parent_body_indices)
+                cloth_from_target = _sum_semantic_indices(compact_target, compact_parent_cloth_indices)
+                if body_from_target.sum().item() > 0 or cloth_from_target.sum().item() > 0:
+                    parent_target_from_compact = torch.cat([body_from_target, cloth_from_target], dim=0)
+
     body_mask = getattr(data, 'parsing_body_mask', None)
     cloth_mask = getattr(data, 'parsing_cloth_mask', None)
     if torch.is_tensor(body_mask) and torch.is_tensor(cloth_mask):
         body_target = body_mask[:1].to(device=region_2d.device, dtype=region_2d.dtype).clamp(0.0, 1.0)
         cloth_target = cloth_mask[:1].to(device=region_2d.device, dtype=region_2d.dtype).clamp(0.0, 1.0)
-        parent_pred = torch.stack([region_2d[0], region_2d[2]], dim=0)
+        if parent_target_from_compact is not None and bool(opt.get('stageB_semantic_parent_target_use_compact_groups', True)):
+            body_target = torch.maximum(body_target, parent_target_from_compact[:1].to(device=region_2d.device, dtype=region_2d.dtype))
+            cloth_target = torch.maximum(cloth_target, parent_target_from_compact[1:2].to(device=region_2d.device, dtype=region_2d.dtype))
+        parent_pred = torch.stack([region_pred_prob[0], region_pred_prob[2]], dim=0)
         parent_target = torch.cat([body_target, cloth_target], dim=0)
         parent_valid = valid_mask.to(device=region_2d.device, dtype=region_2d.dtype)
         bce_weight = float(opt.get('stageB_semantic_body_cloth_bce_weight', 1.0))
@@ -2887,66 +3011,63 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
         stats['body_cloth'] = float(body_cloth_loss.detach().item())
 
     compact_loss = zero
-    compact_masks = getattr(data, 'parsing_compact_masks', None)
-    if torch.is_tensor(compact_probs) and torch.is_tensor(compact_masks):
-        compact_2d, _ = _rasterize_probability_channels(
-            data,
-            pc,
-            pipe,
-            semantic_background,
-            compact_probs,
+    if compact_pred_prob is not None and compact_target is not None and compact_class_count > 0:
+        compact_class_weight = _semantic_class_weight_tensor(
+            opt.get('stageB_semantic_compact_class_weights', None),
+            compact_class_count,
+            compact_pred_prob.device,
+            compact_pred_prob.dtype,
         )
-        if compact_2d is not None:
-            compact_target = compact_masks.to(device=compact_2d.device, dtype=compact_2d.dtype).clamp(0.0, 1.0)
-            class_count = min(compact_2d.shape[0], compact_target.shape[0])
-            if class_count > 0:
-                compact_pred = compact_2d[:class_count]
-                compact_target = compact_target[:class_count]
-                compact_valid = valid_mask.to(device=compact_2d.device, dtype=compact_2d.dtype)
-                compact_class_weight = _semantic_class_weight_tensor(
-                    opt.get('stageB_semantic_compact_class_weights', None),
-                    class_count,
-                    compact_2d.device,
-                    compact_2d.dtype,
-                )
-                compact_positive_weight = _semantic_class_weight_tensor(
-                    opt.get('stageB_semantic_compact_positive_weights', None),
-                    class_count,
-                    compact_2d.device,
-                    compact_2d.dtype,
-                )
-                compact_loss = (
-                    float(opt.get('stageB_semantic_compact_bce_weight', 1.0))
-                    * _masked_binary_cross_entropy(
-                        compact_pred,
-                        compact_target,
-                        compact_valid,
-                        channel_weight=compact_class_weight,
-                        positive_weight=compact_positive_weight,
-                    )
-                    + float(opt.get('stageB_semantic_compact_dice_weight', 0.75))
-                    * _masked_dice_loss(
-                        compact_pred,
-                        compact_target,
-                        compact_valid,
-                        channel_weight=compact_class_weight,
-                    )
-                )
-                total = total + float(opt.get('stageB_semantic_compact_weight', 1.0)) * compact_loss
-                stats['compact'] = float(compact_loss.detach().item())
+        compact_positive_weight = _semantic_class_weight_tensor(
+            opt.get('stageB_semantic_compact_positive_weights', None),
+            compact_class_count,
+            compact_pred_prob.device,
+            compact_pred_prob.dtype,
+        )
+        compact_bce_loss = _masked_binary_cross_entropy(
+            compact_pred_prob,
+            compact_target,
+            compact_valid,
+            channel_weight=compact_class_weight,
+            positive_weight=compact_positive_weight,
+        )
+        compact_dice_loss = _masked_dice_loss(
+            compact_pred_prob,
+            compact_target,
+            compact_valid,
+            channel_weight=compact_class_weight,
+        )
+        compact_ce_loss = _masked_multiclass_cross_entropy(
+            compact_pred_prob,
+            compact_target,
+            compact_valid,
+            class_weight=compact_class_weight,
+        )
+        compact_loss = (
+            float(opt.get('stageB_semantic_compact_bce_weight', 1.0)) * compact_bce_loss
+            + float(opt.get('stageB_semantic_compact_dice_weight', 0.75)) * compact_dice_loss
+            + float(opt.get('stageB_semantic_compact_ce_weight', 0.0)) * compact_ce_loss
+        )
+        total = total + float(opt.get('stageB_semantic_compact_weight', 1.0)) * compact_loss
+        stats['compact'] = float(compact_loss.detach().item())
+        stats['compact_ce'] = float(compact_ce_loss.detach().item())
 
-                if bool(opt.get('stageB_semantic_parent_consistency_enable', True)) and class_count >= 5:
-                    compact_body = compact_pred[1:3].sum(dim=0, keepdim=True).clamp(0.0, 1.0)
-                    compact_cloth = compact_pred[3:5].sum(dim=0, keepdim=True).clamp(0.0, 1.0)
-                    parent_from_compact = torch.cat([compact_body, compact_cloth], dim=0)
-                    parent_from_region = torch.stack([region_2d[0], region_2d[2]], dim=0)
-                    parent_loss = ((parent_from_region - parent_from_compact).abs() * compact_valid).sum() / compact_valid.sum().clamp_min(1.0)
-                    total = total + float(opt.get('stageB_semantic_parent_consistency_weight', 0.35)) * parent_loss
-                    stats['parent'] = float(parent_loss.detach().item())
+        if bool(opt.get('stageB_semantic_parent_consistency_enable', True)) and compact_class_count > 0:
+            compact_body = _sum_semantic_indices(compact_pred_prob, compact_parent_body_indices)
+            compact_cloth = _sum_semantic_indices(compact_pred_prob, compact_parent_cloth_indices)
+            parent_from_compact = torch.cat([compact_body, compact_cloth], dim=0)
+            parent_from_region = torch.stack([region_pred_prob[0], region_pred_prob[2]], dim=0)
+            parent_loss = ((parent_from_region - parent_from_compact).abs() * compact_valid).sum() / compact_valid.sum().clamp_min(1.0)
+            total = total + float(opt.get('stageB_semantic_parent_consistency_weight', 0.35)) * parent_loss
+            stats['parent'] = float(parent_loss.detach().item())
 
     exclusive_weight = float(opt.get('stageB_semantic_exclusive_weight', 0.0))
     if exclusive_weight > 0.0:
-        exclusive_loss = (region_2d[0:1] * region_2d[2:3] * valid_mask.to(device=region_2d.device, dtype=region_2d.dtype)).sum() / valid_mask.sum().clamp_min(1.0)
+        exclusive_loss = (
+            region_pred_prob[0:1]
+            * region_pred_prob[2:3]
+            * valid_mask.to(device=region_pred_prob.device, dtype=region_pred_prob.dtype)
+        ).sum() / valid_mask.sum().clamp_min(1.0)
         total = total + exclusive_weight * exclusive_loss
         stats['exclusive'] = float(exclusive_loss.detach().item())
 
@@ -7904,6 +8025,7 @@ def training(config):
                 'loss/stageB_semantic_valid_pixels': float(stageB_semantic_stats.get('valid_pixels', 0.0)),
                 'loss/stageB_semantic_body_cloth': float(stageB_semantic_stats.get('body_cloth', 0.0)),
                 'loss/stageB_semantic_compact': float(stageB_semantic_stats.get('compact', 0.0)),
+                'loss/stageB_semantic_compact_ce': float(stageB_semantic_stats.get('compact_ce', 0.0)),
                 'loss/stageB_semantic_parent': float(stageB_semantic_stats.get('parent', 0.0)),
                 'loss/stageB_semantic_exclusive': float(stageB_semantic_stats.get('exclusive', 0.0)),
                 'loss/stageB_semantic_smooth': float(stageB_semantic_stats.get('smooth', 0.0)),

@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
 PYTHON_BIN="${PYTHON_BIN:-/opt/miniconda3/envs/3dgs-avatar/bin/python}"
-RUN_ID="${RUN_ID:-stageB_compact_semantic_v228_live_$(TZ=Asia/Shanghai date '+%Y%m%d_%H%M%S_bjt')}"
+RUN_ID="${RUN_ID:-stageB_compact_semantic_v233_skincloth_$(TZ=Asia/Shanghai date '+%Y%m%d_%H%M%S_bjt')}"
 SEED="${SEED:--1}"
 GPUS="${GPUS:-0,1,2,3}"
 GPU_MAX_USED_MB_START="${GPU_MAX_USED_MB_START:-18000}"
@@ -78,11 +78,11 @@ printf 'RUN_ID=%s\nSTART_BJT=%s\nGPUS=%s\nBASE_EXP=%s\nBASE_CKPT=%s\nBASE_ITER=%
 cat >> "$LOG_DIR/run_info.txt" <<'EOF'
 
 Purpose:
-  Repair StageB compact semantic for true StageC. This v228 line requires train.py to
-  route the Hulk parser compact semantic loss into the actual optimization loss. Final
-  candidates train only on B1-B20 and are judged on held-out B21/B22/B23 against Hulk
-  parser masks. The oracle branch intentionally includes B21-B23 only to check
-  capacity/export upper bound; it is not a final model candidate.
+  Repair StageB compact semantic for true StageC. This v233 line keeps the v232
+  shoes prior, but adds explicit skin/cloth competition guards for bare arms and
+  lower legs. The branches vary skin floors, upper/lower limb suppressors, and
+  parent body/cloth consistency, then train on B1-B20 and evaluate on held-out
+  B21/B22/B23 against Hulk parser compact masks.
 EOF
 
 log_event() {
@@ -383,8 +383,12 @@ train_compact_repair() {
     "++opt.stageB_semantic_min_valid_pixels=64" \
     "++opt.stageB_semantic_body_cloth_bce_weight=1.0" \
     "++opt.stageB_semantic_body_cloth_dice_weight=0.75" \
-    "++opt.stageB_semantic_compact_bce_weight=1.0" \
-    "++opt.stageB_semantic_compact_dice_weight=0.90" \
+    "++opt.stageB_semantic_compact_bce_weight=0.45" \
+    "++opt.stageB_semantic_compact_dice_weight=0.70" \
+    "++opt.stageB_semantic_compact_ce_weight=0.70" \
+    "++opt.stageB_semantic_parent_target_use_compact_groups=true" \
+    "++opt.stageB_semantic_parent_body_indices=[0,1,2]" \
+    "++opt.stageB_semantic_parent_cloth_indices=[3,4,5]" \
     "++opt.stageB_semantic_parent_consistency_enable=true" \
     "++opt.stageB_semantic_exclusive_weight=0.10" \
     "++opt.train_sample_mode=frame_balanced_camera_weighted" \
@@ -446,7 +450,382 @@ run_named_job() {
   local gpu="$1"
   local job="$2"
   case "$job" in
-    v228a_compact_live_all20_balanced)
+    v233a_skincloth_balanced)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.74" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.20" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.024" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.96" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.62" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.08" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.00" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.020" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.20" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_support=1.06" \
+        "++model.deformer.rigid.compact_semantic_skin_thigh_support=0.92" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_support=1.12" \
+        "++model.deformer.rigid.compact_semantic_skin_foot_support=0.40" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.11" \
+        "++model.deformer.rigid.compact_semantic_skin_floor=0.010" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_floor=0.040" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_floor=0.060" \
+        "++model.deformer.rigid.compact_semantic_upper_core_support=0.24" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_body_support=0.08" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_body_support=0.00" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_support=0.02" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_suppress=0.38" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_suppress=0.74" \
+        "++model.deformer.rigid.compact_semantic_upper_skin_suppress=0.30" \
+        "++model.deformer.rigid.compact_semantic_lower_thigh_support=0.72" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_support=0.28" \
+        "++model.deformer.rigid.compact_semantic_lower_foot_support=0.05" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_suppress=0.46" \
+        "++model.deformer.rigid.compact_semantic_lower_skin_suppress=0.34" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.15" \
+        "++opt.semantic_region_logits_lr=0.00100" \
+        "++opt.semantic_compact_logits_lr=0.00145" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0008" \
+        "++opt.stageB_semantic_ignore_boundary_width=3" \
+        "++opt.stageB_semantic_opacity_threshold=0.025" \
+        "++opt.stageB_semantic_body_cloth_weight=0.42" \
+        "++opt.stageB_semantic_compact_weight=1.22" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.42" \
+        "++opt.stageB_semantic_exclusive_weight=0.14" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.012" \
+        "++opt.stageB_semantic_compact_class_weights=[1.15,4.60,2.05,0.95,0.95,6.20]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,11.00,4.20,1.05,1.05,16.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0070"
+      ;;
+    v233b_skin_guard_strong)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.76" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.20" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.024" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.97" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.68" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.06" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.00" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.020" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.20" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_support=1.16" \
+        "++model.deformer.rigid.compact_semantic_skin_thigh_support=1.00" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_support=1.22" \
+        "++model.deformer.rigid.compact_semantic_skin_foot_support=0.35" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.14" \
+        "++model.deformer.rigid.compact_semantic_skin_floor=0.016" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_floor=0.060" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_floor=0.085" \
+        "++model.deformer.rigid.compact_semantic_upper_core_support=0.20" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_body_support=0.04" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_body_support=0.00" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_support=0.00" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_suppress=0.58" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_suppress=0.84" \
+        "++model.deformer.rigid.compact_semantic_upper_skin_suppress=0.46" \
+        "++model.deformer.rigid.compact_semantic_lower_thigh_support=0.64" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_support=0.18" \
+        "++model.deformer.rigid.compact_semantic_lower_foot_support=0.03" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_suppress=0.66" \
+        "++model.deformer.rigid.compact_semantic_lower_skin_suppress=0.52" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.05" \
+        "++opt.semantic_region_logits_lr=0.00095" \
+        "++opt.semantic_compact_logits_lr=0.00135" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0009" \
+        "++opt.stageB_semantic_ignore_boundary_width=4" \
+        "++opt.stageB_semantic_opacity_threshold=0.030" \
+        "++opt.stageB_semantic_body_cloth_weight=0.48" \
+        "++opt.stageB_semantic_compact_weight=1.12" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.50" \
+        "++opt.stageB_semantic_exclusive_weight=0.18" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.016" \
+        "++opt.stageB_semantic_compact_class_weights=[1.15,4.40,2.45,0.90,0.90,6.00]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,10.50,5.20,1.00,1.00,15.50]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0065"
+      ;;
+    v233c_parent_boundary_strong)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.72" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.18" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.022" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.95" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.58" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.08" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.00" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.024" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.24" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_support=1.10" \
+        "++model.deformer.rigid.compact_semantic_skin_thigh_support=0.96" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_support=1.16" \
+        "++model.deformer.rigid.compact_semantic_skin_foot_support=0.36" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.12" \
+        "++model.deformer.rigid.compact_semantic_skin_floor=0.012" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_floor=0.050" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_floor=0.070" \
+        "++model.deformer.rigid.compact_semantic_upper_core_support=0.22" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_body_support=0.06" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_body_support=0.00" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_support=0.01" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_suppress=0.48" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_suppress=0.80" \
+        "++model.deformer.rigid.compact_semantic_upper_skin_suppress=0.40" \
+        "++model.deformer.rigid.compact_semantic_lower_thigh_support=0.68" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_support=0.22" \
+        "++model.deformer.rigid.compact_semantic_lower_foot_support=0.04" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_suppress=0.58" \
+        "++model.deformer.rigid.compact_semantic_lower_skin_suppress=0.46" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.95" \
+        "++opt.semantic_region_logits_lr=0.00085" \
+        "++opt.semantic_compact_logits_lr=0.00125" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0011" \
+        "++opt.stageB_semantic_ignore_boundary_width=5" \
+        "++opt.stageB_semantic_opacity_threshold=0.035" \
+        "++opt.stageB_semantic_body_cloth_weight=0.58" \
+        "++opt.stageB_semantic_compact_weight=1.02" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.62" \
+        "++opt.stageB_semantic_exclusive_weight=0.22" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.022" \
+        "++opt.stageB_semantic_compact_class_weights=[1.15,4.20,2.20,1.00,1.00,5.80]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,10.00,4.80,1.15,1.15,14.50]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0060"
+      ;;
+    v233d_shoes_preserve_control)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.78" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.22" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.026" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.96" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.70" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.08" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.00" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.020" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.20" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_support=1.02" \
+        "++model.deformer.rigid.compact_semantic_skin_thigh_support=0.90" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_support=1.06" \
+        "++model.deformer.rigid.compact_semantic_skin_foot_support=0.35" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.10" \
+        "++model.deformer.rigid.compact_semantic_skin_floor=0.008" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_floor=0.032" \
+        "++model.deformer.rigid.compact_semantic_skin_lower_leg_floor=0.050" \
+        "++model.deformer.rigid.compact_semantic_upper_core_support=0.24" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_body_support=0.08" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_body_support=0.00" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_support=0.02" \
+        "++model.deformer.rigid.compact_semantic_upper_arm_suppress=0.30" \
+        "++model.deformer.rigid.compact_semantic_upper_forearm_suppress=0.66" \
+        "++model.deformer.rigid.compact_semantic_upper_skin_suppress=0.24" \
+        "++model.deformer.rigid.compact_semantic_lower_thigh_support=0.76" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_support=0.32" \
+        "++model.deformer.rigid.compact_semantic_lower_foot_support=0.05" \
+        "++model.deformer.rigid.compact_semantic_lower_lower_leg_suppress=0.38" \
+        "++model.deformer.rigid.compact_semantic_lower_skin_suppress=0.28" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.25" \
+        "++opt.semantic_region_logits_lr=0.00105" \
+        "++opt.semantic_compact_logits_lr=0.00150" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0007" \
+        "++opt.stageB_semantic_ignore_boundary_width=3" \
+        "++opt.stageB_semantic_opacity_threshold=0.025" \
+        "++opt.stageB_semantic_body_cloth_weight=0.36" \
+        "++opt.stageB_semantic_compact_weight=1.26" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.36" \
+        "++opt.stageB_semantic_exclusive_weight=0.12" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.010" \
+        "++opt.stageB_semantic_compact_class_weights=[1.10,4.50,1.85,0.92,0.92,6.80]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.25,10.80,3.80,1.00,1.00,18.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0075"
+      ;;
+    v232a_prior_balanced)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.55" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.14" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.018" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.92" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.45" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.04" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.12" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.025" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.25" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.10" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.05" \
+        "++opt.semantic_region_logits_lr=0.00100" \
+        "++opt.semantic_compact_logits_lr=0.00145" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0008" \
+        "++opt.stageB_semantic_ignore_boundary_width=3" \
+        "++opt.stageB_semantic_opacity_threshold=0.025" \
+        "++opt.stageB_semantic_body_cloth_weight=0.28" \
+        "++opt.stageB_semantic_compact_weight=1.25" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.25" \
+        "++opt.stageB_semantic_exclusive_weight=0.10" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.010" \
+        "++opt.stageB_semantic_compact_class_weights=[1.15,5.00,1.25,0.95,0.95,6.00]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,12.00,1.55,1.05,1.05,16.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0075"
+      ;;
+    v232b_shoes_aggressive)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.78" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.22" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.026" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.96" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.70" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.00" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.08" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.020" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.20" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.09" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.40" \
+        "++opt.semantic_region_logits_lr=0.00110" \
+        "++opt.semantic_compact_logits_lr=0.00170" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.00055" \
+        "++opt.stageB_semantic_ignore_boundary_width=2" \
+        "++opt.stageB_semantic_opacity_threshold=0.020" \
+        "++opt.stageB_semantic_body_cloth_weight=0.22" \
+        "++opt.stageB_semantic_compact_weight=1.38" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.20" \
+        "++opt.stageB_semantic_exclusive_weight=0.08" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.008" \
+        "++opt.stageB_semantic_compact_class_weights=[1.10,4.60,1.15,0.90,0.90,7.20]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.20,11.00,1.40,1.00,1.00,20.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0080"
+      ;;
+    v232c_face_skin_balance)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.48" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.12" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.016" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.90" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.38" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.05" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.12" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.045" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.45" \
+        "++model.deformer.rigid.compact_semantic_hair_face_suppress=0.60" \
+        "++model.deformer.rigid.compact_semantic_skin_arm_support=0.96" \
+        "++model.deformer.rigid.compact_semantic_skin_leg_support=0.92" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.16" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=2.10" \
+        "++opt.semantic_region_logits_lr=0.00095" \
+        "++opt.semantic_compact_logits_lr=0.00145" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.00075" \
+        "++opt.stageB_semantic_ignore_boundary_width=3" \
+        "++opt.stageB_semantic_opacity_threshold=0.025" \
+        "++opt.stageB_semantic_body_cloth_weight=0.30" \
+        "++opt.stageB_semantic_compact_weight=1.30" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.28" \
+        "++opt.stageB_semantic_exclusive_weight=0.10" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.010" \
+        "++opt.stageB_semantic_compact_class_weights=[1.35,5.80,1.80,0.98,0.98,5.30]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.80,15.00,3.20,1.10,1.10,14.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0075"
+      ;;
+    v232d_prior_conservative)
+      train_compact_repair "$job" "$gpu" "$ALL20" 24000 "[6000,12000,18000,24000]" \
+        "++model.deformer.rigid.compact_semantic_shoes_ankle_support=0.35" \
+        "++model.deformer.rigid.compact_semantic_shoes_thin_support=0.10" \
+        "++model.deformer.rigid.compact_semantic_shoes_floor=0.014" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_suppress=0.88" \
+        "++model.deformer.rigid.compact_semantic_lower_shoe_post_suppress=0.25" \
+        "++model.deformer.rigid.compact_semantic_lower_leg_boost=0.08" \
+        "++model.deformer.rigid.compact_semantic_lower_pelvis_boost=0.14" \
+        "++model.deformer.rigid.compact_semantic_face_floor=0.015" \
+        "++model.deformer.rigid.compact_semantic_face_body_boost=0.15" \
+        "++model.deformer.rigid.compact_semantic_skin_torso_support=0.08" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.75" \
+        "++opt.semantic_region_logits_lr=0.00085" \
+        "++opt.semantic_compact_logits_lr=0.00115" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0010" \
+        "++opt.stageB_semantic_ignore_boundary_width=4" \
+        "++opt.stageB_semantic_opacity_threshold=0.030" \
+        "++opt.stageB_semantic_body_cloth_weight=0.34" \
+        "++opt.stageB_semantic_compact_weight=1.15" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.34" \
+        "++opt.stageB_semantic_exclusive_weight=0.12" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.016" \
+        "++opt.stageB_semantic_compact_class_weights=[1.15,4.60,1.35,1.00,1.00,4.80]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,11.00,1.80,1.10,1.10,12.00]" \
+        "test_interval=6000" \
+        "opt.grad_clip=0.0065"
+      ;;
+    v231a_majority_stable_9h)
+      train_compact_repair "$job" "$gpu" "$ALL20" 47000 "[11750,23500,35250,47000]" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.35" \
+        "++opt.semantic_region_logits_lr=0.00055" \
+        "++opt.semantic_compact_logits_lr=0.00070" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0018" \
+        "++opt.stageB_semantic_ignore_boundary_width=7" \
+        "++opt.stageB_semantic_opacity_threshold=0.040" \
+        "++opt.stageB_semantic_body_cloth_weight=0.46" \
+        "++opt.stageB_semantic_compact_weight=0.95" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.45" \
+        "++opt.stageB_semantic_exclusive_weight=0.14" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.032" \
+        "++opt.stageB_semantic_compact_class_weights=[1.25,3.10,1.55,1.10,1.10,2.00]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.50,6.00,2.20,1.25,1.25,3.00]" \
+        "test_interval=11750" \
+        "opt.grad_clip=0.0050"
+      ;;
+    v231b_skin_cloth_boundary_9h)
+      train_compact_repair "$job" "$gpu" "$ALL20" 47000 "[11750,23500,35250,47000]" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.45" \
+        "++opt.semantic_region_logits_lr=0.00065" \
+        "++opt.semantic_compact_logits_lr=0.00085" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0015" \
+        "++opt.stageB_semantic_ignore_boundary_width=9" \
+        "++opt.stageB_semantic_opacity_threshold=0.045" \
+        "++opt.stageB_semantic_body_cloth_weight=0.55" \
+        "++opt.stageB_semantic_compact_weight=0.88" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.55" \
+        "++opt.stageB_semantic_exclusive_weight=0.18" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.038" \
+        "++opt.stageB_semantic_compact_class_weights=[1.10,2.80,1.90,1.25,1.25,1.80]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.30,5.50,3.20,1.50,1.50,2.50]" \
+        "test_interval=11750" \
+        "opt.grad_clip=0.0055"
+      ;;
+    v231c_hair_face_preserve_9h)
+      train_compact_repair "$job" "$gpu" "$ALL20" 47000 "[11750,23500,35250,47000]" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.55" \
+        "++opt.semantic_region_logits_lr=0.00075" \
+        "++opt.semantic_compact_logits_lr=0.00095" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0014" \
+        "++opt.stageB_semantic_ignore_boundary_width=5" \
+        "++opt.stageB_semantic_opacity_threshold=0.035" \
+        "++opt.stageB_semantic_body_cloth_weight=0.38" \
+        "++opt.stageB_semantic_compact_weight=1.05" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.36" \
+        "++opt.stageB_semantic_exclusive_weight=0.12" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.024" \
+        "++opt.stageB_semantic_compact_class_weights=[1.45,4.20,1.35,1.00,1.00,1.80]" \
+        "++opt.stageB_semantic_compact_positive_weights=[2.00,8.50,1.80,1.20,1.20,2.60]" \
+        "test_interval=11750" \
+        "opt.grad_clip=0.0060"
+      ;;
+    v231d_conservative_smooth_9h)
+      train_compact_repair "$job" "$gpu" "$ALL20" 47000 "[11750,23500,35250,47000]" \
+        "++model.gaussian.semantic_logits_adapter_max_delta=1.10" \
+        "++opt.semantic_region_logits_lr=0.00045" \
+        "++opt.semantic_compact_logits_lr=0.00060" \
+        "++opt.lambda_binding_semantic_adapter_reg=0.0024" \
+        "++opt.stageB_semantic_ignore_boundary_width=11" \
+        "++opt.stageB_semantic_opacity_threshold=0.050" \
+        "++opt.stageB_semantic_body_cloth_weight=0.62" \
+        "++opt.stageB_semantic_compact_weight=0.75" \
+        "++opt.stageB_semantic_parent_consistency_weight=0.68" \
+        "++opt.stageB_semantic_exclusive_weight=0.22" \
+        "++opt.stageB_semantic_adapter_smooth_weight=0.050" \
+        "++opt.stageB_semantic_compact_class_weights=[1.20,2.80,1.60,1.20,1.20,1.60]" \
+        "++opt.stageB_semantic_compact_positive_weights=[1.40,5.50,2.60,1.50,1.50,2.20]" \
+        "test_interval=11750" \
+        "opt.grad_clip=0.0045"
+      ;;
+    v228a_compact_live_all20_balanced|v230a_parentnorm_all20_balanced)
       train_compact_repair "$job" "$gpu" "$ALL20" 3600 "[900,1800,2700,3600]" \
         "++model.gaussian.semantic_logits_adapter_max_delta=1.55" \
         "++opt.semantic_region_logits_lr=0.00085" \
@@ -462,7 +841,7 @@ run_named_job() {
         "++opt.stageB_semantic_compact_positive_weights=[1.30,7.50,1.50,1.10,1.10,8.50]" \
         "opt.grad_clip=0.0055"
       ;;
-    v228b_compact_live_all20_face_shoes_recall)
+    v228b_compact_live_all20_face_shoes_recall|v230b_parentnorm_face_shoes_recall)
       train_compact_repair "$job" "$gpu" "$ALL20" 4200 "[1050,2100,3150,4200]" \
         "++model.gaussian.semantic_logits_adapter_max_delta=1.80" \
         "++opt.semantic_region_logits_lr=0.00100" \
@@ -478,7 +857,7 @@ run_named_job() {
         "++opt.stageB_semantic_compact_positive_weights=[1.20,12.00,1.35,1.05,1.05,13.00]" \
         "opt.grad_clip=0.0070"
       ;;
-    v228c_compact_live_all20_lowdelta_smooth)
+    v228c_compact_live_all20_lowdelta_smooth|v230c_parentnorm_lowdelta_smooth)
       train_compact_repair "$job" "$gpu" "$ALL20" 3600 "[900,1800,2700,3600]" \
         "++model.gaussian.semantic_logits_adapter_max_delta=1.20" \
         "++opt.semantic_region_logits_lr=0.00062" \
@@ -494,7 +873,7 @@ run_named_job() {
         "++opt.stageB_semantic_compact_positive_weights=[1.20,6.50,1.60,1.10,1.10,7.50]" \
         "opt.grad_clip=0.0045"
       ;;
-    v228d_compact_live_testview_oracle_diag)
+    v228d_compact_live_testview_oracle_diag|v230d_parentnorm_testview_oracle_diag)
       train_compact_repair "$job" "$gpu" "$ALL23" 1800 "[450,900,1350,1800]" \
         "++model.gaussian.semantic_logits_adapter_max_delta=1.65" \
         "++opt.semantic_region_logits_lr=0.00090" \
@@ -513,7 +892,7 @@ run_named_job() {
         "++opt.stageB_semantic_compact_positive_weights=[1.20,10.00,1.40,1.05,1.05,11.00]" \
         "opt.grad_clip=0.0065"
       ;;
-    v228e_compact_live_heldout_diag)
+    v228e_compact_live_heldout_diag|v230e_parentnorm_heldout_diag)
       train_compact_repair "$job" "$gpu" "$HELDOUT_DIAG" 1800 "[450,900,1350,1800]" \
         "++model.gaussian.semantic_logits_adapter_max_delta=1.65" \
         "++opt.semantic_region_logits_lr=0.00090" \
@@ -585,10 +964,10 @@ GPU1="${SELECTED_GPUS[1]}"
 GPU2="${SELECTED_GPUS[2]}"
 GPU3="${SELECTED_GPUS[3]}"
 
-launch_queue "$GPU0" 0 v228a_compact_live_all20_balanced
-launch_queue "$GPU1" "$QUEUE_LAUNCH_STAGGER_SECONDS" v228b_compact_live_all20_face_shoes_recall
-launch_queue "$GPU2" "$((QUEUE_LAUNCH_STAGGER_SECONDS * 2))" v228c_compact_live_all20_lowdelta_smooth
-launch_queue "$GPU3" "$((QUEUE_LAUNCH_STAGGER_SECONDS * 3))" v228d_compact_live_testview_oracle_diag
+launch_queue "$GPU0" 0 v233a_skincloth_balanced
+launch_queue "$GPU1" "$QUEUE_LAUNCH_STAGGER_SECONDS" v233b_skin_guard_strong
+launch_queue "$GPU2" "$((QUEUE_LAUNCH_STAGGER_SECONDS * 2))" v233c_parent_boundary_strong
+launch_queue "$GPU3" "$((QUEUE_LAUNCH_STAGGER_SECONDS * 3))" v233d_shoes_preserve_control
 
 echo "RUN_ID=$RUN_ID"
 echo "LOG_DIR=$LOG_DIR"
