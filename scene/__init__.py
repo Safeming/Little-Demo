@@ -188,8 +188,8 @@ class Scene:
 
     def load_checkpoint(self, path):
         (gaussian_params, converter_sd, converter_opt_sd, converter_scd_sd, first_iter) = torch.load(path)
-        self.gaussians.restore(gaussian_params, self.cfg.opt)
         resume_cfg = self.cfg.get('resume', None)
+        self.gaussians.restore(gaussian_params, self.cfg.opt, resume_cfg=resume_cfg)
         allow_partial_converter_load = bool(resume_cfg.get('allow_partial_converter_load', False)) if resume_cfg else False
         restore_converter_optimizer_state = bool(resume_cfg.get('restore_converter_optimizer_state', False)) if resume_cfg else False
         restore_converter_scheduler_state = bool(resume_cfg.get('restore_converter_scheduler_state', False)) if resume_cfg else False

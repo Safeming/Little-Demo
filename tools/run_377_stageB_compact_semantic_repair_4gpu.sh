@@ -340,6 +340,7 @@ train_compact_repair() {
     "wandb_disable=true" \
     "hydra.run.dir=$hydra_run_dir" \
     "++resume.allow_partial_converter_load=true" \
+    "++resume.restore_gaussian_optimizer_state=false" \
     "++resume.restore_converter_optimizer_state=false" \
     "++resume.restore_converter_scheduler_state=false" \
     "++resume.partial_converter_missing_keys_allow_patterns=[texture.detail_high_freq_view_conflict_,camera_affine.,pose_correction.pose_body_train_mask]" \

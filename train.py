@@ -59,6 +59,7 @@ PARSER_FACE_LABELS = (13,)
 PARSER_ARM_LABELS = (14, 15)
 PARSER_UPPER_TORSO_LABELS = (5, 6, 7, 11)
 PARSER_LOWER_CLOTH_LABELS = (9, 10, 12)
+COMPACT_SEMANTIC_CLASS_NAMES = ('hair', 'face', 'skin', 'upper', 'lower', 'shoes')
 
 HEAD_JOINT_INDEX = 15
 NECK_JOINT_INDEX = 12
@@ -2886,6 +2887,61 @@ def _semantic_parser_valid_mask(data, fg_mask, opt, opacity=None):
     return (valid * fg_mask).clamp(0.0, 1.0)
 
 
+def _compact_semantic_class_names(data, class_count):
+    names = getattr(data, 'parsing_compact_class_names', None)
+    if isinstance(names, str):
+        names = [part.strip() for part in names.split(',') if part.strip()]
+    elif isinstance(names, (list, tuple)):
+        names = list(names)
+    else:
+        names = list(COMPACT_SEMANTIC_CLASS_NAMES)
+    if len(names) < class_count:
+        names.extend([f'class{idx}' for idx in range(len(names), class_count)])
+    return names[:class_count]
+
+
+def _compact_semantic_stat_name(name, index):
+    raw = str(name) if name is not None else f'class{index}'
+    safe = ''.join(ch.lower() if ch.isalnum() else '_' for ch in raw).strip('_')
+    return safe or f'class{index}'
+
+
+def _update_stageB_semantic_compact_debug_stats(stats, data, pred_prob, target, valid, opt):
+    if pred_prob is None or target is None:
+        return
+    class_count = min(pred_prob.shape[0], target.shape[0])
+    if class_count <= 0:
+        return
+    threshold = float(opt.get('stageB_semantic_debug_pred_threshold', 0.5))
+    names = _compact_semantic_class_names(data, class_count)
+    with torch.no_grad():
+        pred = pred_prob[:class_count].detach()
+        tgt = target[:class_count].detach()
+        valid_mask = valid[:1].detach().to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
+        valid_pixels = valid_mask.sum().clamp_min(1.0)
+        pred_hard = (pred >= threshold).to(pred.dtype) * valid_mask
+        tgt_valid = tgt * valid_mask
+        intersection = (pred_hard * tgt_valid).sum(dim=(1, 2))
+        pred_pixels = pred_hard.sum(dim=(1, 2))
+        target_pixels = tgt_valid.sum(dim=(1, 2))
+        union = (pred_pixels + target_pixels - intersection).clamp_min(1.0)
+        precision = intersection / pred_pixels.clamp_min(1.0)
+        recall = intersection / target_pixels.clamp_min(1.0)
+        iou = intersection / union
+        mean_prob = (pred * valid_mask).sum(dim=(1, 2)) / valid_pixels
+        target_ratio = target_pixels / valid_pixels
+        stats['compact_debug_threshold'] = threshold
+        for idx, name in enumerate(names):
+            prefix = f"compact_{_compact_semantic_stat_name(name, idx)}"
+            stats[f'{prefix}_iou'] = float(iou[idx].item())
+            stats[f'{prefix}_precision'] = float(precision[idx].item())
+            stats[f'{prefix}_recall'] = float(recall[idx].item())
+            stats[f'{prefix}_pred_pixels'] = float(pred_pixels[idx].item())
+            stats[f'{prefix}_target_pixels'] = float(target_pixels[idx].item())
+            stats[f'{prefix}_mean_prob'] = float(mean_prob[idx].item())
+            stats[f'{prefix}_target_ratio'] = float(target_ratio[idx].item())
+
+
 def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_mask, opt):
     zero = fg_mask.new_tensor(0.0)
     stats = {
@@ -3051,6 +3107,14 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
         total = total + float(opt.get('stageB_semantic_compact_weight', 1.0)) * compact_loss
         stats['compact'] = float(compact_loss.detach().item())
         stats['compact_ce'] = float(compact_ce_loss.detach().item())
+        _update_stageB_semantic_compact_debug_stats(
+            stats,
+            data,
+            compact_pred_prob,
+            compact_target,
+            compact_valid,
+            opt,
+        )
 
         if bool(opt.get('stageB_semantic_parent_consistency_enable', True)) and compact_class_count > 0:
             compact_body = _sum_semantic_indices(compact_pred_prob, compact_parent_body_indices)
@@ -6514,6 +6578,53 @@ def training(config):
             config.opt,
         )
         base_loss += loss_stageB_semantic
+        stageB_semantic_debug_interval = int(config.opt.get('stageB_semantic_debug_interval', 0) or 0)
+        if (
+            stageB_semantic_debug_interval > 0
+            and stageB_semantic_stats.get('enabled', 0.0) > 0.0
+            and schedule_iteration % stageB_semantic_debug_interval == 0
+        ):
+            debug_regions = config.opt.get('stageB_semantic_debug_regions', None)
+            if debug_regions is None:
+                debug_regions = COMPACT_SEMANTIC_CLASS_NAMES
+            elif isinstance(debug_regions, str):
+                debug_regions = [part.strip() for part in debug_regions.strip('[]').split(',') if part.strip()]
+            cam_id = _camera_id_from_data(data)
+            frame_id = getattr(data, 'frame_id', None)
+            if torch.is_tensor(frame_id):
+                frame_id = int(frame_id.detach().cpu().item()) if frame_id.numel() == 1 else -1
+            try:
+                frame_id = int(frame_id)
+            except (TypeError, ValueError):
+                frame_id = -1
+            region_parts = []
+            for region_name in debug_regions:
+                key = _compact_semantic_stat_name(region_name, len(region_parts))
+                region_parts.append(
+                    (
+                        f"{key}:"
+                        f"iou={float(stageB_semantic_stats.get(f'compact_{key}_iou', 0.0)):.3f},"
+                        f"p={float(stageB_semantic_stats.get(f'compact_{key}_precision', 0.0)):.3f},"
+                        f"r={float(stageB_semantic_stats.get(f'compact_{key}_recall', 0.0)):.3f},"
+                        f"pred={float(stageB_semantic_stats.get(f'compact_{key}_pred_pixels', 0.0)):.0f},"
+                        f"tgt={float(stageB_semantic_stats.get(f'compact_{key}_target_pixels', 0.0)):.0f},"
+                        f"prob={float(stageB_semantic_stats.get(f'compact_{key}_mean_prob', 0.0)):.3f}"
+                    )
+                )
+            print(
+                "[StageBSemanticDbg] "
+                f"iter={schedule_iteration} cam={cam_id if cam_id is not None else -1} frame={frame_id} "
+                f"valid={float(stageB_semantic_stats.get('valid_pixels', 0.0)):.0f} "
+                f"loss={float(loss_stageB_semantic.detach().item()):.5f} "
+                f"body_cloth={float(stageB_semantic_stats.get('body_cloth', 0.0)):.5f} "
+                f"compact={float(stageB_semantic_stats.get('compact', 0.0)):.5f} "
+                f"ce={float(stageB_semantic_stats.get('compact_ce', 0.0)):.5f} "
+                f"parent={float(stageB_semantic_stats.get('parent', 0.0)):.5f} "
+                f"exclusive={float(stageB_semantic_stats.get('exclusive', 0.0)):.5f} "
+                f"thr={float(stageB_semantic_stats.get('compact_debug_threshold', 0.5)):.2f} | "
+                + " | ".join(region_parts),
+                flush=True,
+            )
 
         lambda_binding_semantic_adapter_reg = C(
             schedule_iteration,
@@ -8138,6 +8249,9 @@ def training(config):
                 'loss/total_loss': loss.item(),
                 'iter_time': elapsed,
             }
+            for key, value in stageB_semantic_stats.items():
+                if key.startswith('compact_') and key not in ('compact', 'compact_ce'):
+                    log_loss[f'loss/stageB_semantic_{key}'] = float(value)
             structured_trunk_total_abs_mean = getattr(
                 scene.converter.texture,
                 'last_structured_trunk_total_abs_mean',

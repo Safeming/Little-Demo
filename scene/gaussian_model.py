@@ -2130,8 +2130,118 @@ class GaussianModel:
                 lineage_reentry_count = int(lineage_reentry_mask.sum().item())
                 if lineage_reentry_count > 0:
                     log_msg += f' (recent newborn reentry {lineage_reentry_count})'
-                print(log_msg)
+            print(log_msg)
         return selected_pts_mask & (~block_mask)
+
+    def _apply_strict_densify_candidate_gate(self, selected_pts_mask, iteration=0):
+        if not bool(self.cfg.get('binding_densify_strict_candidate_gate_enable', False)):
+            return selected_pts_mask
+        if selected_pts_mask is None or selected_pts_mask.numel() == 0:
+            return selected_pts_mask
+        if not bool(selected_pts_mask.any().item()):
+            return selected_pts_mask
+
+        point_count = selected_pts_mask.shape[0]
+        device = selected_pts_mask.device
+        gate_mask = torch.ones_like(selected_pts_mask, dtype=torch.bool)
+        score = None
+
+        boundary_only = bool(self.cfg.get(
+            'binding_densify_strict_candidate_boundary_only',
+            self.cfg.get('binding_densify_boundary_only', True),
+        ))
+        require_boundary_tag = bool(self.cfg.get(
+            'binding_densify_strict_candidate_require_boundary_tag',
+            self.cfg.get('binding_densify_require_boundary_tag', False),
+        ))
+        boundary_threshold = float(resolve_schedule_value(
+            iteration,
+            self.cfg.get(
+                'binding_densify_strict_candidate_boundary_threshold',
+                self.cfg.get('binding_densify_boundary_threshold', 0.05),
+            ),
+            default=0.05,
+        ))
+        if boundary_only:
+            boundary_tags = self.get_boundary_tag_state()
+            if torch.is_tensor(boundary_tags) and boundary_tags.shape[0] == point_count:
+                score = boundary_tags.to(device=device, dtype=torch.float32).reshape(-1)
+                gate_mask &= score > boundary_threshold
+            elif require_boundary_tag:
+                gate_mask &= False
+
+        binding_state = self.get_binding_state()
+        arm_only = bool(self.cfg.get(
+            'binding_densify_strict_candidate_arm_only',
+            self.cfg.get('binding_densify_arm_only', True),
+        ))
+        if arm_only:
+            arm_mask = self._binding_arm_gate_mask_from_state(
+                binding_state,
+                point_count,
+                device,
+                iteration=iteration,
+                arm_gate_mode=self.cfg.get(
+                    'binding_densify_strict_candidate_arm_gate_mode',
+                    self.cfg.get('binding_densify_child_immediate_refresh_arm_gate_mode', 'source_or_current'),
+                ),
+                require_source_consensus=bool(self.cfg.get(
+                    'binding_densify_strict_candidate_arm_gate_require_source_consensus',
+                    False,
+                )),
+            )
+            if arm_mask is None:
+                gate_mask &= False
+            else:
+                gate_mask &= arm_mask.to(device=device, dtype=torch.bool)
+
+        gated_mask = selected_pts_mask & gate_mask
+        if not bool(gated_mask.any().item()):
+            if bool(self.cfg.get('binding_densify_debug_verbose', False)):
+                print(
+                    '[GaussianModel] strict densify candidate gate '
+                    f'iter={iteration} selected={int(selected_pts_mask.sum().item())} final=0'
+                )
+            return gated_mask
+
+        group = None
+        if binding_state:
+            group = self._binding_lineage_ids_from_state(binding_state, point_count, device)
+
+        gated_mask = self._cap_mask_by_group_score(
+            gated_mask,
+            group,
+            score,
+            max_points_per_group=int(resolve_schedule_value(
+                iteration,
+                self.cfg.get('binding_densify_strict_candidate_max_points_per_lineage', 0),
+                default=0,
+            )),
+        )
+        gated_mask = self._cap_mask_by_score(
+            gated_mask,
+            score=score,
+            max_points=int(resolve_schedule_value(
+                iteration,
+                self.cfg.get('binding_densify_strict_candidate_max_points', 0),
+                default=0,
+            )),
+            max_ratio=float(resolve_schedule_value(
+                iteration,
+                self.cfg.get('binding_densify_strict_candidate_max_ratio', 0.0),
+                default=0.0,
+            )),
+            min_score=self.cfg.get('binding_densify_strict_candidate_min_score', None),
+        )
+
+        if bool(self.cfg.get('binding_densify_debug_verbose', False)):
+            print(
+                '[GaussianModel] strict densify candidate gate '
+                f'iter={iteration} selected={int(selected_pts_mask.sum().item())} '
+                f'gate={int(gate_mask.sum().item())} final={int(gated_mask.sum().item())} '
+                f'boundary_only={int(boundary_only)} arm_only={int(arm_only)}'
+            )
+        return gated_mask
 
     def _augment_clone_densify_candidates(self, selected_pts_mask, scene_extent, iteration=0):
         if not bool(self.cfg.get('binding_densify_clone_candidate_seed_enable', True)):
@@ -4868,7 +4978,7 @@ class GaussianModel:
             self.spatial_lr_scale,
         )
     
-    def restore(self, model_args, training_args):
+    def restore(self, model_args, training_args, resume_cfg=None):
         if len(model_args) == 12:
             (self.active_sh_degree,
             self._xyz,
@@ -4944,9 +5054,39 @@ class GaussianModel:
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
+        restore_optimizer_state = True
+        preserve_config_lrs = False
+        if resume_cfg is not None:
+            restore_optimizer_state = bool(resume_cfg.get('restore_gaussian_optimizer_state', True))
+            preserve_config_lrs = bool(resume_cfg.get('restore_gaussian_optimizer_preserve_config_lrs', False))
+        current_lrs = [group.get('lr', None) for group in self.optimizer.param_groups]
+        current_names = [group.get('name', None) for group in self.optimizer.param_groups]
+        if not restore_optimizer_state:
+            lr_summary = ', '.join(
+                f'{name}={lr}' for name, lr in zip(current_names, current_lrs)
+            )
+            print(f'Resume safety: skipped gaussian optimizer state; using configured lrs: {lr_summary}')
+            return
         try:
             if len(opt_dict.get('param_groups', [])) == len(self.optimizer.param_groups):
                 self.optimizer.load_state_dict(opt_dict)
+                if preserve_config_lrs:
+                    for group, lr, name in zip(self.optimizer.param_groups, current_lrs, current_names):
+                        if lr is not None:
+                            group['lr'] = lr
+                        if name is not None:
+                            group['name'] = name
+                    lr_summary = ', '.join(
+                        f'{group.get("name", idx)}={group.get("lr", None)}'
+                        for idx, group in enumerate(self.optimizer.param_groups)
+                    )
+                    print(f'Resume safety: restored gaussian optimizer state but preserved configured lrs: {lr_summary}')
+                else:
+                    lr_summary = ', '.join(
+                        f'{group.get("name", idx)}={group.get("lr", None)}'
+                        for idx, group in enumerate(self.optimizer.param_groups)
+                    )
+                    print(f'Resume safety: restored gaussian optimizer state with checkpoint lrs: {lr_summary}')
             else:
                 print('[GaussianModel] optimizer param group count changed; skipping optimizer state restore.')
         except Exception as exc:
@@ -5519,6 +5659,7 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
         selected_pts_mask = self._filter_densify_candidates(selected_pts_mask, iteration=iteration)
+        selected_pts_mask = self._apply_strict_densify_candidate_gate(selected_pts_mask, iteration=iteration)
         preserve_parent_mask = self._preserve_split_parents_for_risky_boundary_points(
             selected_pts_mask,
             iteration=iteration,
@@ -5625,6 +5766,7 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
         selected_pts_mask = self._filter_densify_candidates(selected_pts_mask, iteration=iteration)
+        selected_pts_mask = self._apply_strict_densify_candidate_gate(selected_pts_mask, iteration=iteration)
         selected_pts_mask = self._augment_clone_densify_candidates(
             selected_pts_mask,
             scene_extent,
