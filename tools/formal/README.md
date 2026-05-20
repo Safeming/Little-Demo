@@ -1,6 +1,13 @@
 # Formal 工具入口
 
-当前正式入口仍保留在 `tools/` 根目录，方便兼容已有命令：
+当前正式入口放在：
+
+```text
+tools/formal/run_377_signed_geometry_render.sh
+tools/formal/run_377_signed_geometry_export.sh
+```
+
+`tools/` 根目录保留兼容 wrapper：
 
 ```text
 tools/run_377_formal_signed_geometry_render.sh
