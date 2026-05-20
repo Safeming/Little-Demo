@@ -28,6 +28,7 @@ from tqdm import trange
 
 from gaussian_renderer import render, rasterize_gaussians
 from scene import GaussianModel, Scene
+from utils.adopted_geometry import apply_explicit_binding_render_preset
 from utils.general_utils import Evaluator, PSEvaluator, fix_random
 from utils.pytorch3d_compat import ops
 from tools.export_semantic_editable_assets import (
@@ -143,6 +144,7 @@ def _snapshot_hydra_run(config, output_dir):
 
     if not os.path.exists(os.path.join(hydra_dir, 'config.yaml')):
         OmegaConf.save(config=config, f=os.path.join(hydra_dir, 'config.yaml'), resolve=False)
+    OmegaConf.save(config=config, f=os.path.join(hydra_dir, 'config_applied.yaml'), resolve=False)
 
     hydra_cfg = None
     try:
@@ -161,6 +163,10 @@ def _snapshot_hydra_run(config, output_dir):
         with open(overrides_path, 'w') as handle:
             for override in overrides:
                 handle.write(f'- {override}\n')
+
+
+def _apply_explicit_binding_render_preset(config):
+    apply_explicit_binding_render_preset(config, repo_root=Path(__file__).resolve().parent)
 
 
 def _semantic_asset_root(config):
@@ -3953,6 +3959,7 @@ def test(config):
 def main(config):
     OmegaConf.set_struct(config, False)
     config.dataset.preload = False
+    _apply_explicit_binding_render_preset(config)
 
     config.exp_dir = config.get('exp_dir') or os.path.join('./exp', config.name)
     os.makedirs(config.exp_dir, exist_ok=True)

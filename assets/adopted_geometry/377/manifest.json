@@ -1,0 +1,67 @@
+{
+  "subject": "CoreView_377",
+  "adopted_geometry": "v320_v307_signed_geometry",
+  "description": "No-train explicit-binding signed geometry adopted for inference/render/export. This asset promotes the v320 selected component set and v304 point contributor audit out of experiment logs.",
+  "component_csv": "v320_selected_components.csv",
+  "point_csv": "v304_point_contributors_all.csv",
+  "source_component_csv": "/remote-home/ming/3dgs-avatar-release-main/exp/stageB/logs/377_explicit_binding_v320_paired_signed_selector_v320_paired_signed_selector_20260519_212529_bjt/selected_components.csv",
+  "source_point_csv": "/remote-home/ming/3dgs-avatar-release-main/exp/stageB/logs/377_stageB_v304_consistent_component_audit_v304_consistent_component_geometry_20260519_100431_bjt_audit_all_views_sparse/point_contributors_all.csv",
+  "component_rows": 240,
+  "point_rows": 46792,
+  "sha256": {
+    "component_csv": "3e07b821923820a2a1929cd9cbee9bab60ecd92f282ee665423a8b0ca5f1bc9a",
+    "point_csv": "f097ced7f37771dac67b7c004521b035bf755c9cfdee00bab0d94884db464467"
+  },
+  "validated_by": {
+    "script": "tools/run_377_explicit_binding_v332_formal_signed_geometry_render.sh",
+    "run": "v332_formal_signed_geometry_appliedcfg_20260520_142723_bjt",
+    "summary": "/remote-home/ming/3dgs-avatar-release-main/exp/stageB/logs/377_explicit_binding_v332_formal_signed_geometry_render_v332_formal_signed_geometry_appliedcfg_20260520_142723_bjt/summary.tsv",
+    "status": "strict_pass",
+    "metrics": {
+      "fg": 0.04523681,
+      "boundary": 0.06607215,
+      "edge": 2.690549,
+      "inner": 500.5,
+      "outer": 4395.9,
+      "hard": 0.16100837
+    },
+    "delta_vs_baseline": {
+      "fg": -0.00000525,
+      "boundary": -0.00001155,
+      "edge": -0.014908,
+      "inner": -1.3,
+      "outer": -0.7667,
+      "hard": -0.00006873
+    }
+  },
+  "full_validation": {
+    "script": "tools/run_377_explicit_binding_v333_full_formal_signed_geometry_gate.sh",
+    "run": "v333_full_formal_signed_geometry_20260520_144007_bjt",
+    "summary": "/remote-home/ming/3dgs-avatar-release-main/exp/stageB/logs/377_explicit_binding_v333_full_formal_signed_geometry_gate_v333_full_formal_signed_geometry_20260520_144007_bjt/summary.tsv",
+    "worst_frames": "/remote-home/ming/3dgs-avatar-release-main/exp/stageB/logs/377_explicit_binding_v333_full_formal_signed_geometry_gate_v333_full_formal_signed_geometry_20260520_144007_bjt/worst_frames.tsv",
+    "test_views": [21, 22, 23],
+    "test_frames": [0, 570, 1],
+    "samples": 1710,
+    "status": "strict_pass",
+    "metrics": {
+      "fg": 0.04583380,
+      "boundary": 0.06548802,
+      "edge": 2.770194,
+      "inner": 658.2333,
+      "outer": 4584.4696,
+      "hard": 0.16959148
+    },
+    "delta_vs_baseline": {
+      "fg": -0.00000009,
+      "boundary": -0.00000020,
+      "edge": -0.000262,
+      "inner": -0.0228,
+      "outer": -0.0135,
+      "hard": -0.00000121
+    }
+  },
+  "usage": {
+    "render_override": "++explicit_binding_render_preset=v320_v307_signed_geometry",
+    "train_policy": "Do not use color/SH/converter/texture training checkpoints for boundary repair; this asset is no-train inference geometry."
+  }
+}
