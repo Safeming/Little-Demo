@@ -28,9 +28,35 @@ from utils.graphics_utils import geom_transform_points
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import OmegaConf
-import wandb
+try:
+    import wandb
+except ImportError:
+    class _WandbFallback:
+        class Image:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class Histogram:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class Settings:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        @staticmethod
+        def init(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def log(*args, **kwargs):
+            return None
+
+    wandb = _WandbFallback()
 import lpips
 from utils.pytorch3d_compat import ops
+from pathlib import Path
+from utils.adopted_geometry import apply_explicit_binding_render_preset
 
 
 def _configure_torch_threads_from_env():
@@ -60,6 +86,72 @@ PARSER_ARM_LABELS = (14, 15)
 PARSER_UPPER_TORSO_LABELS = (5, 6, 7, 11)
 PARSER_LOWER_CLOTH_LABELS = (9, 10, 12)
 COMPACT_SEMANTIC_CLASS_NAMES = ('hair', 'face', 'skin', 'upper', 'lower', 'shoes')
+
+
+def _apply_stageB_semantic_adapter_only_train_policy(config):
+    opt = config.get('opt', None)
+    if opt is None or not bool(opt.get('stageB_semantic_adapter_only_train', False)):
+        return
+
+    allowed_lambda_keys = {'lambda_binding_semantic_asset_adapter_reg'}
+    for key in list(opt.keys()):
+        if str(key).startswith('lambda_') and key not in allowed_lambda_keys:
+            opt[key] = 0.0
+
+    zero_lr_keys = (
+        'position_lr_init',
+        'position_lr_final',
+        'feature_lr',
+        'opacity_lr',
+        'scaling_lr',
+        'rotation_lr',
+        'boundary_opacity_residual_lr',
+        'boundary_scaling_residual_lr',
+        'boundary_cov_residual_lr',
+        'binding_layer_logits_lr',
+        'semantic_region_logits_lr',
+        'semantic_compact_logits_lr',
+        'pose_correction_lr',
+        'rigid_lr',
+        'non_rigid_lr',
+        'nr_latent_lr',
+        'texture_lr',
+        'tex_latent_lr',
+        'camera_affine_lr',
+        'camera_geometry_lr',
+    )
+    for key in zero_lr_keys:
+        opt[key] = 0.0
+
+    opt['stageB_semantic_loss_enable'] = True
+    opt['percent_dense'] = 0.0
+    opt['densify_from_iter'] = 999999999
+    opt['densify_until_iter'] = 0
+    opt['boundary_aware_enable'] = False
+    opt['boundary_tag_enable'] = False
+    opt['boundary_live_score_cache_enable'] = False
+    opt['boundary_signed_routing_enable'] = False
+    config.render_export_refine = False
+
+    resume_cfg = config.get('resume', None)
+    if resume_cfg is not None:
+        resume_cfg['disable_densify_on_resume'] = True
+        resume_cfg['disable_opacity_reset_on_resume'] = True
+        resume_cfg['restore_gaussian_optimizer_state'] = False
+        resume_cfg['restore_converter_optimizer_state'] = False
+        resume_cfg['restore_converter_scheduler_state'] = False
+        resume_cfg['clear_boundary_tags_on_resume'] = False
+        resume_cfg['clear_binding_state_on_resume'] = False
+    print(
+        "StageB semantic adapter-only train policy active: "
+        f"semantic_lr=({opt.get('semantic_region_logits_lr', 0.0)}, "
+        f"{opt.get('semantic_compact_logits_lr', 0.0)}), "
+        f"semantic_asset_lr=({opt.get('semantic_asset_region_logits_lr', 0.0)}, "
+        f"{opt.get('semantic_asset_compact_logits_lr', 0.0)}), "
+        f"texture_lr={opt.get('texture_lr', 0.0)}, "
+        f"lambda_l1={opt.get('lambda_l1', 0.0)}, "
+        f"lambda_semantic_asset_adapter_reg={opt.get('lambda_binding_semantic_asset_adapter_reg', 0.0)}"
+    )
 
 HEAD_JOINT_INDEX = 15
 NECK_JOINT_INDEX = 12
@@ -2958,13 +3050,17 @@ def _compute_stageB_semantic_parser_loss(data, render_pkg, pipe, background, fg_
         return zero, stats
 
     pc = render_pkg["deformed_gaussian"]
-    region_probs = getattr(pc, 'binding_region_probs_raw', None)
+    region_probs = getattr(pc, 'binding_region_probs_asset_raw', None)
+    if region_probs is None:
+        region_probs = getattr(pc, 'binding_region_probs_raw', None)
     if region_probs is None:
         region_probs = getattr(pc, 'binding_region_probs', None)
     if region_probs is None:
         return zero, stats
 
-    compact_probs = getattr(pc, 'binding_compact_semantic_probs_raw', None)
+    compact_probs = getattr(pc, 'binding_compact_semantic_probs_asset_raw', None)
+    if compact_probs is None:
+        compact_probs = getattr(pc, 'binding_compact_semantic_probs_raw', None)
     if compact_probs is None:
         compact_probs = getattr(pc, 'binding_compact_semantic_probs', None)
 
@@ -5483,6 +5579,7 @@ def training(config):
     loaded_iteration = 0
     if checkpoint:
         loaded_iteration = scene.load_checkpoint(checkpoint) or 0
+        gaussians.training_setup(opt)
         gaussians.ensure_boundary_state_matches_points(verbose=True)
         print(f"Loaded checkpoint {checkpoint} (iteration {loaded_iteration})")
 
@@ -6628,10 +6725,13 @@ def training(config):
 
         lambda_binding_semantic_adapter_reg = C(
             schedule_iteration,
-            config.opt.get('lambda_binding_semantic_adapter_reg', 0.0),
+            config.opt.get(
+                'lambda_binding_semantic_asset_adapter_reg',
+                config.opt.get('lambda_binding_semantic_adapter_reg', 0.0),
+            ),
         )
-        if lambda_binding_semantic_adapter_reg > 0.0 and hasattr(scene.gaussians, 'semantic_logits_adapter_regularization'):
-            loss_binding_semantic_adapter_reg = scene.gaussians.semantic_logits_adapter_regularization()
+        if lambda_binding_semantic_adapter_reg > 0.0 and hasattr(scene.gaussians, 'semantic_asset_logits_adapter_regularization'):
+            loss_binding_semantic_adapter_reg = scene.gaussians.semantic_asset_logits_adapter_regularization()
             base_loss += lambda_binding_semantic_adapter_reg * loss_binding_semantic_adapter_reg
         else:
             loss_binding_semantic_adapter_reg = torch.tensor(0., device=image.device)
@@ -9051,6 +9151,8 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
 def main(config):
     print(OmegaConf.to_yaml(config))
     OmegaConf.set_struct(config, False) # allow adding new values to config
+    apply_explicit_binding_render_preset(config, repo_root=Path(__file__).resolve().parent)
+    _apply_stageB_semantic_adapter_only_train_policy(config)
 
     config.exp_dir = config.get('exp_dir') or os.path.join('./exp', config.name)
     os.makedirs(config.exp_dir, exist_ok=True)

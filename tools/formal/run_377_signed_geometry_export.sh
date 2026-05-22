@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 export EXPORT_INTERPRETABILITY="${EXPORT_INTERPRETABILITY:-true}"
 export EXPORT_EDITABLE="${EXPORT_EDITABLE:-true}"

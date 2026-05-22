@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-/opt/miniconda3/envs/ictrl/bin/python}"
@@ -22,11 +22,13 @@ TEST_FRAMES_SPEC="${TEST_FRAMES_SPEC:-[0,570,60]}"
 EXPORT_INTERPRETABILITY="${EXPORT_INTERPRETABILITY:-false}"
 EXPORT_EDITABLE="${EXPORT_EDITABLE:-false}"
 EXPORT_OPACITY="${EXPORT_OPACITY:-false}"
+FORMAL_PRESET="${FORMAL_PRESET:-v338_temporal_selector_grow_only_guard}"
 
 for required in "$PYTHON_BIN" "$BASE_EXP/.hydra/config.yaml" "$BASE_CKPT" "$DATA_ROOT" \
   "$ROOT/assets/adopted_geometry/377/manifest.json" \
   "$ROOT/assets/adopted_geometry/377/v320_selected_components.csv" \
-  "$ROOT/assets/adopted_geometry/377/v304_point_contributors_all.csv"; do
+  "$ROOT/assets/adopted_geometry/377/v304_point_contributors_all.csv" \
+  "$ROOT/assets/adopted_geometry/377/v338_temporal_selector_grow_only_guard.json"; do
   if [ ! -e "$required" ]; then
     echo "missing required path: $required" >&2
     exit 2
@@ -47,7 +49,7 @@ COMMON_ENV=(
 echo "EXP_DIR=$EXP_DIR"
 echo "BASE_EXP=$BASE_EXP"
 echo "BASE_CKPT=$BASE_CKPT"
-echo "formal_preset=v320_v307_signed_geometry"
+echo "formal_preset=$FORMAL_PRESET"
 
 env "${COMMON_ENV[@]}" "$PYTHON_BIN" render.py \
   --config-path "$BASE_EXP/.hydra" \
@@ -64,7 +66,7 @@ env "${COMMON_ENV[@]}" "$PYTHON_BIN" render.py \
   "dataset.test_frames.view=$TEST_FRAMES_SPEC" \
   "dataset.parsing_prior.enable=false" \
   "dataset.parsing_prior.roi_enable=false" \
-  "++explicit_binding_render_preset=v320_v307_signed_geometry" \
+  "++explicit_binding_render_preset=$FORMAL_PRESET" \
   "export_interpretability=$EXPORT_INTERPRETABILITY" \
   "export_semantic_editable_assets=$EXPORT_EDITABLE" \
   "++export_opacity_maps=$EXPORT_OPACITY" \

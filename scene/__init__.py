@@ -47,11 +47,52 @@ def _state_key_matches_patterns(key, patterns):
     return any(pattern in key for pattern in patterns)
 
 
-def _adapt_partial_converter_tensor(key, checkpoint_value, model_value):
+def _frame_source_indices_from_metadata(metadata):
+    frame_dict = metadata.get('frame_dict', {}) if isinstance(metadata, dict) else {}
+    if not frame_dict:
+        return None
+    try:
+        items = [(int(frame_id), int(local_idx)) for frame_id, local_idx in frame_dict.items()]
+    except Exception:
+        return None
+    if not items:
+        return None
+    count = len(items)
+    ordered = [None] * count
+    for frame_id, local_idx in items:
+        if local_idx < 0 or local_idx >= count:
+            return None
+        ordered[local_idx] = frame_id
+    if any(frame_id is None for frame_id in ordered):
+        return None
+    return torch.tensor(ordered, dtype=torch.long)
+
+
+def _is_frame_embedding_key(key):
+    return (
+        key.startswith('pose_correction.')
+        or key.startswith('texture.latent.')
+        or key.startswith('deformer.non_rigid.latent.')
+    )
+
+
+def _adapt_partial_converter_tensor(key, checkpoint_value, model_value, frame_source_indices=None):
     if not (torch.is_tensor(checkpoint_value) and torch.is_tensor(model_value)):
         return None, None
     if checkpoint_value.shape == model_value.shape:
         return checkpoint_value, 'exact'
+    if (
+        frame_source_indices is not None
+        and _is_frame_embedding_key(key)
+        and checkpoint_value.ndim >= 1
+        and model_value.ndim >= 1
+        and checkpoint_value.shape[1:] == model_value.shape[1:]
+        and model_value.shape[0] == int(frame_source_indices.numel())
+        and checkpoint_value.shape[0] > int(frame_source_indices.max().item())
+    ):
+        indices = frame_source_indices.to(device=checkpoint_value.device)
+        adapted = checkpoint_value.index_select(0, indices)
+        return adapted, f'frame_gather[{checkpoint_value.shape[0]}->{model_value.shape[0]}]'
     if checkpoint_value.ndim != 2 or model_value.ndim != 2:
         return None, None
     if not key.startswith('texture.structured_trunk_output_head_'):
@@ -71,11 +112,12 @@ def _adapt_partial_converter_tensor(key, checkpoint_value, model_value):
     return adapted, f'prefix_copy[{src_out}x{src_in}->{dst_out}x{dst_in}]'
 
 
-def _prepare_partial_converter_state_dict(module, checkpoint_state_dict, allowed_patterns):
+def _prepare_partial_converter_state_dict(module, checkpoint_state_dict, allowed_patterns, metadata=None):
     model_state_dict = module.state_dict()
     filtered_state_dict = {}
     mismatched_missing_keys = []
     adapted_mismatch_logs = []
+    frame_source_indices = _frame_source_indices_from_metadata(metadata)
 
     for key, value in checkpoint_state_dict.items():
         model_value = model_state_dict.get(key, None)
@@ -88,17 +130,11 @@ def _prepare_partial_converter_state_dict(module, checkpoint_state_dict, allowed
         if value.shape == model_value.shape:
             filtered_state_dict[key] = value
             continue
-        if not _state_key_matches_patterns(key, allowed_patterns):
-            raise RuntimeError(
-                "Partial converter load hit a shape mismatch on a non-allowed key: "
-                f"{key} checkpoint_shape={tuple(value.shape)} model_shape={tuple(model_value.shape)}. "
-                f"Allowed patterns: {allowed_patterns}"
-            )
-
         adapted_value, adapt_reason = _adapt_partial_converter_tensor(
             key,
             value,
             model_value,
+            frame_source_indices=frame_source_indices,
         )
         if adapted_value is not None:
             filtered_state_dict[key] = adapted_value
@@ -106,6 +142,12 @@ def _prepare_partial_converter_state_dict(module, checkpoint_state_dict, allowed
                 f"{key}: {tuple(value.shape)} -> {tuple(model_value.shape)} via {adapt_reason}"
             )
             continue
+        if not _state_key_matches_patterns(key, allowed_patterns):
+            raise RuntimeError(
+                "Partial converter load hit a shape mismatch on a non-allowed key: "
+                f"{key} checkpoint_shape={tuple(value.shape)} model_shape={tuple(model_value.shape)}. "
+                f"Allowed patterns: {allowed_patterns}"
+            )
 
         mismatched_missing_keys.append(key)
 
@@ -203,6 +245,7 @@ class Scene:
                     self.converter,
                     converter_sd,
                     missing_patterns,
+                    metadata=self.metadata,
                 )
             )
             incompatible = self.converter.load_state_dict(filtered_converter_sd, strict=False)

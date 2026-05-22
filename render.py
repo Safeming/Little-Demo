@@ -22,9 +22,33 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 import torchvision
-import wandb
 from omegaconf import OmegaConf
 from tqdm import trange
+try:
+    import wandb
+except ImportError:
+    class _WandbFallback:
+        class Image:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class Histogram:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class Settings:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        @staticmethod
+        def init(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def log(*args, **kwargs):
+            return None
+
+    wandb = _WandbFallback()
 
 from gaussian_renderer import render, rasterize_gaussians
 from scene import GaussianModel, Scene
@@ -246,11 +270,15 @@ def _compact_semantic_palette(names):
     return torch.stack(colors, dim=0)
 
 
-def _get_compact_semantic_probs(pc):
-    probs = getattr(pc, 'binding_compact_semantic_probs', None)
+def _get_compact_semantic_probs(pc, prefer_asset=False):
+    probs = getattr(pc, 'binding_compact_semantic_probs_asset', None) if prefer_asset else None
+    if probs is None:
+        probs = getattr(pc, 'binding_compact_semantic_probs', None)
     names = tuple(getattr(pc, 'binding_compact_semantic_names', COMPACT_SEMANTIC_NAMES))
     if probs is None:
-        compact_ids = getattr(pc, 'binding_compact_semantic_ids', None)
+        compact_ids = getattr(pc, 'binding_compact_semantic_ids_asset', None) if prefer_asset else None
+        if compact_ids is None:
+            compact_ids = getattr(pc, 'binding_compact_semantic_ids', None)
         if compact_ids is None:
             return None, names
         num_classes = max(len(names), int(compact_ids.max().item()) + 1 if compact_ids.numel() > 0 else 0)
@@ -878,7 +906,10 @@ def _export_semantic_editable_assets(config, view, render_pkg, binding_record, a
         compact_map_tensor = None
         compact_names = tuple()
         if bool(config.get('semantic_editable_export_compact_head', True)):
-            compact_probs, compact_names = _get_compact_semantic_probs(render_pkg['deformed_gaussian'])
+            compact_probs, compact_names = _get_compact_semantic_probs(
+                render_pkg['deformed_gaussian'],
+                prefer_asset=True,
+            )
             compact_probs_2d = None
             compact_opacity = None
             if compact_probs is not None:
@@ -1010,540 +1041,6 @@ def _thin_rgb(thin_score):
     return low * (1.0 - thin_score.unsqueeze(-1)) + high * thin_score.unsqueeze(-1)
 
 
-def _mask_bbox(mask):
-    if mask is None:
-        return None
-    if mask.dim() == 4:
-        mask_2d = mask[0, 0]
-    elif mask.dim() == 3:
-        mask_2d = mask[0]
-    else:
-        mask_2d = mask
-    if mask_2d.sum().item() < 4:
-        return None
-    ys, xs = torch.where(mask_2d > 0.05)
-    if ys.numel() == 0:
-        return None
-    return ys.min().float(), ys.max().float(), xs.min().float(), xs.max().float()
-
-
-def _appearance_guided_torso_refine(image, render_rgb, opacity, map_name, face_mask=None, cloth_mask=None):
-    if render_rgb is None or map_name not in {'region', 'body_prob', 'cloth_prob'}:
-        return image
-
-    if opacity is not None and opacity.dim() == 3:
-        fg = opacity[0] > 0.02
-    else:
-        fg = render_rgb.mean(dim=0) > 0.02
-    if fg.sum().item() < 64:
-        return image
-
-    ys, xs = torch.where(fg)
-    y0 = ys.min().float()
-    y1 = ys.max().float()
-    x0 = xs.min().float()
-    x1 = xs.max().float()
-    h = (y1 - y0).clamp_min(8.0)
-    w = (x1 - x0).clamp_min(8.0)
-
-    yy, xx = torch.meshgrid(
-        torch.arange(image.shape[1], device=image.device, dtype=image.dtype),
-        torch.arange(image.shape[2], device=image.device, dtype=image.dtype),
-        indexing='ij',
-    )
-    y_rel = (yy - y0) / h
-    x_rel = (xx - (x0 + x1) * 0.5).abs() / (0.5 * w + 1e-6)
-
-    upper_torso = torch.sigmoid((y_rel - 0.14) / 0.05) * torch.sigmoid((0.52 - y_rel) / 0.07)
-    chest_core = upper_torso * torch.sigmoid((0.22 - x_rel) / 0.05)
-    strap_band = upper_torso * torch.sigmoid((x_rel - 0.16) / 0.04) * torch.sigmoid((0.46 - x_rel) / 0.05)
-
-    brightness = render_rgb.mean(dim=0)
-    saturation = render_rgb.max(dim=0).values - render_rgb.min(dim=0).values
-    warmth = 1.10 * render_rgb[0] + 0.70 * render_rgb[1] - 1.30 * render_rgb[2]
-
-    torso_skin = fg.float() * chest_core * torch.sigmoid((brightness - 0.18) / 0.05) * torch.sigmoid((warmth - 0.02) / 0.05)
-    neck_band = torch.sigmoid((y_rel - 0.03) / 0.03) * torch.sigmoid((0.26 - y_rel) / 0.05)
-    neck_core = neck_band * torch.sigmoid((0.20 - x_rel) / 0.045)
-    neck_skin = fg.float() * neck_core * torch.sigmoid((brightness - 0.16) / 0.045) * torch.sigmoid((warmth - 0.00) / 0.045)
-    collar_skin = fg.float() * torch.sigmoid((y_rel - 0.16) / 0.03) * torch.sigmoid((0.34 - y_rel) / 0.04)
-    collar_skin = collar_skin * torch.sigmoid((0.18 - x_rel) / 0.04)
-    collar_skin = collar_skin * torch.sigmoid((brightness - 0.20) / 0.04) * torch.sigmoid((warmth - 0.04) / 0.04)
-    skin_hint = torch.clamp(torch.maximum(torch.maximum(torso_skin, 1.15 * neck_skin), 1.05 * collar_skin), 0.0, 1.0)
-    cloth_hint = fg.float() * strap_band * torch.sigmoid((0.50 - brightness) / 0.08) * torch.sigmoid((0.24 - saturation) / 0.06)
-    cloth_hint = cloth_hint * (1.0 - 0.82 * skin_hint)
-
-    face_bbox = _mask_bbox(face_mask)
-    if face_bbox is not None:
-        fy0, fy1, fx0, fx1 = face_bbox
-        face_h = (fy1 - fy0).clamp_min(6.0)
-        face_w = (fx1 - fx0).clamp_min(6.0)
-        face_center_x = 0.5 * (fx0 + fx1)
-        face_x_rel = (xx - face_center_x).abs() / (0.5 * face_w + 1e-6)
-        neck_anchor = fy1 + 0.02 * face_h
-        neck_from_face = fg.float() * torch.sigmoid((yy - neck_anchor) / 3.0) * torch.sigmoid(((neck_anchor + 0.22 * face_h) - yy) / 4.5)
-        neck_from_face = neck_from_face * torch.sigmoid((0.24 - face_x_rel) / 0.05)
-        neck_from_face = neck_from_face * torch.sigmoid((brightness - 0.17) / 0.04) * torch.sigmoid((warmth - 0.01) / 0.04)
-
-        chest_anchor = fy1 + 0.18 * face_h
-        chest_span = 0.38 * h
-        chest_from_face = fg.float() * torch.sigmoid((yy - chest_anchor) / 5.0) * torch.sigmoid(((chest_anchor + chest_span) - yy) / 7.0)
-        chest_from_face = chest_from_face * torch.sigmoid((0.18 - face_x_rel) / 0.04)
-        chest_from_face = chest_from_face * torch.sigmoid((brightness - 0.21) / 0.04) * torch.sigmoid((warmth - 0.05) / 0.04)
-        if cloth_mask is not None:
-            cloth_gate = cloth_mask[0] if cloth_mask.dim() == 3 else cloth_mask[0, 0]
-            chest_from_face = chest_from_face * (1.0 - 0.45 * cloth_gate)
-        skin_hint = torch.clamp(torch.maximum(torch.maximum(skin_hint, 1.30 * neck_from_face), 1.18 * chest_from_face), 0.0, 1.0)
-
-    if map_name == 'region':
-        body_color = REGION_COLORS[0].to(image.device, image.dtype).view(3, 1, 1)
-        cloth_color = REGION_COLORS[2].to(image.device, image.dtype).view(3, 1, 1)
-        body_alpha = (0.62 * skin_hint).clamp(0.0, 0.74).unsqueeze(0)
-        cloth_alpha = (0.78 * cloth_hint).clamp(0.0, 0.82).unsqueeze(0)
-        image = image * (1.0 - body_alpha) + body_color * body_alpha
-        image = image * (1.0 - cloth_alpha) + cloth_color * cloth_alpha
-        return image
-
-    high = image.new_tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
-    low = image.new_tensor([0.0, 0.0, 1.0]).view(3, 1, 1)
-    if map_name == 'body_prob':
-        hi_alpha = (0.64 * skin_hint).clamp(0.0, 0.76).unsqueeze(0)
-        lo_alpha = (0.36 * cloth_hint).clamp(0.0, 0.44).unsqueeze(0)
-        image = image * (1.0 - hi_alpha) + high * hi_alpha
-        image = image * (1.0 - lo_alpha) + low * lo_alpha
-        return image
-
-    hi_alpha = (0.66 * cloth_hint).clamp(0.0, 0.78).unsqueeze(0)
-    lo_alpha = (0.46 * skin_hint).clamp(0.0, 0.54).unsqueeze(0)
-    image = image * (1.0 - hi_alpha) + high * hi_alpha
-    image = image * (1.0 - lo_alpha) + low * lo_alpha
-    return image
-
-
-
-def _appearance_guided_detail_refine(image, render_rgb, opacity, map_name, body_mask=None, cloth_mask=None, hair_mask=None, shoe_mask=None):
-    if render_rgb is None or map_name != 'thin':
-        return image
-
-    if opacity is not None and opacity.dim() == 3:
-        fg = (opacity[0] > 0.02).to(dtype=image.dtype)
-    else:
-        fg = (render_rgb.mean(dim=0) > 0.02).to(dtype=image.dtype)
-    if fg.sum().item() < 64:
-        return image
-
-    def _prep(mask):
-        if mask is None:
-            return torch.zeros_like(fg)
-        if mask.dim() == 4:
-            mask = mask[0, 0]
-        elif mask.dim() == 3:
-            mask = mask[0]
-        if mask.shape[-2:] != image.shape[-2:]:
-            mask = torch.nn.functional.interpolate(
-                mask.unsqueeze(0).unsqueeze(0),
-                size=image.shape[-2:],
-                mode='bilinear',
-                align_corners=False,
-            )[0, 0]
-        return mask.clamp(0.0, 1.0) * fg
-
-    body = _prep(body_mask)
-    cloth = _prep(cloth_mask)
-    hair = _prep(hair_mask)
-    shoe = _prep(shoe_mask)
-
-    body = body * (1.0 - 0.88 * cloth) * (1.0 - 0.96 * hair)
-    cloth = cloth * (1.0 - 0.72 * body) * (1.0 - 0.92 * hair)
-
-    body_core = _binary_erode((body > 0.40).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    cloth_core = _binary_erode((cloth > 0.42).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    body_shell = _binary_dilate((body > 0.18).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 3)[0, 0] * fg
-    cloth_shell = _binary_dilate((cloth > 0.18).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 3)[0, 0] * fg
-    body_edge = (body_shell - body_core).clamp(0.0, 1.0)
-    cloth_edge = (cloth_shell - cloth_core).clamp(0.0, 1.0)
-    boundary = (body_shell * cloth_shell).clamp(0.0, 1.0)
-    fg_edge = (_binary_dilate(fg.unsqueeze(0).unsqueeze(0), 3)[0, 0] - _binary_erode(fg.unsqueeze(0).unsqueeze(0), 3)[0, 0]).clamp(0.0, 1.0) * fg
-
-    gray = render_rgb.mean(dim=0)
-    blur = torch.nn.functional.avg_pool2d(gray.unsqueeze(0).unsqueeze(0), kernel_size=5, stride=1, padding=2)[0, 0]
-    highfreq = (gray - blur).abs()
-    dx = torch.zeros_like(gray)
-    dy = torch.zeros_like(gray)
-    dx[:, 1:] = (gray[:, 1:] - gray[:, :-1]).abs()
-    dy[1:, :] = (gray[1:, :] - gray[:-1, :]).abs()
-    grad = torch.sqrt(dx * dx + dy * dy + 1e-8)
-    sat = render_rgb.max(dim=0).values - render_rgb.min(dim=0).values
-    darkness = 1.0 - gray
-
-    edge_score = _sigmoid_score((grad - 0.055) / 0.016)
-    highfreq_score = _sigmoid_score((highfreq - 0.035) / 0.012)
-    sat_score = _sigmoid_score((sat - 0.10) / 0.035)
-    dark_score = _sigmoid_score((darkness - 0.52) / 0.08)
-
-    ys, xs = torch.where(fg > 0.5)
-    y0 = ys.min().float()
-    y1 = ys.max().float()
-    x0 = xs.min().float()
-    x1 = xs.max().float()
-    h = (y1 - y0).clamp_min(8.0)
-    w = (x1 - x0).clamp_min(8.0)
-    yy, xx = torch.meshgrid(
-        torch.arange(image.shape[1], device=image.device, dtype=image.dtype),
-        torch.arange(image.shape[2], device=image.device, dtype=image.dtype),
-        indexing='ij',
-    )
-    y_rel = (yy - y0) / h
-    x_rel = (xx - (x0 + x1) * 0.5).abs() / (0.5 * w + 1e-6)
-
-    shoulder_band = cloth * torch.sigmoid((y_rel - 0.10) / 0.03) * torch.sigmoid((0.42 - y_rel) / 0.04)
-    lower_cloth_band = cloth * torch.sigmoid((y_rel - 0.38) / 0.05) * torch.sigmoid((0.92 - y_rel) / 0.06)
-    cloth_top_band = cloth * torch.sigmoid((y_rel - 0.28) / 0.035) * torch.sigmoid((0.68 - y_rel) / 0.05)
-    center_band = torch.sigmoid((0.32 - x_rel) / 0.08)
-    dark_line = dark_score * highfreq_score
-    narrow_line = edge_score * _sigmoid_score((0.18 - cloth_edge - boundary) / 0.06)
-
-    cloth_detail = cloth * torch.clamp(0.80 * cloth_edge + 0.44 * boundary + 0.22 * fg_edge, 0.0, 1.0)
-    cloth_interior_line = torch.clamp(0.74 * cloth_top_band * center_band * dark_line + 0.26 * cloth_top_band * dark_line * narrow_line, 0.0, 1.0)
-    strap_edge = shoulder_band * torch.clamp(0.74 * edge_score + 0.54 * highfreq_score + 0.22 * fg_edge, 0.0, 1.0)
-    hem_edge = lower_cloth_band * torch.clamp(0.70 * edge_score + 0.44 * cloth_edge + 0.18 * fg_edge, 0.0, 1.0)
-    shoe_detail = shoe * torch.clamp(0.74 * fg_edge + 0.42 * edge_score + 0.16 * dark_score, 0.0, 1.0)
-    hair_detail = hair * torch.clamp(0.34 * fg_edge + 0.22 * edge_score, 0.0, 1.0)
-    accessory_detail = torch.clamp(
-        0.88 * edge_score * (0.52 * cloth_detail + 0.58 * shoe_detail + 0.20 * hair_detail)
-        + 0.60 * highfreq_score * (0.30 * cloth_edge + 0.24 * shoe + 0.08 * hair)
-        + 0.34 * strap_edge
-        + 0.28 * hem_edge
-        + 0.42 * cloth_interior_line
-        + 0.16 * sat_score * cloth_edge
-        + 0.20 * dark_score * shoe,
-        0.0,
-        1.0,
-    )
-    body_outline = torch.clamp(body_edge * (1.0 - 0.92 * cloth_shell) * (1.0 - 0.96 * shoe) * (1.0 - 0.96 * hair), 0.0, 1.0)
-    interior_suppress = torch.clamp(0.96 * body_core + 0.58 * cloth_core * (1.0 - 0.82 * cloth_edge) * (1.0 - 0.80 * boundary), 0.0, 1.0)
-    detail = torch.clamp(accessory_detail * (1.0 - 0.88 * interior_suppress), 0.0, 1.0)
-    detail = detail * (1.0 - 0.52 * body_outline)
-    detail = torch.maximum(detail, 0.28 * boundary * edge_score * torch.maximum(cloth, shoe))
-    detail = torch.maximum(detail, 0.28 * strap_edge)
-    detail = torch.maximum(detail, 0.34 * cloth_interior_line)
-    detail = detail * _sigmoid_score((detail - 0.14) / 0.045)
-    detail = detail.pow(1.04) * fg
-
-    low = image.new_tensor([0.15, 0.22, 0.75]).view(3, 1, 1)
-    high = image.new_tensor([0.98, 0.18, 0.86]).view(3, 1, 1)
-    return (low * (1.0 - detail.unsqueeze(0)) + high * detail.unsqueeze(0)) * fg.unsqueeze(0)
-
-
-def _bodyprob_guided_refine(image, render_rgb, opacity, map_name, face_mask=None, body_mask=None, cloth_mask=None, hair_mask=None, shoe_mask=None):
-    if render_rgb is None or map_name not in {'region', 'layer', 'body_prob', 'cloth_prob'}:
-        return image
-
-    if opacity is not None and opacity.dim() == 3:
-        fg = opacity[0] > 0.02
-    else:
-        fg = render_rgb.mean(dim=0) > 0.02
-    if fg.sum().item() < 64:
-        return image
-
-    fg_float = fg.float()
-
-    def _mask2d(mask):
-        if mask is None:
-            return None
-        if mask.dim() == 4:
-            mask = mask[0, 0]
-        elif mask.dim() == 3:
-            mask = mask[0]
-        if mask.shape[-2:] != image.shape[-2:]:
-            mask = torch.nn.functional.interpolate(
-                mask.unsqueeze(0).unsqueeze(0),
-                size=image.shape[-2:],
-                mode='bilinear',
-                align_corners=False,
-            )[0, 0]
-        return mask.clamp(0.0, 1.0) * fg_float
-
-    def _palette_scores(img, palette):
-        pixels = img.permute(1, 2, 0).reshape(-1, 3)
-        dists = ((pixels[:, None, :] - palette[None, :, :]) ** 2).sum(dim=-1)
-        scores = torch.softmax(-14.0 * dists, dim=-1)
-        return scores.reshape(img.shape[1], img.shape[2], palette.shape[0]).permute(2, 0, 1) * fg_float.unsqueeze(0)
-
-    def _hard_assign(scores, palette):
-        valid = (scores.sum(dim=0, keepdim=True) > 1e-6).float() * fg_float.unsqueeze(0)
-        winner = scores.argmax(dim=0)
-        hard = torch.nn.functional.one_hot(winner, num_classes=scores.shape[0]).permute(2, 0, 1).to(dtype=image.dtype)
-        hard = hard * valid
-        return torch.einsum('chw,cd->dhw', hard, palette)
-
-    face_alpha = _mask2d(face_mask)
-    body_alpha = _mask2d(body_mask)
-    cloth_alpha = _mask2d(cloth_mask)
-    hair_alpha = _mask2d(hair_mask)
-    shoe_alpha = _mask2d(shoe_mask)
-
-    zeros = torch.zeros_like(fg_float)
-    if face_alpha is None:
-        face_alpha = zeros
-    if body_alpha is None:
-        body_alpha = zeros
-    if cloth_alpha is None:
-        cloth_alpha = zeros
-    if hair_alpha is None:
-        hair_alpha = zeros
-    if shoe_alpha is None:
-        shoe_alpha = zeros
-
-    ys, xs = torch.where(fg)
-    y0 = ys.min().float()
-    y1 = ys.max().float()
-    x0 = xs.min().float()
-    x1 = xs.max().float()
-    h = (y1 - y0).clamp_min(8.0)
-    w = (x1 - x0).clamp_min(8.0)
-
-    yy, xx = torch.meshgrid(
-        torch.arange(image.shape[1], device=image.device, dtype=image.dtype),
-        torch.arange(image.shape[2], device=image.device, dtype=image.dtype),
-        indexing='ij',
-    )
-    y_rel = (yy - y0) / h
-    x_rel = (xx - (x0 + x1) * 0.5).abs() / (0.5 * w + 1e-6)
-
-    brightness = render_rgb.mean(dim=0)
-    saturation = render_rgb.max(dim=0).values - render_rgb.min(dim=0).values
-    warmth = 1.10 * render_rgb[0] + 0.71 * render_rgb[1] - 1.24 * render_rgb[2]
-
-    skin_base = torch.sigmoid((brightness - 0.17) / 0.04) * torch.sigmoid((warmth - 0.01) / 0.04)
-    skin_clean = skin_base * torch.sigmoid((0.30 - saturation) / 0.05)
-    upper_band = fg_float * torch.sigmoid((y_rel - 0.03) / 0.03) * torch.sigmoid((0.42 - y_rel) / 0.06)
-    torso_band = fg_float * torch.sigmoid((y_rel - 0.10) / 0.04) * torch.sigmoid((0.50 - y_rel) / 0.08)
-
-    parsing_body = upper_band * skin_clean
-    parsing_body = torch.maximum(parsing_body, body_alpha * (0.52 + 0.48 * skin_clean))
-    parsing_body = torch.maximum(parsing_body, 0.58 * face_alpha * skin_clean)
-    parsing_body = parsing_body * (1.0 - 0.78 * cloth_alpha)
-
-    neck_ref = upper_band * torch.sigmoid((y_rel - 0.05) / 0.02) * torch.sigmoid((0.23 - y_rel) / 0.03)
-    neck_ref = neck_ref * torch.sigmoid((0.18 - x_rel) / 0.035) * skin_clean
-    chest_ref = upper_band * torch.sigmoid((y_rel - 0.15) / 0.025) * torch.sigmoid((0.33 - y_rel) / 0.04)
-    chest_ref = chest_ref * torch.sigmoid((0.13 - x_rel) / 0.03)
-    chest_ref = chest_ref * torch.sigmoid((brightness - 0.21) / 0.035) * torch.sigmoid((warmth - 0.05) / 0.035)
-    clavicle_ref = upper_band * torch.sigmoid((y_rel - 0.11) / 0.02) * torch.sigmoid((0.29 - y_rel) / 0.035)
-    clavicle_ref = clavicle_ref * torch.sigmoid((x_rel - 0.06) / 0.02) * torch.sigmoid((0.24 - x_rel) / 0.03)
-    clavicle_ref = clavicle_ref * torch.sigmoid((brightness - 0.205) / 0.03) * torch.sigmoid((warmth - 0.04) / 0.03)
-    clavicle_ref = clavicle_ref * (1.0 - 0.35 * cloth_alpha)
-
-    face_bbox = _mask_bbox(face_alpha)
-    if face_bbox is not None:
-        fy0, fy1, fx0, fx1 = face_bbox
-        face_h = (fy1 - fy0).clamp_min(6.0)
-        face_w = (fx1 - fx0).clamp_min(6.0)
-        face_center_x = 0.5 * (fx0 + fx1)
-        face_x_rel = (xx - face_center_x).abs() / (0.5 * face_w + 1e-6)
-
-        neck_anchor = fy1 + 0.01 * face_h
-        neck_from_face = fg_float * torch.sigmoid((yy - neck_anchor) / 2.8) * torch.sigmoid(((neck_anchor + 0.26 * face_h) - yy) / 4.0)
-        neck_from_face = neck_from_face * torch.sigmoid((0.22 - face_x_rel) / 0.045)
-        neck_from_face = neck_from_face * torch.sigmoid((brightness - 0.17) / 0.035) * torch.sigmoid((warmth - 0.01) / 0.035)
-
-        chest_anchor = fy1 + 0.16 * face_h
-        chest_from_face = fg_float * torch.sigmoid((yy - chest_anchor) / 4.0) * torch.sigmoid(((chest_anchor + 0.34 * h) - yy) / 6.0)
-        chest_from_face = chest_from_face * torch.sigmoid((0.12 - face_x_rel) / 0.03)
-        chest_from_face = chest_from_face * torch.sigmoid((brightness - 0.215) / 0.03) * torch.sigmoid((warmth - 0.05) / 0.03)
-        chest_from_face = chest_from_face * (1.0 - 0.55 * cloth_alpha)
-
-        neck_ref = torch.maximum(neck_ref, 1.35 * neck_from_face)
-        chest_ref = torch.maximum(chest_ref, 1.25 * chest_from_face)
-
-    body_ref = torch.clamp(torch.maximum(parsing_body, torch.maximum(torch.maximum(1.06 * neck_ref, 1.10 * chest_ref), 1.20 * clavicle_ref)), 0.0, 1.0)
-    chest_open = torch.clamp(torch.maximum(1.34 * chest_ref, 1.16 * neck_ref) * (1.0 - 0.34 * cloth_alpha), 0.0, 1.0)
-    body_ref = torch.clamp(torch.maximum(body_ref, chest_open), 0.0, 1.0)
-    cloth_ref = torch.clamp(cloth_alpha * (1.0 - 0.56 * body_ref) * (1.0 - 0.46 * chest_open), 0.0, 1.0)
-    soft_boundary = (_binary_dilate(body_ref.unsqueeze(0).unsqueeze(0), 5)[0, 0] * _binary_dilate(cloth_ref.unsqueeze(0).unsqueeze(0), 5)[0, 0]).clamp(0.0, 1.0)
-    soft_boundary = soft_boundary * (1.0 - 0.78 * body_ref) * (1.0 - 0.80 * cloth_ref)
-    soft_misc = torch.maximum(hair_alpha, shoe_alpha)
-    exposed_skin = torch.clamp(torch.maximum(face_alpha, torch.maximum(neck_ref, torch.maximum(chest_ref, 0.88 * clavicle_ref))), 0.0, 1.0)
-    body_core = _binary_erode((body_ref > 0.40).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 3)[0, 0] * fg_float
-    cloth_core = _binary_erode((cloth_ref > 0.42).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 3)[0, 0] * fg_float
-    body_shell = _binary_dilate((body_ref > 0.28).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg_float
-    cloth_shell = _binary_dilate((cloth_ref > 0.30).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg_float
-    body_edge = (body_shell - body_core).clamp(0.0, 1.0)
-    cloth_edge = (cloth_shell - cloth_core).clamp(0.0, 1.0)
-    upper_skin_ref = torch.clamp(torch.maximum(exposed_skin, body_ref), 0.0, 1.0)
-    body_bridge = _binary_close((upper_skin_ref > 0.22).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg_float
-    body_bridge = body_bridge * (1.0 - 0.82 * cloth_core) * (1.0 - 0.48 * cloth_ref)
-    waist_skin = torso_band * torch.sigmoid((y_rel - 0.30) / 0.04) * torch.sigmoid((0.74 - y_rel) / 0.06)
-    waist_skin = waist_skin * torch.sigmoid((x_rel - 0.08) / 0.03) * torch.sigmoid((0.36 - x_rel) / 0.05)
-    waist_skin = waist_skin * skin_clean * (1.0 - 0.78 * cloth_ref)
-    body_bridge = torch.maximum(body_bridge, 0.85 * waist_skin)
-    cloth_bridge = _binary_close((cloth_ref > 0.24).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg_float
-    cloth_bridge = cloth_bridge * (1.0 - 0.84 * body_core) * (1.0 - 0.36 * upper_skin_ref)
-
-    if map_name == 'region':
-        palette = REGION_COLORS.to(device=image.device, dtype=image.dtype)
-        base_scores = _palette_scores(image, palette)
-        soft_ref = torch.clamp(
-            torch.maximum(1.00 * soft_boundary, 0.90 * soft_misc)
-            + 0.18 * torch.minimum(body_edge, cloth_edge)
-            + 0.10 * torch.maximum(body_edge, cloth_edge),
-            0.0,
-            1.0,
-        )
-        body_score = torch.clamp(
-            0.62 * base_scores[0] + 1.22 * body_ref + 0.76 * chest_open + 0.38 * body_core + 0.52 * exposed_skin + 0.34 * body_bridge + 0.16 * waist_skin + 0.08 * body_edge
-            - 0.34 * cloth_ref - 0.28 * cloth_core - 0.16 * cloth_bridge - 0.44 * soft_ref,
-            0.0,
-            2.35,
-        )
-        cloth_score = torch.clamp(
-            0.68 * base_scores[2] + 0.98 * cloth_ref + 0.28 * cloth_core + 0.16 * cloth_bridge
-            - 0.38 * body_ref - 0.84 * chest_open - 0.42 * exposed_skin - 0.42 * body_bridge - 0.46 * soft_ref,
-            0.0,
-            2.00,
-        )
-        soft_score = torch.clamp(
-            0.46 * base_scores[1] + 0.98 * soft_ref + 0.14 * torch.minimum(body_ref, cloth_ref) + 0.18 * torch.minimum(body_bridge, cloth_bridge)
-            - 0.12 * exposed_skin - 0.10 * body_bridge,
-            0.0,
-            1.75,
-        )
-        scores = torch.stack([body_score, soft_score, cloth_score], dim=0) * fg_float.unsqueeze(0)
-        region_image = _hard_assign(scores, palette) * fg_float.unsqueeze(0)
-        body_tight = torch.clamp(torch.maximum(torch.maximum(1.05 * exposed_skin, 1.08 * chest_open), 0.94 * body_bridge) * (1.0 - 0.92 * cloth_core) * (1.0 - 0.56 * cloth_ref), 0.0, 1.0)
-        cloth_tight = torch.clamp(torch.maximum(cloth_core, 0.82 * cloth_bridge) * (1.0 - 0.90 * body_core) * (1.0 - 0.48 * upper_skin_ref), 0.0, 1.0)
-        transition_tight = torch.clamp(torch.minimum(body_edge, cloth_edge) * (1.0 - 0.65 * body_tight) * (1.0 - 0.65 * cloth_tight), 0.0, 1.0)
-        body_alpha = (0.40 * body_tight).clamp(0.0, 0.46).unsqueeze(0)
-        cloth_alpha = (0.20 * cloth_tight).clamp(0.0, 0.24).unsqueeze(0)
-        soft_alpha = (0.14 * transition_tight).clamp(0.0, 0.18).unsqueeze(0)
-        region_image = region_image * (1.0 - body_alpha) + palette[0].view(3, 1, 1) * body_alpha
-        region_image = region_image * (1.0 - cloth_alpha) + palette[2].view(3, 1, 1) * cloth_alpha
-        region_image = region_image * (1.0 - soft_alpha) + palette[1].view(3, 1, 1) * soft_alpha
-        return region_image * fg_float.unsqueeze(0)
-
-    if map_name == 'layer':
-        palette = LAYER_COLORS.to(device=image.device, dtype=image.dtype)
-        base_scores = _palette_scores(image, palette)
-        silhouette = torch.sigmoid((x_rel - 0.16) / 0.040)
-        torso_center = torso_band * torch.sigmoid((0.16 - x_rel) / 0.040)
-        limb_ref = body_ref * torch.maximum(torch.sigmoid((x_rel - 0.21) / 0.045), torch.sigmoid((y_rel - 0.49) / 0.05))
-        rigid_core = 0.56 * base_scores[0] + 0.80 * limb_ref + 0.58 * torso_center * torch.maximum(body_core, 0.85 * exposed_skin)
-        rigid_ref = torch.clamp(1.04 * neck_ref + 0.30 * face_alpha + 0.46 * chest_ref + 0.30 * clavicle_ref + rigid_core, 0.0, 2.0)
-        torso_soft = torch.maximum(0.72 * soft_boundary, 0.24 * cloth_ref * (1.0 - silhouette))
-        soft_ref = torch.clamp(
-            0.84 * base_scores[1] + 0.82 * torso_soft + 0.18 * cloth_ref + 0.12 * torch.minimum(body_ref, cloth_ref)
-            - 0.16 * torso_center * torch.maximum(body_core, exposed_skin),
-            0.0,
-            1.75,
-        )
-        free_band = torch.maximum(cloth_edge * torch.maximum(silhouette, torch.sigmoid((y_rel - 0.56) / 0.05)), 0.90 * soft_misc)
-        free_ref = torch.clamp(0.64 * base_scores[2] + 1.00 * free_band + 0.12 * soft_boundary, 0.0, 1.6)
-        torso_support = torch.clamp(torso_center * (1.0 - 0.75 * soft_boundary) * (1.0 - 0.90 * free_band), 0.0, 1.0)
-        rigid_ref = torch.clamp(rigid_ref + 0.42 * torso_support, 0.0, 2.2)
-        soft_ref = torch.clamp(soft_ref - 0.18 * torso_support, 0.0, 1.7)
-        rigid_ref = rigid_ref * (1.0 - 0.34 * free_ref)
-        soft_ref = soft_ref * (1.0 - 0.12 * free_ref)
-        scores = torch.stack([rigid_ref, soft_ref, free_ref], dim=0) * fg_float.unsqueeze(0)
-        layer_image = _hard_assign(scores, palette) * fg_float.unsqueeze(0)
-        torso_core = torch.clamp(torso_center * torch.sigmoid((0.46 - y_rel) / 0.08) * (1.0 - 0.85 * cloth_edge) * (1.0 - 0.96 * soft_misc), 0.0, 1.0)
-        rigid_alpha = (0.82 * torso_core).clamp(0.0, 0.88).unsqueeze(0)
-        rigid_color = palette[0].view(3, 1, 1)
-        layer_image = layer_image * (1.0 - rigid_alpha) + rigid_color * rigid_alpha
-        return layer_image * fg_float.unsqueeze(0)
-
-    high = image.new_tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
-    low = image.new_tensor([0.0, 0.0, 1.0]).view(3, 1, 1)
-    if map_name == 'body_prob':
-        hi_alpha = torch.clamp(0.86 * body_ref + 0.24 * body_core + 0.28 * chest_open + 0.18 * exposed_skin, 0.0, 0.98).unsqueeze(0)
-        image = image * (1.0 - hi_alpha) + high * hi_alpha
-        return image * fg_float.unsqueeze(0)
-
-    hi_alpha = torch.clamp(0.82 * cloth_ref + 0.18 * cloth_core - 0.28 * body_ref - 0.36 * chest_open, 0.0, 0.92).unsqueeze(0)
-    image = image * (1.0 - hi_alpha) + high * hi_alpha
-    lo_alpha = torch.clamp(torch.maximum(0.96 * body_ref + 0.22 * chest_open, 0.84 * soft_misc), 0.0, 0.98).unsqueeze(0)
-    image = image * (1.0 - lo_alpha) + low * lo_alpha
-    return image * fg_float.unsqueeze(0)
-
-
-def _appearance_guided_head_refine(image, render_rgb, opacity, map_name):
-    if render_rgb is None or map_name not in {'layer', 'region', 'body_prob', 'cloth_prob'}:
-        return image
-
-    if opacity is not None and opacity.dim() == 3:
-        fg = opacity[0] > 0.02
-    else:
-        fg = render_rgb.mean(dim=0) > 0.02
-    if fg.sum().item() < 64:
-        return image
-
-    ys, xs = torch.where(fg)
-    y0 = ys.min().float()
-    y1 = ys.max().float()
-    x0 = xs.min().float()
-    x1 = xs.max().float()
-    h = (y1 - y0).clamp_min(8.0)
-    w = (x1 - x0).clamp_min(8.0)
-
-    yy, xx = torch.meshgrid(
-        torch.arange(image.shape[1], device=image.device, dtype=image.dtype),
-        torch.arange(image.shape[2], device=image.device, dtype=image.dtype),
-        indexing='ij',
-    )
-    y_rel = (yy - y0) / h
-    x_rel = (xx - (x0 + x1) * 0.5).abs() / (0.5 * w + 1e-6)
-
-    head_band = fg.float() * torch.sigmoid((0.27 - y_rel) / 0.030)
-    crown_band = head_band * torch.sigmoid((0.14 - y_rel) / 0.024)
-    forehead_band = fg.float() * torch.sigmoid((y_rel - 0.08) / 0.024) * torch.sigmoid((0.25 - y_rel) / 0.032)
-    center_face = torch.sigmoid((0.34 - x_rel) / 0.055)
-    side_hair = torch.sigmoid((x_rel - 0.18) / 0.040)
-
-    brightness = render_rgb.mean(dim=0)
-    saturation = render_rgb.max(dim=0).values - render_rgb.min(dim=0).values
-    warmth = 1.10 * render_rgb[0] + 0.72 * render_rgb[1] - 1.20 * render_rgb[2]
-
-    dark_hint = torch.sigmoid((0.22 - brightness) / 0.045)
-    neutral_hint = torch.sigmoid((0.20 - saturation) / 0.045)
-    skin_hint = torch.sigmoid((brightness - 0.16) / 0.045) * torch.sigmoid((warmth - 0.00) / 0.045)
-
-    face_hint = torch.clamp(forehead_band * center_face * skin_hint, 0.0, 1.0)
-    hair_hint = torch.clamp(crown_band * (0.62 + 0.38 * side_hair) + 0.34 * head_band * dark_hint * neutral_hint, 0.0, 1.0)
-    hair_hint = hair_hint * (1.0 - 0.92 * face_hint)
-
-    if map_name == 'region':
-        soft_color = REGION_COLORS[1].to(image.device, image.dtype).view(3, 1, 1)
-        body_color = REGION_COLORS[0].to(image.device, image.dtype).view(3, 1, 1)
-        body_alpha = (0.78 * face_hint).clamp(0.0, 0.86).unsqueeze(0)
-        hair_alpha = (0.92 * hair_hint * (1.0 - 0.88 * face_hint)).clamp(0.0, 0.98).unsqueeze(0)
-        image = image * (1.0 - body_alpha) + body_color * body_alpha
-        image = image * (1.0 - hair_alpha) + soft_color * hair_alpha
-        return image
-
-    if map_name == 'layer':
-        free_color = LAYER_COLORS[2].to(image.device, image.dtype).view(3, 1, 1)
-        rigid_color = LAYER_COLORS[0].to(image.device, image.dtype).view(3, 1, 1)
-        rigid_alpha = (0.34 * face_hint).clamp(0.0, 0.42).unsqueeze(0)
-        hair_alpha = (0.90 * hair_hint * (1.0 - 0.90 * face_hint)).clamp(0.0, 0.96).unsqueeze(0)
-        image = image * (1.0 - rigid_alpha) + rigid_color * rigid_alpha
-        image = image * (1.0 - hair_alpha) + free_color * hair_alpha
-        return image
-
-    high = image.new_tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
-    low = image.new_tensor([0.0, 0.0, 1.0]).view(3, 1, 1)
-    if map_name == 'body_prob':
-        hi_alpha = (0.74 * face_hint).clamp(0.0, 0.82).unsqueeze(0)
-        lo_alpha = (0.94 * hair_hint).clamp(0.0, 0.98).unsqueeze(0)
-        image = image * (1.0 - hi_alpha) + high * hi_alpha
-        image = image * (1.0 - lo_alpha) + low * lo_alpha
-        return image
-
-    lo_alpha = (0.78 * torch.maximum(face_hint, hair_hint)).clamp(0.0, 0.92).unsqueeze(0)
-    image = image * (1.0 - lo_alpha) + low * lo_alpha
-    return image
-
-
-
 _VIEW_NAME_RE = re.compile(r'c(?P<cam>\d+)_f(?P<frame>\d+)$')
 
 
@@ -1612,547 +1109,6 @@ def _load_cihp_hair_mask(view, image, config, labels=(2,)):
     return hair.clamp(0.0, 1.0)
 
 
-def _apply_cihp_parsing_override(image, hair_mask, body_mask, cloth_mask, map_name, face_mask=None, shoe_mask=None):
-    if map_name not in {'layer', 'region', 'body_prob', 'cloth_prob'}:
-        return image
-    if hair_mask is None and body_mask is None and cloth_mask is None and face_mask is None and shoe_mask is None:
-        return image
-
-    def _prep(mask, dilate=3, erode=0):
-        if mask is None:
-            return None
-        mask = mask.to(device=image.device, dtype=image.dtype)
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(0).unsqueeze(0)
-        elif mask.dim() == 3:
-            mask = mask.unsqueeze(0)
-        elif mask.dim() != 4:
-            mask = mask.reshape(1, 1, *mask.shape[-2:])
-        if erode > 0:
-            mask = _binary_erode(mask, erode)
-        if dilate > 0:
-            mask = _binary_dilate(mask, dilate)
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(0).unsqueeze(0)
-        elif mask.dim() == 3:
-            mask = mask.unsqueeze(0)
-        mask = mask.clamp(0.0, 1.0)
-        target_hw = image.shape[-2:]
-        if mask.shape[-2:] != target_hw:
-            mask = torch.nn.functional.interpolate(mask, size=target_hw, mode='bilinear', align_corners=False)
-        if image.dim() == 3 and mask.dim() == 4:
-            mask = mask[0]
-        return mask
-
-    hair_alpha = _prep(hair_mask, dilate=0, erode=4)
-    body_alpha = _prep(body_mask, dilate=5)
-    cloth_alpha = _prep(cloth_mask, dilate=5)
-    face_alpha = _prep(face_mask, dilate=2)
-    shoe_alpha = _prep(shoe_mask, dilate=3)
-
-    face_bbox = None
-    face_h = None
-    face_w = None
-    yy = None
-    xx = None
-    if hair_alpha is not None and face_alpha is not None:
-        face_bbox = _mask_bbox(face_alpha)
-        if face_bbox is not None:
-            fy0, fy1, fx0, fx1 = face_bbox
-            face_h = (fy1 - fy0).clamp_min(6.0)
-            face_w = (fx1 - fx0).clamp_min(6.0)
-            mask_h, mask_w = hair_alpha.shape[-2:]
-            yy, xx = torch.meshgrid(
-                torch.arange(mask_h, device=image.device, dtype=image.dtype),
-                torch.arange(mask_w, device=image.device, dtype=image.dtype),
-                indexing='ij',
-            )
-            face_x_rel = (xx - 0.5 * (fx0 + fx1)).abs() / (0.5 * face_w + 1e-6)
-            face_dilate = _binary_dilate(face_alpha.unsqueeze(0), 5)[0]
-            forehead_cut = torch.sigmoid(((fy0 + 0.16 * face_h) - yy) / 3.0)
-            side_keep = torch.sigmoid((face_x_rel - 0.34) / 0.05)
-            hair_keep = torch.maximum(forehead_cut, side_keep)
-            hair_alpha = hair_alpha * hair_keep * (1.0 - 0.90 * face_dilate * (1.0 - side_keep))
-    elif face_alpha is not None:
-        face_bbox = _mask_bbox(face_alpha)
-        if face_bbox is not None:
-            fy0, fy1, fx0, fx1 = face_bbox
-            face_h = (fy1 - fy0).clamp_min(6.0)
-            face_w = (fx1 - fx0).clamp_min(6.0)
-            mask_h, mask_w = face_alpha.shape[-2:]
-            yy, xx = torch.meshgrid(
-                torch.arange(mask_h, device=image.device, dtype=image.dtype),
-                torch.arange(mask_w, device=image.device, dtype=image.dtype),
-                indexing='ij',
-            )
-
-    if body_alpha is not None and cloth_alpha is not None:
-        boundary = (_binary_dilate(body_alpha.unsqueeze(0), 5)[0] * _binary_dilate(cloth_alpha.unsqueeze(0), 5)[0]).clamp(0.0, 1.0)
-        boundary = boundary * (1.0 - 0.92 * body_alpha) * (1.0 - 0.92 * cloth_alpha)
-    else:
-        boundary = None
-
-    chest_body_alpha = None
-    if body_alpha is not None and face_bbox is not None and yy is not None and xx is not None:
-        fy0, fy1, fx0, fx1 = face_bbox
-        face_cx = 0.5 * (fx0 + fx1)
-        chest_y = torch.sigmoid((yy - (fy1 + 0.02 * face_h)) / (0.10 * face_h + 1e-6))
-        chest_y = chest_y * torch.sigmoid((((fy1 + 1.15 * face_h)) - yy) / (0.18 * face_h + 1e-6))
-        chest_x = torch.sigmoid(((0.48 * face_w) - (xx - face_cx).abs()) / (0.10 * face_w + 1e-6))
-        chest_body_alpha = body_alpha * chest_y * chest_x
-        if cloth_alpha is not None:
-            chest_body_alpha = chest_body_alpha * (1.0 - 0.55 * cloth_alpha)
-        chest_body_alpha = chest_body_alpha.clamp(0.0, 1.0)
-
-    if hair_alpha is not None and body_alpha is not None:
-        hair_alpha = hair_alpha * (1.0 - 0.98 * body_alpha)
-    if hair_alpha is not None and cloth_alpha is not None:
-        hair_alpha = hair_alpha * (1.0 - 0.98 * cloth_alpha)
-    if body_alpha is not None and cloth_alpha is not None:
-        body_alpha = body_alpha * (1.0 - 0.88 * cloth_alpha)
-        cloth_alpha = cloth_alpha * (1.0 - 0.88 * body_alpha)
-    if shoe_alpha is not None:
-        if body_alpha is not None:
-            body_alpha = body_alpha * (1.0 - 0.98 * shoe_alpha)
-        if cloth_alpha is not None:
-            cloth_alpha = cloth_alpha * (1.0 - 0.70 * shoe_alpha)
-        if hair_alpha is not None:
-            hair_alpha = hair_alpha * (1.0 - 0.98 * shoe_alpha)
-
-    if map_name == 'region':
-        body_color = REGION_COLORS[0].to(image.device, image.dtype).view(3, 1, 1)
-        soft_color = REGION_COLORS[1].to(image.device, image.dtype).view(3, 1, 1)
-        cloth_color = REGION_COLORS[2].to(image.device, image.dtype).view(3, 1, 1)
-        if body_alpha is not None:
-            image = image * (1.0 - 0.95 * body_alpha) + body_color * (0.95 * body_alpha)
-        if cloth_alpha is not None:
-            image = image * (1.0 - 0.95 * cloth_alpha) + cloth_color * (0.95 * cloth_alpha)
-        if chest_body_alpha is not None:
-            image = image * (1.0 - 0.98 * chest_body_alpha) + body_color * (0.98 * chest_body_alpha)
-        if boundary is not None:
-            image = image * (1.0 - 0.72 * boundary) + soft_color * (0.72 * boundary)
-        if hair_alpha is not None:
-            image = image * (1.0 - 0.98 * hair_alpha) + soft_color * (0.98 * hair_alpha)
-        if shoe_alpha is not None:
-            image = image * (1.0 - 0.95 * shoe_alpha) + soft_color * (0.95 * shoe_alpha)
-        return image
-
-    if map_name == 'layer':
-        rigid_color = LAYER_COLORS[0].to(image.device, image.dtype).view(3, 1, 1)
-        soft_color = LAYER_COLORS[1].to(image.device, image.dtype).view(3, 1, 1)
-        free_color = LAYER_COLORS[2].to(image.device, image.dtype).view(3, 1, 1)
-        body_rigid = None
-        if body_alpha is not None:
-            body_rigid = (0.70 * body_alpha * (1.0 - 0.72 * cloth_alpha)).clamp(0.0, 0.82)
-            image = image * (1.0 - body_rigid) + rigid_color * body_rigid
-        if cloth_alpha is not None:
-            cloth_free = (0.86 * cloth_alpha * (1.0 - 0.46 * body_alpha)).clamp(0.0, 0.94)
-            image = image * (1.0 - cloth_free) + free_color * cloth_free
-        if boundary is not None:
-            layer_soft = (0.44 * boundary * (1.0 - 0.55 * torch.maximum(body_alpha, cloth_alpha))).clamp(0.0, 0.52)
-            image = image * (1.0 - layer_soft) + soft_color * layer_soft
-        if hair_alpha is not None:
-            image = image * (1.0 - 0.96 * hair_alpha) + free_color * (0.96 * hair_alpha)
-        if shoe_alpha is not None:
-            image = image * (1.0 - 0.94 * shoe_alpha) + free_color * (0.94 * shoe_alpha)
-        return image
-
-    high = image.new_tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
-    low = image.new_tensor([0.0, 0.0, 1.0]).view(3, 1, 1)
-    if map_name == 'body_prob':
-        if body_alpha is not None:
-            image = image * (1.0 - 0.90 * body_alpha) + high * (0.90 * body_alpha)
-        if face_alpha is not None:
-            image = image * (1.0 - 0.55 * face_alpha) + high * (0.55 * face_alpha)
-        suppress = None
-        if cloth_alpha is not None and hair_alpha is not None:
-            suppress = torch.maximum(cloth_alpha, hair_alpha)
-        else:
-            suppress = cloth_alpha if cloth_alpha is not None else hair_alpha
-        if suppress is not None:
-            image = image * (1.0 - 0.96 * suppress) + low * (0.96 * suppress)
-        if shoe_alpha is not None:
-            image = image * (1.0 - 0.96 * shoe_alpha) + low * (0.96 * shoe_alpha)
-        return image
-
-    if cloth_alpha is not None:
-        image = image * (1.0 - 0.92 * cloth_alpha) + high * (0.92 * cloth_alpha)
-    suppress = None
-    if body_alpha is not None and hair_alpha is not None:
-        suppress = torch.maximum(body_alpha, hair_alpha)
-    else:
-        suppress = body_alpha if body_alpha is not None else hair_alpha
-    if suppress is not None:
-        image = image * (1.0 - 0.96 * suppress) + low * (0.96 * suppress)
-    if shoe_alpha is not None:
-        image = image * (1.0 - 0.96 * shoe_alpha) + low * (0.96 * shoe_alpha)
-    return image
-
-
-def _region_follow_bodyprob(region_image, body_prob_image, cloth_prob_image, face_mask=None):
-    if face_mask is None:
-        return region_image
-    if face_mask.dim() == 4:
-        face_mask = face_mask[0, 0]
-    elif face_mask.dim() == 3:
-        face_mask = face_mask[0]
-    face_bbox = _mask_bbox(face_mask)
-    if face_bbox is None:
-        return region_image
-
-    fy0, fy1, fx0, fx1 = face_bbox
-    face_h = (fy1 - fy0).clamp_min(6.0)
-    face_w = (fx1 - fx0).clamp_min(6.0)
-    h, w = region_image.shape[-2:]
-    yy, xx = torch.meshgrid(
-        torch.arange(h, device=region_image.device, dtype=region_image.dtype),
-        torch.arange(w, device=region_image.device, dtype=region_image.dtype),
-        indexing='ij',
-    )
-    cx = 0.5 * (fx0 + fx1)
-    chest_y = torch.sigmoid((yy - (fy1 + 0.04 * face_h)) / (0.11 * face_h + 1e-6))
-    chest_y = chest_y * torch.sigmoid((((fy1 + 1.30 * face_h)) - yy) / (0.22 * face_h + 1e-6))
-    chest_x = torch.sigmoid(((0.54 * face_w) - (xx - cx).abs()) / (0.12 * face_w + 1e-6))
-    chest_focus = chest_y * chest_x
-
-    body_dom = torch.sigmoid(((body_prob_image[0] - body_prob_image[2]) - 0.02) / 0.06)
-    cloth_low = torch.sigmoid(((cloth_prob_image[2] - cloth_prob_image[0]) + 0.04) / 0.06)
-    rescue = (chest_focus * body_dom * cloth_low).clamp(0.0, 1.0)
-    body_color = REGION_COLORS[0].to(region_image.device, region_image.dtype).view(3, 1, 1)
-    rescue = torch.clamp(rescue + 0.22 * chest_focus * body_dom, 0.0, 1.0)
-    return region_image * (1.0 - 0.99 * rescue.unsqueeze(0)) + body_color * (0.99 * rescue.unsqueeze(0))
-
-
-def _stabilize_visual_map(image, map_name, opacity, face_mask=None, body_mask=None, cloth_mask=None, hair_mask=None, shoe_mask=None):
-    if map_name not in {'layer', 'region', 'semantic', 'thin'}:
-        return image
-
-    if opacity is not None and opacity.dim() == 3:
-        fg = (opacity[0] > 0.03).to(dtype=image.dtype)
-    else:
-        fg = (image.sum(dim=0) > 0.05).to(dtype=image.dtype)
-    if fg.sum().item() < 64:
-        return image
-
-    def _prep(mask):
-        if mask is None:
-            return torch.zeros_like(fg)
-        if mask.dim() == 4:
-            mask = mask[0, 0]
-        elif mask.dim() == 3:
-            mask = mask[0]
-        if mask.shape[-2:] != image.shape[-2:]:
-            mask = torch.nn.functional.interpolate(
-                mask.unsqueeze(0).unsqueeze(0),
-                size=image.shape[-2:],
-                mode='bilinear',
-                align_corners=False,
-            )[0, 0]
-        return mask.clamp(0.0, 1.0) * fg
-
-    def _palette_scores(img, palette):
-        pixels = img.permute(1, 2, 0).reshape(-1, 3)
-        dists = ((pixels[:, None, :] - palette[None, :, :]) ** 2).sum(dim=-1)
-        scores = torch.softmax(-14.0 * dists, dim=-1)
-        return scores.reshape(img.shape[1], img.shape[2], palette.shape[0]).permute(2, 0, 1) * fg.unsqueeze(0)
-
-    def _normalize_scores(scores):
-        scores = scores.clamp_min(1e-6)
-        return scores / scores.sum(dim=0, keepdim=True).clamp_min(1e-6)
-
-    def _hard_assign(scores, palette):
-        valid = (scores.sum(dim=0, keepdim=True) > 1e-6).to(dtype=image.dtype) * fg.unsqueeze(0)
-        winner = scores.argmax(dim=0)
-        hard = torch.nn.functional.one_hot(winner, num_classes=scores.shape[0]).permute(2, 0, 1).to(dtype=image.dtype)
-        hard = hard * valid
-        return torch.einsum('chw,cd->dhw', hard, palette)
-
-    def _neighbor_consensus(scores, kernel_size=5, blend_low=0.18, blend_high=0.42):
-        probs = _normalize_scores(scores)
-        pooled = torch.nn.functional.avg_pool2d(
-            probs.unsqueeze(0),
-            kernel_size,
-            stride=1,
-            padding=kernel_size // 2,
-        )[0]
-        confidence = probs.max(dim=0).values
-        blend = ((blend_high - confidence) / max(blend_high - blend_low, 1e-6)).clamp(0.0, 1.0)
-        blend = blend * fg
-        probs = _normalize_scores(probs * (1.0 - blend.unsqueeze(0)) + pooled * blend.unsqueeze(0))
-        return probs
-
-    face = _prep(face_mask)
-    body = _prep(body_mask)
-    cloth = _prep(cloth_mask)
-    hair = _prep(hair_mask)
-    shoe = _prep(shoe_mask)
-
-    body = torch.maximum(body, face)
-    soft_misc = torch.maximum(hair, shoe)
-    raw_body = body
-    body = body * (1.0 - 0.90 * cloth) * (1.0 - 0.98 * soft_misc)
-    cloth = cloth * (1.0 - 0.72 * raw_body) * (1.0 - 0.96 * soft_misc)
-
-    body_core = _binary_erode((body > 0.36).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    cloth_core = _binary_erode((cloth > 0.38).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    body_shell = _binary_dilate((body > 0.18).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    cloth_shell = _binary_dilate((cloth > 0.18).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-    fg_edge = (_binary_dilate(fg.unsqueeze(0).unsqueeze(0), 5)[0, 0] - _binary_erode(fg.unsqueeze(0).unsqueeze(0), 5)[0, 0]).clamp(0.0, 1.0) * fg
-    boundary = (body_shell * cloth_shell).clamp(0.0, 1.0)
-    body_edge = (body_shell - body_core).clamp(0.0, 1.0)
-    cloth_edge = (cloth_shell - cloth_core).clamp(0.0, 1.0)
-
-    ys, xs = torch.where(fg > 0.5)
-    y0 = ys.min().float()
-    y1 = ys.max().float()
-    x0 = xs.min().float()
-    x1 = xs.max().float()
-    h = (y1 - y0).clamp_min(8.0)
-    w = (x1 - x0).clamp_min(8.0)
-    yy, xx = torch.meshgrid(
-        torch.arange(image.shape[1], device=image.device, dtype=image.dtype),
-        torch.arange(image.shape[2], device=image.device, dtype=image.dtype),
-        indexing='ij',
-    )
-    y_rel = (yy - y0) / h
-    x_rel = (xx - (x0 + x1) * 0.5).abs() / (0.5 * w + 1e-6)
-
-    if map_name == 'region':
-        palette = REGION_COLORS.to(device=image.device, dtype=image.dtype)
-        base = _palette_scores(image, palette)
-        body_fill = _binary_close((torch.maximum(body_core, 0.78 * body) > 0.14).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-        cloth_fill = _binary_close((torch.maximum(cloth_core, 0.78 * cloth) > 0.14).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-        body_fill = torch.maximum(body_fill * (1.0 - 0.78 * cloth_core) * (1.0 - 0.96 * soft_misc), body_core)
-        cloth_fill = torch.maximum(cloth_fill * (1.0 - 0.74 * body_core) * (1.0 - 0.92 * soft_misc), cloth_core)
-        soft_band = torch.clamp(
-            1.15 * boundary
-            + 1.00 * soft_misc
-            + 0.42 * torch.minimum(body_edge, cloth_edge)
-            + 0.22 * fg_edge,
-            0.0,
-            1.8,
-        )
-        body_score = torch.clamp(
-            1.10 * base[0]
-            + 1.85 * body_core
-            + 0.95 * body
-            + 0.65 * face
-            + 0.75 * body_fill
-            - 1.15 * cloth_core
-            - 0.25 * cloth_fill
-            - 1.45 * soft_misc
-            - 0.70 * soft_band,
-            0.0,
-            3.4,
-        )
-        cloth_score = torch.clamp(
-            1.10 * base[2]
-            + 1.90 * cloth_core
-            + 1.05 * cloth
-            + 0.72 * cloth_fill
-            - 1.00 * body_core
-            - 0.30 * body_fill
-            - 1.40 * face
-            - 1.20 * hair
-            - 0.55 * shoe
-            - 0.62 * soft_band,
-            0.0,
-            3.4,
-        )
-        soft_score = torch.clamp(
-            0.95 * base[1]
-            + 1.35 * soft_band
-            + 0.35 * torch.maximum(body_edge, cloth_edge)
-            + 0.12 * torch.minimum(body_fill, cloth_fill),
-            0.0,
-            3.1,
-        )
-        region_probs = _neighbor_consensus(torch.stack([body_score, soft_score, cloth_score], dim=0) * fg.unsqueeze(0), kernel_size=5)
-        region_probs[0] = torch.where(face > 0.35, region_probs[0] + 0.75 * face, region_probs[0])
-        region_probs[1] = torch.where(soft_misc > 0.25, region_probs[1] + 0.95 * soft_misc, region_probs[1])
-        region_probs[0] = region_probs[0] + 0.65 * body_fill
-        region_probs[2] = region_probs[2] + 0.60 * cloth_fill
-        region_probs[1] = region_probs[1] + 0.20 * boundary
-        region_probs = _normalize_scores(region_probs)
-        body_force = (body_fill * (1.0 - 0.82 * cloth_core)).clamp(0.0, 1.0)
-        cloth_force = (cloth_fill * (1.0 - 0.78 * body_core)).clamp(0.0, 1.0)
-        body_target = torch.stack([torch.ones_like(body_force), torch.zeros_like(body_force), torch.zeros_like(body_force)], dim=0)
-        cloth_target = torch.stack([torch.zeros_like(cloth_force), torch.zeros_like(cloth_force), torch.ones_like(cloth_force)], dim=0)
-        body_alpha = (0.32 * body_force).clamp(0.0, 0.34)
-        cloth_alpha = (0.28 * cloth_force * (1.0 - 0.55 * body_force)).clamp(0.0, 0.30)
-        region_probs = region_probs * (1.0 - body_alpha.unsqueeze(0)) + body_target * body_alpha.unsqueeze(0)
-        region_probs = region_probs * (1.0 - cloth_alpha.unsqueeze(0)) + cloth_target * cloth_alpha.unsqueeze(0)
-        region_probs = _normalize_scores(region_probs)
-        region = _hard_assign(region_probs * fg.unsqueeze(0), palette)
-        return region * fg.unsqueeze(0)
-
-    if map_name == 'semantic':
-        red = image.new_tensor([0.92, 0.25, 0.18])
-        yellow = image.new_tensor([0.95, 0.86, 0.22])
-        green = image.new_tensor([0.18, 0.82, 0.34])
-        palette = torch.stack([red, yellow, green], dim=0)
-        base = _palette_scores(image, palette)
-        stable_fill = _binary_close((torch.maximum(body_core, 0.82 * body) > 0.12).to(dtype=image.dtype).unsqueeze(0).unsqueeze(0), 5)[0, 0] * fg
-        stable_fill = torch.maximum(stable_fill * (1.0 - 0.82 * boundary) * (1.0 - 0.96 * soft_misc), body_core)
-        mid_band = torch.clamp(1.25 * boundary + 0.20 * torch.minimum(body_edge, cloth_edge) + 0.08 * fg_edge, 0.0, 1.8)
-        unstable = torch.clamp(0.92 * cloth + 1.08 * soft_misc + 0.30 * cloth_edge + 0.12 * fg_edge, 0.0, 2.0) * (1.0 - 0.68 * stable_fill)
-        low_score = torch.clamp(
-            0.70 * base[0]
-            + 1.40 * unstable
-            - 0.60 * stable_fill
-            - 0.28 * mid_band,
-            0.0,
-            3.2,
-        )
-        mid_score = torch.clamp(
-            0.68 * base[1]
-            + 1.35 * mid_band
-            + 0.16 * torch.minimum(stable_fill, unstable),
-            0.0,
-            3.0,
-        )
-        high_score = torch.clamp(
-            0.70 * base[2]
-            + 1.85 * stable_fill
-            + 0.55 * face
-            - 0.62 * unstable
-            - 0.48 * mid_band,
-            0.0,
-            3.4,
-        )
-        semantic_probs = _neighbor_consensus(torch.stack([low_score, mid_score, high_score], dim=0) * fg.unsqueeze(0), kernel_size=5)
-        semantic_probs[2] = semantic_probs[2] + 0.80 * stable_fill + 0.34 * face
-        semantic_probs[1] = semantic_probs[1] + 0.32 * mid_band
-        semantic_probs[0] = semantic_probs[0] + 0.88 * soft_misc + 0.38 * cloth_edge
-        semantic_probs = _normalize_scores(semantic_probs)
-        stable_force = stable_fill.clamp(0.0, 1.0)
-        unstable_force = torch.clamp(soft_misc + 0.72 * cloth_edge + 0.45 * cloth * (1.0 - 0.80 * body), 0.0, 1.0)
-        mid_force = torch.clamp(boundary + 0.18 * torch.minimum(body_edge, cloth_edge), 0.0, 1.0)
-        low_target = torch.stack([torch.ones_like(unstable_force), torch.zeros_like(unstable_force), torch.zeros_like(unstable_force)], dim=0)
-        mid_target = torch.stack([torch.zeros_like(mid_force), torch.ones_like(mid_force), torch.zeros_like(mid_force)], dim=0)
-        high_target = torch.stack([torch.zeros_like(stable_force), torch.zeros_like(stable_force), torch.ones_like(stable_force)], dim=0)
-        high_alpha = (0.46 * stable_force).clamp(0.0, 0.52)
-        low_alpha = (0.50 * unstable_force * (1.0 - 0.55 * stable_force)).clamp(0.0, 0.56)
-        mid_alpha = (0.34 * mid_force * (1.0 - 0.60 * torch.maximum(stable_force, unstable_force))).clamp(0.0, 0.38)
-        semantic_probs = semantic_probs * (1.0 - high_alpha.unsqueeze(0)) + high_target * high_alpha.unsqueeze(0)
-        semantic_probs = semantic_probs * (1.0 - low_alpha.unsqueeze(0)) + low_target * low_alpha.unsqueeze(0)
-        semantic_probs = semantic_probs * (1.0 - mid_alpha.unsqueeze(0)) + mid_target * mid_alpha.unsqueeze(0)
-        semantic_probs = _normalize_scores(semantic_probs)
-        semantic = _hard_assign(semantic_probs * fg.unsqueeze(0), palette)
-        return semantic * fg.unsqueeze(0)
-
-    if map_name == 'thin':
-        low = image.new_tensor([0.15, 0.22, 0.75])
-        high = image.new_tensor([0.98, 0.18, 0.86])
-        palette = torch.stack([low, high], dim=0)
-        base = _palette_scores(image, palette)
-        boundary_hint = torch.clamp(1.35 * boundary + 0.95 * cloth_edge + 0.45 * fg_edge * cloth_shell + 0.25 * soft_misc * fg_edge, 0.0, 2.0)
-        suppress = torch.clamp(0.85 * body_core + 0.55 * cloth_core * (1.0 - boundary), 0.0, 1.5)
-        high_score = torch.clamp(0.60 * base[1] + 1.60 * boundary_hint - 1.20 * suppress, 0.0, 3.4)
-        low_score = torch.clamp(0.80 * base[0] + 0.90 * suppress + 0.20 * body + 0.18 * cloth, 0.0, 3.2)
-        thin_probs = _neighbor_consensus(torch.stack([low_score, high_score], dim=0) * fg.unsqueeze(0), kernel_size=5)
-        high_force = torch.clamp(0.72 * boundary + 0.62 * cloth_edge + 0.38 * soft_misc * fg_edge, 0.0, 1.0)
-        low_force = torch.clamp(body_core + 0.70 * cloth_core * (1.0 - boundary), 0.0, 1.0)
-        low_target = torch.stack([torch.ones_like(low_force), torch.zeros_like(low_force)], dim=0)
-        high_target = torch.stack([torch.zeros_like(high_force), torch.ones_like(high_force)], dim=0)
-        high_alpha = (0.54 * high_force).clamp(0.0, 0.58)
-        low_alpha = (0.44 * low_force * (1.0 - 0.65 * high_force)).clamp(0.0, 0.48)
-        thin_probs = thin_probs * (1.0 - high_alpha.unsqueeze(0)) + high_target * high_alpha.unsqueeze(0)
-        thin_probs = thin_probs * (1.0 - low_alpha.unsqueeze(0)) + low_target * low_alpha.unsqueeze(0)
-        thin_probs = _normalize_scores(thin_probs)
-        thin_map = low.view(3, 1, 1) * thin_probs[0].unsqueeze(0) + high.view(3, 1, 1) * thin_probs[1].unsqueeze(0)
-        return thin_map * fg.unsqueeze(0)
-
-    palette = LAYER_COLORS.to(device=image.device, dtype=image.dtype)
-    rigid_color = palette[0].view(3, 1, 1)
-    soft_color = palette[1].view(3, 1, 1)
-    free_color = palette[2].view(3, 1, 1)
-    base = _palette_scores(image, palette)
-    torso_center = fg * torch.sigmoid((y_rel - 0.10) / 0.04) * torch.sigmoid((0.54 - y_rel) / 0.05) * torch.sigmoid((0.30 - x_rel) / 0.06)
-    limb_core = body_core * (1.0 - 0.58 * torso_center)
-    cloth_hem = cloth_edge * torch.maximum(torch.sigmoid((y_rel - 0.38) / 0.05), torch.sigmoid((x_rel - 0.30) / 0.05))
-    torso_attached = cloth_shell * torso_center * (1.0 - 0.86 * boundary) * (1.0 - 0.97 * soft_misc)
-    rigid_fill = torch.maximum(body_core, 0.96 * torso_attached)
-    free_prior = torch.clamp(1.35 * hair + 1.25 * shoe + 1.55 * cloth_hem, 0.0, 2.4)
-    soft_prior = torch.clamp(
-        1.35 * boundary
-        + 0.44 * body_edge
-        + 0.34 * cloth_edge
-        + 0.12 * torch.minimum(body_shell, cloth_shell),
-        0.0,
-        2.3,
-    )
-    rigid_score = torch.clamp(
-        0.72 * base[0]
-        + 2.15 * limb_core
-        + 1.85 * rigid_fill
-        + 1.32 * torso_center * (1.0 - 0.88 * cloth_hem)
-        + 0.84 * face
-        - 0.22 * cloth_edge
-        - 1.08 * free_prior
-        - 0.62 * soft_prior,
-        0.0,
-        3.6,
-    )
-    free_score = torch.clamp(
-        0.72 * base[2]
-        + 2.05 * free_prior
-        + 0.18 * fg_edge * torch.maximum(cloth_shell, soft_misc)
-        - 1.02 * rigid_fill
-        - 0.72 * torso_attached,
-        0.0,
-        3.4,
-    )
-    soft_score = torch.clamp(
-        0.66 * base[1]
-        + 1.55 * soft_prior
-        + 0.12 * cloth_edge
-        + 0.12 * body_edge
-        - 0.74 * rigid_fill
-        - 0.28 * free_prior,
-        0.0,
-        3.0,
-    )
-    layer_probs = _neighbor_consensus(torch.stack([rigid_score, soft_score, free_score], dim=0) * fg.unsqueeze(0), kernel_size=5)
-    layer_probs[2] = torch.where(soft_misc > 0.25, layer_probs[2] + 1.16 * soft_misc, layer_probs[2])
-    layer_probs[1] = torch.where(boundary > 0.16, layer_probs[1] + 0.48 * boundary, layer_probs[1])
-    layer_probs[0] = torch.where(face > 0.30, layer_probs[0] + 0.66 * face, layer_probs[0])
-    layer_probs = _normalize_scores(layer_probs)
-    rigid_force = (rigid_fill * (1.0 - 0.78 * cloth_hem)).clamp(0.0, 1.0)
-    free_force = torch.clamp(torch.maximum(soft_misc, cloth_hem), 0.0, 1.0)
-    soft_force = torch.clamp(boundary + 0.18 * torch.minimum(body_edge, cloth_edge), 0.0, 1.0)
-    rigid_target = torch.stack([
-        torch.ones_like(rigid_force),
-        torch.zeros_like(rigid_force),
-        torch.zeros_like(rigid_force),
-    ], dim=0)
-    free_target = torch.stack([
-        torch.zeros_like(free_force),
-        torch.zeros_like(free_force),
-        torch.ones_like(free_force),
-    ], dim=0)
-    soft_target = torch.stack([
-        torch.zeros_like(soft_force),
-        torch.ones_like(soft_force),
-        torch.zeros_like(soft_force),
-    ], dim=0)
-    rigid_alpha = (0.60 * rigid_force).clamp(0.0, 0.60)
-    free_alpha = (0.50 * free_force * (1.0 - 0.72 * rigid_force)).clamp(0.0, 0.60)
-    soft_alpha = (0.30 * soft_force * (1.0 - 0.70 * torch.maximum(rigid_force, free_force))).clamp(0.0, 0.32)
-    layer_probs = layer_probs * (1.0 - rigid_alpha.unsqueeze(0)) + rigid_target * rigid_alpha.unsqueeze(0)
-    layer_probs = layer_probs * (1.0 - free_alpha.unsqueeze(0)) + free_target * free_alpha.unsqueeze(0)
-    layer_probs = layer_probs * (1.0 - soft_alpha.unsqueeze(0)) + soft_target * soft_alpha.unsqueeze(0)
-    layer_probs = _normalize_scores(layer_probs)
-    layer = _hard_assign(layer_probs * fg.unsqueeze(0), palette)
-    body_outline = (fg_edge * body_shell * (1.0 - 0.82 * cloth_shell)).clamp(0.0, 1.0)
-    cloth_outline = (fg_edge * cloth_hem).clamp(0.0, 1.0)
-    soft_outline = (fg_edge * boundary).clamp(0.0, 1.0)
-    layer = layer * (1.0 - 0.34 * body_outline.unsqueeze(0)) + rigid_color * (0.34 * body_outline.unsqueeze(0))
-    layer = layer * (1.0 - 0.28 * cloth_outline.unsqueeze(0)) + free_color * (0.28 * cloth_outline.unsqueeze(0))
-    layer = layer * (1.0 - 0.18 * soft_outline.unsqueeze(0)) + soft_color * (0.18 * soft_outline.unsqueeze(0))
-    return layer * fg.unsqueeze(0)
-
-
 def _binding_map_names(config):
     names = config.get(
         'binding_map_names',
@@ -2162,7 +1118,7 @@ def _binding_map_names(config):
         names = [name.strip() for name in names.split(',') if name.strip()]
     else:
         names = list(names)
-    valid = {'layer', 'region', 'compact_semantic', 'body_prob', 'soft_prob', 'cloth_prob', 'semantic', 'temporal', 'thin'}
+    valid = {'layer', 'region', 'compact_semantic', 'body_prob', 'soft_prob', 'cloth_prob', 'semantic', 'temporal', 'thin', 'boundary_support'}
     return [name for name in names if name in valid]
 
 
@@ -2183,11 +1139,15 @@ def _get_layer_probs(pc):
     return torch.nn.functional.one_hot(layer_ids.long().clamp_min(0), num_classes=3).float()
 
 
-def _get_region_probs(pc):
-    probs = getattr(pc, 'binding_region_probs', None)
+def _get_region_probs(pc, prefer_asset=False):
+    probs = getattr(pc, 'binding_region_probs_asset', None) if prefer_asset else None
+    if probs is None:
+        probs = getattr(pc, 'binding_region_probs', None)
     if probs is not None:
         return probs.detach()
-    region_ids = getattr(pc, 'binding_region_ids', torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device, dtype=torch.long))
+    region_ids = getattr(pc, 'binding_region_ids_asset', None) if prefer_asset else None
+    if region_ids is None:
+        region_ids = getattr(pc, 'binding_region_ids', torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device, dtype=torch.long))
     return torch.nn.functional.one_hot(region_ids.long().clamp_min(0), num_classes=3).float()
 
 
@@ -3280,6 +2240,41 @@ def _map_colors_and_stats(pc, map_name, config, visibility_filter=None, radii=No
     visible_mask, weights = _resolve_visibility(pc, visibility_filter=visibility_filter, radii=radii)
     common_stats = _common_visibility_stats(pc, visible_mask, weights)
 
+    if map_name == 'boundary_support':
+        support_role = None
+        support_confidence = None
+        binding_state = pc.get_binding_state() if hasattr(pc, 'get_binding_state') else {}
+        if isinstance(binding_state, dict):
+            support_role = binding_state.get('boundary_support_role', None)
+            support_confidence = binding_state.get('boundary_support_confidence', None)
+        point_count = int(pc.get_xyz.shape[0])
+        if not torch.is_tensor(support_role) or support_role.shape[0] != point_count:
+            support_role = torch.zeros((point_count,), dtype=torch.long, device=device)
+        else:
+            support_role = support_role.to(device=device, dtype=torch.long)
+        if not torch.is_tensor(support_confidence) or support_confidence.shape[0] != point_count:
+            support_confidence = torch.ones((point_count,), dtype=torch.float32, device=device)
+        else:
+            support_confidence = support_confidence.to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
+
+        support_mask = support_role > 0
+        display = torch.zeros((point_count,), dtype=torch.float32, device=device)
+        display[support_mask] = support_confidence[support_mask].clamp_min(0.25)
+        colors = torch.zeros((point_count, 3), dtype=torch.float32, device=device)
+        colors[:, 0] = display
+        colors[:, 1] = display * 0.78
+        colors[:, 2] = display * 0.08
+        visible_support = support_mask & visible_mask
+        stats = dict(common_stats)
+        stats.update({
+            'support_point_count': int(support_mask.sum().item()),
+            'visible_support_point_count': int(visible_support.sum().item()),
+            'support_point_ratio': float(support_mask.float().mean().item()) if point_count > 0 else 0.0,
+            'visible_support_point_ratio': float(visible_support.float().mean().item()) if point_count > 0 else 0.0,
+            'support_confidence_mean': float(support_confidence[support_mask].mean().item()) if bool(support_mask.any().item()) else 0.0,
+        })
+        return colors, stats
+
     if map_name == 'layer':
         layer_probs_vis = _smooth_prob_tensor(layer_probs_vis, positions, config, 'layer_vis')
         layer_probs_vis = _clean_prob_tensor(layer_probs_vis, positions, config, 'layer')
@@ -3736,34 +2731,6 @@ def _export_binding_maps(config, view, render_pkg, background, summary_records):
             image = _light_label_morphology(image, LAYER_COLORS, config, 'layer')
         elif map_name == 'region':
             image = _light_label_morphology(image, REGION_COLORS, config, 'region')
-        render_rgb = render_pkg.get('render', None)
-        hair_mask_2d = _load_cihp_hair_mask(view, image, config, labels=(2,))
-        face_mask_2d = _load_cihp_hair_mask(view, image, config, labels=(13,))
-        body_mask_2d = _load_cihp_hair_mask(view, image, config, labels=(13, 14, 15, 16, 17))
-        cloth_mask_2d = _load_cihp_hair_mask(view, image, config, labels=(5, 6, 7, 9, 10, 11, 12))
-        shoe_mask_2d = _load_cihp_hair_mask(view, image, config, labels=(18, 19))
-        if map_name != 'compact_semantic':
-            image = _appearance_guided_head_refine(image, render_rgb, opacity, map_name)
-            image = _apply_cihp_parsing_override(image, hair_mask_2d, body_mask_2d, cloth_mask_2d, map_name, face_mask=face_mask_2d, shoe_mask=shoe_mask_2d)
-            image = _appearance_guided_torso_refine(image, render_rgb, opacity, map_name, face_mask=face_mask_2d, cloth_mask=cloth_mask_2d)
-            image = _bodyprob_guided_refine(image, render_rgb, opacity, map_name, face_mask=face_mask_2d, body_mask=body_mask_2d, cloth_mask=cloth_mask_2d, hair_mask=hair_mask_2d, shoe_mask=shoe_mask_2d)
-        if map_name == 'region':
-            aux_maps = {}
-            for aux_name in ('body_prob', 'cloth_prob'):
-                aux_colors, _ = _map_colors_and_stats(pc, aux_name, config, visibility_filter=visibility_filter, radii=radii)
-                aux_pkg = rasterize_gaussians(view, pc, config.pipeline, background, colors_precomp=aux_colors, return_opacity=False)
-                aux_image = aux_pkg['render']
-                if opacity is not None and config.get('binding_map_use_opacity_mask', True):
-                    aux_image = aux_image * opacity
-                aux_image = _appearance_guided_head_refine(aux_image, render_rgb, opacity, aux_name)
-                aux_image = _apply_cihp_parsing_override(aux_image, hair_mask_2d, body_mask_2d, cloth_mask_2d, aux_name, face_mask=face_mask_2d, shoe_mask=shoe_mask_2d)
-                aux_image = _appearance_guided_torso_refine(aux_image, render_rgb, opacity, aux_name, face_mask=face_mask_2d, cloth_mask=cloth_mask_2d)
-                aux_image = _bodyprob_guided_refine(aux_image, render_rgb, opacity, aux_name, face_mask=face_mask_2d, body_mask=body_mask_2d, cloth_mask=cloth_mask_2d, hair_mask=hair_mask_2d, shoe_mask=shoe_mask_2d)
-                aux_maps[aux_name] = aux_image
-            image = _region_follow_bodyprob(image, aux_maps['body_prob'], aux_maps['cloth_prob'], face_mask=face_mask_2d)
-        if map_name != 'compact_semantic':
-            image = _stabilize_visual_map(image, map_name, opacity, face_mask=face_mask_2d, body_mask=body_mask_2d, cloth_mask=cloth_mask_2d, hair_mask=hair_mask_2d, shoe_mask=shoe_mask_2d)
-            image = _appearance_guided_detail_refine(image, render_rgb, opacity, map_name, body_mask=body_mask_2d, cloth_mask=cloth_mask_2d, hair_mask=hair_mask_2d, shoe_mask=shoe_mask_2d)
         if map_name in {'layer', 'region'}:
             hard_fg = _binding_map_support_mask(
                 view,
@@ -3831,9 +2798,18 @@ def _render_split(config, scene, background, evaluate=False, iteration=None):
     psnrs, ssims, lpipss, times = [], [], [], []
     summary_records = []
     asset_records = []
-    need_opacity = bool(config.get('export_interpretability', False) or config.get('export_semantic_editable_assets', False))
+    need_opacity = bool(
+        config.get('export_interpretability', False)
+        or config.get('export_semantic_editable_assets', False)
+        or config.get('export_opacity_maps', False)
+    )
+    opacity_path = None
+    if config.get('export_opacity_maps', False):
+        opacity_path = os.path.join(config.exp_dir, config.suffix, 'opacity')
+        os.makedirs(opacity_path, exist_ok=True)
     render_iteration = int(config.opt.iterations if iteration is None else iteration)
     render_local_iteration = _render_schedule_local_iteration(config)
+    render_scaling_modifier = float(config.get('render_scaling_modifier', 1.0))
 
     for idx in trange(len(scene.test_dataset), desc='Rendering progress'):
         view = scene.test_dataset[idx]
@@ -3849,6 +2825,7 @@ def _render_split(config, scene, background, evaluate=False, iteration=None):
             scene,
             config.pipeline,
             background,
+            scaling_modifier=render_scaling_modifier,
             compute_loss=False,
             return_opacity=need_opacity,
         )
@@ -3864,6 +2841,9 @@ def _render_split(config, scene, background, evaluate=False, iteration=None):
             opacity=render_pkg.get('opacity_render', None),
         )
         torchvision.utils.save_image(export_render, os.path.join(render_path, f'render_{view.image_name}.png'))
+        if opacity_path is not None and render_pkg.get('opacity_render', None) is not None:
+            opacity_image = render_pkg['opacity_render'].clamp(0.0, 1.0)
+            torchvision.utils.save_image(opacity_image, os.path.join(opacity_path, f'opacity_{view.image_name}.png'))
 
         if evaluate:
             gt = view.original_image[:3, :, :]

@@ -10,6 +10,7 @@ import trimesh
 import igl
 
 from utils.general_utils import build_rotation, get_body_model_misc_path
+from utils.graphics_utils import geom_transform_points
 from utils.pytorch3d_compat import ops
 from models.network_utils import VanillaCondMLP, get_skinning_mlp
 
@@ -431,6 +432,8 @@ class SkinningField(RigidDeform):
 
 
 class ExplicitBinding(RigidDeform):
+    _geometry_component_cache = {}
+
     def __init__(self, cfg, metadata):
         super().__init__(cfg)
         self.register_buffer('smpl_verts', torch.from_numpy(metadata['smpl_verts']).float())
@@ -445,6 +448,7 @@ class ExplicitBinding(RigidDeform):
 
         self.soft_rigid_blend = cfg.get('soft_rigid_blend', 0.5)
         self.soft_normal_blend = cfg.get('soft_normal_blend', 0.8)
+        self.rotation_orthogonalize_enable = bool(cfg.get('rotation_orthogonalize_enable', False))
         self.rigid_bone_threshold = cfg.get('rigid_bone_threshold', 0.03)
         self.soft_bone_threshold = cfg.get('soft_bone_threshold', 0.08)
         self.transition_width = cfg.get('transition_width', 0.015)
@@ -504,12 +508,20 @@ class ExplicitBinding(RigidDeform):
         self.thin_score_width = cfg.get('thin_score_width', 0.01)
         self.thin_accessory_boost = cfg.get('thin_accessory_boost', 0.60)
         self.thin_rigid_suppression = cfg.get('thin_rigid_suppression', 0.35)
+        self.v41_priors_enable = bool(cfg.get('v41_priors_enable', True))
         self.boundary_score_soft_weight = cfg.get('boundary_score_soft_weight', 0.70)
         self.boundary_score_shell_weight = cfg.get('boundary_score_shell_weight', 0.20)
         self.boundary_score_thin_weight = cfg.get('boundary_score_thin_weight', 0.10)
         self.boundary_score_surface_threshold = cfg.get('boundary_score_surface_threshold', self.free_surface_threshold)
         self.boundary_score_surface_width = cfg.get('boundary_score_surface_width', self.surface_transition_width)
         self.boundary_score_confidence_suppress = cfg.get('boundary_score_confidence_suppress', 0.15)
+        self.identity_render_enable = bool(cfg.get('identity_render_enable', False))
+        self.identity_render_fwd_transform_mode = str(cfg.get('identity_render_fwd_transform_mode', 'binding')).lower()
+        self.identity_render_rotation_mode = str(cfg.get('identity_render_rotation_mode', 'preserve')).lower()
+        self.pose_render_mode = str(cfg.get('pose_render_mode', 'layer_blend')).lower()
+        self.pose_render_rotation_mode = str(cfg.get('pose_render_rotation_mode', 'matching')).lower()
+        self.pose_render_center_blend = float(cfg.get('pose_render_center_blend', 1.0))
+        self.pose_render_rotation_blend = float(cfg.get('pose_render_rotation_blend', 1.0))
         self.non_rigid_delta_rigid_preserve = float(cfg.get('non_rigid_delta_rigid_preserve', 0.0))
         self.non_rigid_delta_soft_preserve = float(cfg.get('non_rigid_delta_soft_preserve', 0.0))
         self.non_rigid_geometry_blend = float(cfg.get('non_rigid_geometry_blend', 0.0))
@@ -522,6 +534,54 @@ class ExplicitBinding(RigidDeform):
             cfg.get('non_rigid_layer_sharpen_dominance_width', 0.05)
         )
         self.non_rigid_delta_debug_interval = int(cfg.get('non_rigid_delta_debug_interval', 0))
+        self.geometry_fidelity_gate_enable = bool(cfg.get('geometry_fidelity_gate_enable', False))
+        self.geometry_fidelity_target = str(cfg.get('geometry_fidelity_target', 'free_lbs'))
+        self.geometry_fidelity_center_strength = float(
+            cfg.get('geometry_fidelity_center_strength', cfg.get('geometry_fidelity_gate_strength', 0.0))
+        )
+        self.geometry_fidelity_rotation_strength = float(
+            cfg.get('geometry_fidelity_rotation_strength', cfg.get('geometry_fidelity_gate_strength', 0.0))
+        )
+        self.geometry_fidelity_boundary_min = float(cfg.get('geometry_fidelity_boundary_min', 0.08))
+        self.geometry_fidelity_layer_ids = cfg.get('geometry_fidelity_layer_ids', 'soft,free')
+        self.geometry_fidelity_region_ids = cfg.get('geometry_fidelity_region_ids', 'cloth,soft')
+        self.geometry_fidelity_joint_ids = cfg.get('geometry_fidelity_joint_ids', '')
+        self.geometry_fidelity_thin_min = cfg.get('geometry_fidelity_thin_min', None)
+        self.geometry_fidelity_surface_min = cfg.get('geometry_fidelity_surface_min', None)
+        self.geometry_fidelity_surface_max = cfg.get('geometry_fidelity_surface_max', None)
+        self.geometry_fidelity_non_rigid_min = float(cfg.get('geometry_fidelity_non_rigid_min', 0.0))
+        self.geometry_fidelity_power = float(cfg.get('geometry_fidelity_power', 1.0))
+        self.geometry_fidelity_max_points = int(cfg.get('geometry_fidelity_max_points', -1))
+        self.geometry_fidelity_internal_gate_enable = bool(cfg.get('geometry_fidelity_internal_gate_enable', False))
+        self.geometry_fidelity_internal_entropy_min = cfg.get('geometry_fidelity_internal_entropy_min', None)
+        self.geometry_fidelity_internal_softfree_min = cfg.get('geometry_fidelity_internal_softfree_min', None)
+        self.geometry_fidelity_internal_screen_delta_min_px = cfg.get(
+            'geometry_fidelity_internal_screen_delta_min_px',
+            None,
+        )
+        self.geometry_fidelity_internal_screen_delta_max_px = cfg.get(
+            'geometry_fidelity_internal_screen_delta_max_px',
+            None,
+        )
+        self.geometry_fidelity_internal_score_mode = str(
+            cfg.get('geometry_fidelity_internal_score_mode', 'entropy_delta')
+        )
+        self.geometry_fidelity_component_enable = bool(cfg.get('geometry_fidelity_component_enable', False))
+        self.geometry_fidelity_component_csv = str(cfg.get('geometry_fidelity_component_csv', ''))
+        self.geometry_fidelity_component_direction = str(cfg.get('geometry_fidelity_component_direction', 'inner'))
+        self.geometry_fidelity_component_pad_px = float(cfg.get('geometry_fidelity_component_pad_px', 8.0))
+        self.geometry_fidelity_component_ellipse_scale = float(cfg.get('geometry_fidelity_component_ellipse_scale', 1.20))
+        self.geometry_fidelity_component_max = int(cfg.get('geometry_fidelity_component_max', 16))
+        self.geometry_fidelity_component_min_area = float(cfg.get('geometry_fidelity_component_min_area', 20.0))
+        self.geometry_fidelity_component_required = bool(cfg.get('geometry_fidelity_component_required', False))
+        self.geometry_fidelity_component_improvement_enable = bool(
+            cfg.get('geometry_fidelity_component_improvement_enable', False)
+        )
+        self.geometry_fidelity_component_improvement_margin_px = float(
+            cfg.get('geometry_fidelity_component_improvement_margin_px', 0.0)
+        )
+        self.geometry_fidelity_signed_point_json = str(cfg.get('geometry_fidelity_signed_point_json', ''))
+        self.geometry_fidelity_signed_point_max = int(cfg.get('geometry_fidelity_signed_point_max', -1))
 
         joint_rigid_prior = torch.zeros(24, dtype=torch.float32)
         joint_free_prior = torch.zeros(24, dtype=torch.float32)
@@ -684,9 +744,91 @@ class ExplicitBinding(RigidDeform):
         self.forward_trunk_xbar_max = float(cfg.get('forward_trunk_xbar_max', 0.006))
         self.forward_trunk_xbar_tangent_scale = float(cfg.get('forward_trunk_xbar_tangent_scale', 1.0))
         self.forward_trunk_xbar_normal_scale = float(cfg.get('forward_trunk_xbar_normal_scale', 0.5))
+        self.forward_trunk_viewdir_enable = bool(cfg.get('forward_trunk_viewdir_enable', False))
+        self.forward_trunk_viewdir_detach = bool(cfg.get('forward_trunk_viewdir_detach', True))
+        self.forward_trunk_xbar_teacher_enable = bool(cfg.get('forward_trunk_xbar_teacher_enable', False))
+        self.forward_trunk_xbar_teacher_center_strength = float(
+            cfg.get('forward_trunk_xbar_teacher_center_strength', self.geometry_fidelity_center_strength)
+        )
+        self.forward_trunk_xbar_teacher_boundary_min = float(
+            cfg.get('forward_trunk_xbar_teacher_boundary_min', self.geometry_fidelity_boundary_min)
+        )
+        self.forward_trunk_xbar_teacher_layer_ids = cfg.get(
+            'forward_trunk_xbar_teacher_layer_ids',
+            self.geometry_fidelity_layer_ids,
+        )
+        self.forward_trunk_xbar_teacher_region_ids = cfg.get(
+            'forward_trunk_xbar_teacher_region_ids',
+            self.geometry_fidelity_region_ids,
+        )
+        self.forward_trunk_xbar_teacher_joint_ids = cfg.get(
+            'forward_trunk_xbar_teacher_joint_ids',
+            self.geometry_fidelity_joint_ids,
+        )
+        self.forward_trunk_xbar_teacher_thin_min = cfg.get(
+            'forward_trunk_xbar_teacher_thin_min',
+            self.geometry_fidelity_thin_min,
+        )
+        self.forward_trunk_xbar_teacher_surface_min = cfg.get(
+            'forward_trunk_xbar_teacher_surface_min',
+            self.geometry_fidelity_surface_min,
+        )
+        self.forward_trunk_xbar_teacher_surface_max = cfg.get(
+            'forward_trunk_xbar_teacher_surface_max',
+            self.geometry_fidelity_surface_max,
+        )
+        self.forward_trunk_xbar_teacher_non_rigid_min = float(
+            cfg.get('forward_trunk_xbar_teacher_non_rigid_min', self.geometry_fidelity_non_rigid_min)
+        )
+        self.forward_trunk_xbar_teacher_power = float(
+            cfg.get('forward_trunk_xbar_teacher_power', self.geometry_fidelity_power)
+        )
+        self.forward_trunk_xbar_teacher_max_points = int(
+            cfg.get('forward_trunk_xbar_teacher_max_points', self.geometry_fidelity_max_points)
+        )
+        self.forward_trunk_xbar_teacher_component_enable = bool(
+            cfg.get('forward_trunk_xbar_teacher_component_enable', True)
+        )
+        self.forward_trunk_xbar_teacher_component_csv = str(
+            cfg.get('forward_trunk_xbar_teacher_component_csv', self.geometry_fidelity_component_csv)
+        )
+        self.forward_trunk_xbar_teacher_component_direction = str(
+            cfg.get('forward_trunk_xbar_teacher_component_direction', self.geometry_fidelity_component_direction)
+        )
+        self.forward_trunk_xbar_teacher_component_pad_px = float(
+            cfg.get('forward_trunk_xbar_teacher_component_pad_px', self.geometry_fidelity_component_pad_px)
+        )
+        self.forward_trunk_xbar_teacher_component_ellipse_scale = float(
+            cfg.get(
+                'forward_trunk_xbar_teacher_component_ellipse_scale',
+                self.geometry_fidelity_component_ellipse_scale,
+            )
+        )
+        self.forward_trunk_xbar_teacher_component_max = int(
+            cfg.get('forward_trunk_xbar_teacher_component_max', self.geometry_fidelity_component_max)
+        )
+        self.forward_trunk_xbar_teacher_component_min_area = float(
+            cfg.get('forward_trunk_xbar_teacher_component_min_area', self.geometry_fidelity_component_min_area)
+        )
+        self.forward_trunk_xbar_teacher_component_required = bool(
+            cfg.get('forward_trunk_xbar_teacher_component_required', True)
+        )
+        self.forward_trunk_xbar_teacher_component_improvement_enable = bool(
+            cfg.get(
+                'forward_trunk_xbar_teacher_component_improvement_enable',
+                self.geometry_fidelity_component_improvement_enable,
+            )
+        )
+        self.forward_trunk_xbar_teacher_component_improvement_margin_px = float(
+            cfg.get(
+                'forward_trunk_xbar_teacher_component_improvement_margin_px',
+                self.geometry_fidelity_component_improvement_margin_px,
+            )
+        )
+        self.forward_trunk_xbar_teacher_loss = str(cfg.get('forward_trunk_xbar_teacher_loss', 'l1')).lower()
 
         self.forward_trunk_mlp = None
-        self.forward_trunk_input_dim = 47
+        self.forward_trunk_input_dim = 47 + (3 if self.forward_trunk_viewdir_enable else 0)
         self.forward_trunk_output_dim = 0
         if self.forward_trunk_enable and (
             self.forward_trunk_anchor_enable
@@ -806,6 +948,330 @@ class ExplicitBinding(RigidDeform):
         if cast is not None and value is not None:
             value = cast(value)
         return value
+
+    @staticmethod
+    def _parse_id_list(value, name_to_id=None):
+        if value is None:
+            return ()
+        if torch.is_tensor(value):
+            if value.numel() == 0:
+                return ()
+            return tuple(int(x) for x in value.detach().cpu().reshape(-1).tolist())
+        if isinstance(value, (list, tuple, set)):
+            parsed = []
+            for item in value:
+                parsed.extend(ExplicitBinding._parse_id_list(item, name_to_id=name_to_id))
+            return tuple(parsed)
+        if isinstance(value, (int, np.integer)):
+            return (int(value),)
+        text = str(value or "").strip()
+        if not text or text.lower() in ("none", "null", "all", "*"):
+            return ()
+        for ch in "[](){}":
+            text = text.replace(ch, " ")
+        tokens = [tok.strip() for tok in text.replace(";", ",").split(",") if tok.strip()]
+        parsed = []
+        name_to_id = name_to_id or {}
+        for token in tokens:
+            lowered = token.lower()
+            if lowered in name_to_id:
+                parsed.append(int(name_to_id[lowered]))
+                continue
+            try:
+                parsed.append(int(float(token)))
+            except ValueError:
+                continue
+        return tuple(parsed)
+
+    @staticmethod
+    def _values_to_mask(values, allowed_ids):
+        allowed_ids = tuple(int(x) for x in (allowed_ids or ()))
+        if not allowed_ids:
+            return torch.ones((values.shape[0],), dtype=torch.bool, device=values.device)
+        allowed = torch.tensor(allowed_ids, dtype=values.dtype, device=values.device)
+        return (values.reshape(-1).unsqueeze(-1) == allowed.reshape(1, -1)).any(dim=-1)
+
+    @staticmethod
+    def _optional_float(value):
+        if value is None:
+            return None
+        text = str(value).strip().strip("'\"").lower()
+        if text in ("", "none", "null", "all", "*"):
+            return None
+        return float(text)
+
+    @staticmethod
+    def _camera_image_name(camera):
+        if camera is None:
+            return ""
+        image_name = getattr(camera, "image_name", "")
+        if isinstance(image_name, (list, tuple)):
+            image_name = image_name[0] if image_name else ""
+        if isinstance(image_name, str) and image_name:
+            return image_name
+        cam_id = getattr(camera, "cam_id", getattr(camera, "uid", ""))
+        frame_id = getattr(camera, "frame_id", getattr(camera, "frame_idx", ""))
+        try:
+            return f"c{int(cam_id):02d}_f{int(frame_id):06d}"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _project_points_to_screen(points, camera):
+        if camera is None or not torch.is_tensor(points) or points.numel() == 0:
+            return None, None
+        try:
+            ndc = geom_transform_points(
+                points.detach(),
+                camera.full_proj_transform.to(device=points.device, dtype=points.dtype),
+            )
+            width = int(camera.image_width)
+            height = int(camera.image_height)
+        except Exception:
+            return None, None
+        px = (ndc[:, 0] + 1.0) * 0.5 * float(max(width - 1, 1))
+        py = (1.0 - (ndc[:, 1] + 1.0) * 0.5) * float(max(height - 1, 1))
+        valid = torch.isfinite(ndc).all(dim=1)
+        valid = valid & (ndc[:, 2] > 0.0)
+        valid = valid & (px >= 0.0) & (px <= float(max(width - 1, 0)))
+        valid = valid & (py >= 0.0) & (py <= float(max(height - 1, 0)))
+        return torch.stack((px, py), dim=-1), valid
+
+    @classmethod
+    def _load_geometry_components(cls, component_csv):
+        path = str(component_csv or "")
+        if not path:
+            return {}
+        cached = cls._geometry_component_cache.get(path)
+        if cached is not None:
+            return cached
+        by_image = {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                import csv
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    image_name = str(row.get("image_name", "")).strip()
+                    direction = str(row.get("direction", "")).strip().lower()
+                    if not image_name or direction not in ("inner", "outer"):
+                        continue
+                    try:
+                        record = {
+                            "direction": direction,
+                            "area": float(row.get("area", 0.0) or 0.0),
+                            "cx": float(row.get("centroid_x", 0.0) or 0.0),
+                            "cy": float(row.get("centroid_y", 0.0) or 0.0),
+                            "w": float(row.get("bbox_w", 0.0) or 0.0),
+                            "h": float(row.get("bbox_h", 0.0) or 0.0),
+                            "near_score_sum": float(row.get("near_score_sum", 0.0) or 0.0),
+                        }
+                    except ValueError:
+                        continue
+                    by_image.setdefault(image_name, {"inner": [], "outer": []})[direction].append(record)
+        except Exception:
+            by_image = {}
+        for item in by_image.values():
+            for direction in ("inner", "outer"):
+                item[direction].sort(
+                    key=lambda rec: (rec.get("area", 0.0), rec.get("near_score_sum", 0.0)),
+                    reverse=True,
+                )
+        cls._geometry_component_cache[path] = by_image
+        return by_image
+
+    def _geometry_component_gate(self, candidate_xyz, camera, current_xyz=None):
+        point_count = int(candidate_xyz.shape[0]) if torch.is_tensor(candidate_xyz) else 0
+        zero_weight = torch.zeros(
+            (point_count,),
+            dtype=candidate_xyz.dtype if torch.is_tensor(candidate_xyz) else torch.float32,
+            device=candidate_xyz.device if torch.is_tensor(candidate_xyz) else self.smpl_verts.device,
+        )
+        if (
+            not self.geometry_fidelity_component_enable
+            or point_count <= 0
+            or not str(self.geometry_fidelity_component_csv or "")
+        ):
+            return None
+        xy, valid = self._project_points_to_screen(candidate_xyz, camera)
+        if xy is None or not torch.is_tensor(valid):
+            mask = torch.zeros((point_count,), dtype=torch.bool, device=candidate_xyz.device)
+            return (mask, zero_weight) if self.geometry_fidelity_component_required else None
+        current_xy = None
+        current_valid = None
+        if (
+            self.geometry_fidelity_component_improvement_enable
+            and torch.is_tensor(current_xyz)
+            and current_xyz.shape[:1] == candidate_xyz.shape[:1]
+        ):
+            current_xy, current_valid = self._project_points_to_screen(current_xyz, camera)
+        image_name = self._camera_image_name(camera)
+        direction = str(self.geometry_fidelity_component_direction or "inner").lower()
+        records = self._load_geometry_components(self.geometry_fidelity_component_csv)
+        records = records.get(image_name, {}).get(direction, [])
+        records = [
+            rec for rec in records
+            if float(rec.get("area", 0.0)) >= self.geometry_fidelity_component_min_area
+        ]
+        records = records[: max(int(self.geometry_fidelity_component_max), 0)]
+        mask = torch.zeros((point_count,), dtype=torch.bool, device=candidate_xyz.device)
+        score = torch.zeros((point_count,), dtype=candidate_xyz.dtype, device=candidate_xyz.device)
+        if not records:
+            return (mask, zero_weight) if self.geometry_fidelity_component_required else None
+        pad_px = float(self.geometry_fidelity_component_pad_px)
+        ellipse_scale = max(float(self.geometry_fidelity_component_ellipse_scale), 1.0e-6)
+        margin_px = float(self.geometry_fidelity_component_improvement_margin_px)
+        for rec in records:
+            half_w = max(0.5 * float(rec["w"]) * ellipse_scale + pad_px, 1.0)
+            half_h = max(0.5 * float(rec["h"]) * ellipse_scale + pad_px, 1.0)
+            dx = xy[:, 0] - float(rec["cx"])
+            dy = xy[:, 1] - float(rec["cy"])
+            ellipse_dist2 = (dx / half_w) ** 2 + (dy / half_h) ** 2
+            inside = (ellipse_dist2 <= 1.0) & valid.bool()
+            if current_xy is not None and torch.is_tensor(current_valid):
+                current_dx = current_xy[:, 0] - float(rec["cx"])
+                current_dy = current_xy[:, 1] - float(rec["cy"])
+                current_dist_px = torch.sqrt(current_dx.square() + current_dy.square()).clamp_min(0.0)
+                candidate_dist_px = torch.sqrt(dx.square() + dy.square()).clamp_min(0.0)
+                improves = (candidate_dist_px + margin_px) < current_dist_px
+                inside = inside & improves & current_valid.bool()
+            if not bool(inside.any().item()):
+                continue
+            local_score = (1.0 - torch.sqrt(ellipse_dist2.clamp_min(0.0))).clamp(0.0, 1.0)
+            local_score = local_score * float(np.log1p(max(float(rec.get("near_score_sum", 1.0) or 1.0), 1.0)))
+            mask = mask | inside
+            score = torch.maximum(score, torch.where(inside, local_score.to(dtype=score.dtype), torch.zeros_like(score)))
+        if not bool(mask.any().item()) and self.geometry_fidelity_component_required:
+            return mask, zero_weight
+        if bool(mask.any().item()):
+            score_denom = torch.quantile(score[mask].detach(), 0.90).clamp_min(1.0e-6)
+            component_weight = (score / score_denom).clamp(0.0, 1.0)
+            return mask, component_weight
+        return None
+
+    @staticmethod
+    def _load_signed_point_prior(point_json, camera=None):
+        path = str(point_json or "")
+        if not path:
+            return (), ()
+        image_name = ""
+        if camera is not None:
+            image_name = ExplicitBinding._camera_image_name(camera)
+        cache = getattr(ExplicitBinding, "_geometry_signed_point_cache", None)
+        if cache is None:
+            ExplicitBinding._geometry_signed_point_cache = {}
+            cache = ExplicitBinding._geometry_signed_point_cache
+        cache_key = f"{path}|{image_name}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            import json
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            data = {}
+        by_image = data.get("by_image", None) if isinstance(data, dict) else None
+        image_data = by_image.get(image_name, None) if image_name and isinstance(by_image, dict) else None
+        source = image_data if isinstance(image_data, dict) else data
+        shrink_ids = tuple(int(idx) for idx in source.get("shrink_point_ids", []) if int(idx) >= 0)
+        grow_ids = tuple(int(idx) for idx in source.get("grow_point_ids", []) if int(idx) >= 0)
+        cached = (shrink_ids, grow_ids)
+        cache[cache_key] = cached
+        return cached
+
+    def _geometry_signed_point_gate(self, point_count, device, dtype, camera=None):
+        if not str(self.geometry_fidelity_signed_point_json or "") or point_count <= 0:
+            return None
+        _, grow_ids = self._load_signed_point_prior(self.geometry_fidelity_signed_point_json, camera=camera)
+        max_points = int(self.geometry_fidelity_signed_point_max)
+        if max_points >= 0:
+            grow_ids = grow_ids[:max_points]
+        if not grow_ids:
+            return None
+        ids = torch.tensor(grow_ids, dtype=torch.long, device=device)
+        ids = ids[(ids >= 0) & (ids < point_count)]
+        mask = torch.zeros((point_count,), dtype=torch.bool, device=device)
+        if ids.numel() > 0:
+            mask[ids] = True
+        if not bool(mask.any().item()):
+            return None
+        weight = mask.to(dtype=dtype)
+        return mask, weight
+
+    def _geometry_component_gate_with_config(
+        self,
+        candidate_xyz,
+        camera,
+        current_xyz=None,
+        *,
+        enable=None,
+        component_csv=None,
+        direction=None,
+        pad_px=None,
+        ellipse_scale=None,
+        max_components=None,
+        min_area=None,
+        required=None,
+        improvement_enable=None,
+        improvement_margin_px=None,
+    ):
+        old_values = (
+            self.geometry_fidelity_component_enable,
+            self.geometry_fidelity_component_csv,
+            self.geometry_fidelity_component_direction,
+            self.geometry_fidelity_component_pad_px,
+            self.geometry_fidelity_component_ellipse_scale,
+            self.geometry_fidelity_component_max,
+            self.geometry_fidelity_component_min_area,
+            self.geometry_fidelity_component_required,
+            self.geometry_fidelity_component_improvement_enable,
+            self.geometry_fidelity_component_improvement_margin_px,
+        )
+        self.geometry_fidelity_component_enable = bool(enable)
+        self.geometry_fidelity_component_csv = str(component_csv or "")
+        self.geometry_fidelity_component_direction = str(direction or "inner")
+        self.geometry_fidelity_component_pad_px = float(pad_px)
+        self.geometry_fidelity_component_ellipse_scale = float(ellipse_scale)
+        self.geometry_fidelity_component_max = int(max_components)
+        self.geometry_fidelity_component_min_area = float(min_area)
+        self.geometry_fidelity_component_required = bool(required)
+        self.geometry_fidelity_component_improvement_enable = bool(improvement_enable)
+        self.geometry_fidelity_component_improvement_margin_px = float(improvement_margin_px)
+        try:
+            return self._geometry_component_gate(candidate_xyz, camera, current_xyz=current_xyz)
+        finally:
+            (
+                self.geometry_fidelity_component_enable,
+                self.geometry_fidelity_component_csv,
+                self.geometry_fidelity_component_direction,
+                self.geometry_fidelity_component_pad_px,
+                self.geometry_fidelity_component_ellipse_scale,
+                self.geometry_fidelity_component_max,
+                self.geometry_fidelity_component_min_area,
+                self.geometry_fidelity_component_required,
+                self.geometry_fidelity_component_improvement_enable,
+                self.geometry_fidelity_component_improvement_margin_px,
+            ) = old_values
+
+    @staticmethod
+    def _topk_bool_mask(base_mask, score, max_points):
+        if not torch.is_tensor(base_mask) or base_mask.numel() == 0:
+            return base_mask
+        max_points = int(max_points)
+        if max_points < 0:
+            return base_mask
+        if max_points == 0:
+            return torch.zeros_like(base_mask, dtype=torch.bool)
+        active_count = int(base_mask.sum().item())
+        if active_count <= max_points:
+            return base_mask
+        ranked = torch.where(base_mask, score.reshape(-1).float(), torch.full_like(score.reshape(-1).float(), -float("inf")))
+        top_values, top_idx = torch.topk(ranked, k=min(max_points, int(ranked.numel())))
+        keep = top_values > -float("inf")
+        mask = torch.zeros_like(base_mask, dtype=torch.bool)
+        if bool(keep.any().item()):
+            mask[top_idx[keep]] = True
+        return mask
 
     def _state_matches(self, binding_state, canonical_xyz):
         if not binding_state:
@@ -1196,6 +1662,337 @@ class ExplicitBinding(RigidDeform):
         if self.boundary_score_confidence_suppress > 0.0:
             score = score * (1.0 - self.boundary_score_confidence_suppress * confidence.clamp(0.0, 1.0))
         return torch.clamp(score, 0.0, 1.0)
+
+    def _geometry_fidelity_gate(
+        self,
+        layer_weights,
+        region_probs,
+        dominant_joint,
+        boundary_score,
+        thin_score,
+        surface_distance,
+        non_rigid_delta_norm,
+        candidate_xyz=None,
+        current_xyz=None,
+        camera=None,
+    ):
+        point_count = int(boundary_score.shape[0])
+        device = boundary_score.device
+        dtype = boundary_score.dtype
+        if (
+            not self.geometry_fidelity_gate_enable
+            or point_count <= 0
+            or (
+                self.geometry_fidelity_center_strength <= 0.0
+                and self.geometry_fidelity_rotation_strength <= 0.0
+            )
+        ):
+            return torch.zeros((point_count,), dtype=dtype, device=device)
+
+        layer_names = {"rigid": 0, "soft": 1, "free": 2}
+        region_names = {"body": 0, "soft": 1, "cloth": 2}
+        layer_ids = torch.argmax(layer_weights, dim=-1)
+        region_ids = torch.argmax(region_probs, dim=-1)
+        mask = boundary_score >= float(self.geometry_fidelity_boundary_min)
+
+        parsed_layers = self._parse_id_list(self.geometry_fidelity_layer_ids, name_to_id=layer_names)
+        if parsed_layers:
+            mask = mask & self._values_to_mask(layer_ids, parsed_layers)
+        parsed_regions = self._parse_id_list(self.geometry_fidelity_region_ids, name_to_id=region_names)
+        if parsed_regions:
+            mask = mask & self._values_to_mask(region_ids, parsed_regions)
+        parsed_joints = self._parse_id_list(self.geometry_fidelity_joint_ids)
+        if parsed_joints:
+            mask = mask & self._values_to_mask(dominant_joint, parsed_joints)
+
+        thin_min = self._optional_float(self.geometry_fidelity_thin_min)
+        surface_min = self._optional_float(self.geometry_fidelity_surface_min)
+        surface_max = self._optional_float(self.geometry_fidelity_surface_max)
+        if thin_min is not None:
+            mask = mask & (thin_score >= thin_min)
+        if surface_min is not None:
+            mask = mask & (surface_distance >= surface_min)
+        if surface_max is not None:
+            mask = mask & (surface_distance <= surface_max)
+        if self.geometry_fidelity_non_rigid_min > 0.0:
+            mask = mask & (non_rigid_delta_norm >= self.geometry_fidelity_non_rigid_min)
+
+        score = boundary_score.clamp(0.0, 1.0)
+        score = score + 0.25 * thin_score.clamp(0.0, 1.0)
+        if self.geometry_fidelity_non_rigid_min > 0.0:
+            denom = non_rigid_delta_norm.detach().quantile(0.90).clamp_min(1.0e-6)
+            score = score + 0.25 * (non_rigid_delta_norm / denom).clamp(0.0, 1.0)
+        if self.geometry_fidelity_internal_gate_enable:
+            layer_entropy = -torch.sum(layer_weights.clamp_min(1.0e-8) * torch.log(layer_weights.clamp_min(1.0e-8)), dim=-1)
+            layer_entropy = layer_entropy / float(np.log(max(layer_weights.shape[-1], 2)))
+            soft_free_mix = torch.minimum(layer_weights[:, 1], layer_weights[:, 2])
+            internal_mask = torch.ones_like(mask, dtype=torch.bool)
+            entropy_min = self._optional_float(self.geometry_fidelity_internal_entropy_min)
+            softfree_min = self._optional_float(self.geometry_fidelity_internal_softfree_min)
+            if entropy_min is not None:
+                internal_mask = internal_mask & (layer_entropy >= entropy_min)
+            if softfree_min is not None:
+                internal_mask = internal_mask & (soft_free_mix >= softfree_min)
+            screen_score = None
+            screen_delta_min = self._optional_float(self.geometry_fidelity_internal_screen_delta_min_px)
+            screen_delta_max = self._optional_float(self.geometry_fidelity_internal_screen_delta_max_px)
+            if (
+                (screen_delta_min is not None or screen_delta_max is not None)
+                and torch.is_tensor(candidate_xyz)
+                and torch.is_tensor(current_xyz)
+                and candidate_xyz.shape[:1] == current_xyz.shape[:1]
+            ):
+                candidate_xy, candidate_valid = self._project_points_to_screen(candidate_xyz, camera)
+                current_xy, current_valid = self._project_points_to_screen(current_xyz, camera)
+                if (
+                    torch.is_tensor(candidate_xy)
+                    and torch.is_tensor(current_xy)
+                    and torch.is_tensor(candidate_valid)
+                    and torch.is_tensor(current_valid)
+                ):
+                    screen_delta = torch.norm(candidate_xy - current_xy, dim=-1)
+                    screen_valid = candidate_valid.bool() & current_valid.bool()
+                    internal_mask = internal_mask & screen_valid
+                    if screen_delta_min is not None:
+                        internal_mask = internal_mask & (screen_delta >= screen_delta_min)
+                    if screen_delta_max is not None:
+                        internal_mask = internal_mask & (screen_delta <= screen_delta_max)
+                    active_delta = screen_delta[screen_valid]
+                    if active_delta.numel() > 0:
+                        screen_score = (screen_delta / active_delta.detach().quantile(0.90).clamp_min(1.0e-6)).clamp(0.0, 1.0)
+            mask = mask & internal_mask
+            score_mode = self.geometry_fidelity_internal_score_mode.lower()
+            if score_mode in ("entropy", "layer_entropy"):
+                score = score + 0.35 * layer_entropy.clamp(0.0, 1.0)
+            elif score_mode in ("softfree", "soft_free", "mix"):
+                score = score + 0.35 * (soft_free_mix / soft_free_mix.detach().quantile(0.90).clamp_min(1.0e-6)).clamp(0.0, 1.0)
+            else:
+                score = score + 0.20 * layer_entropy.clamp(0.0, 1.0)
+                score = score + 0.15 * (soft_free_mix / soft_free_mix.detach().quantile(0.90).clamp_min(1.0e-6)).clamp(0.0, 1.0)
+            if screen_score is not None:
+                score = score + 0.35 * screen_score.to(device=score.device, dtype=score.dtype)
+        component_gate = self._geometry_component_gate(candidate_xyz, camera, current_xyz=current_xyz)
+        if component_gate is not None:
+            component_mask, component_weight = component_gate
+            mask = mask & component_mask
+            score = score * (0.35 + 0.65 * component_weight.to(device=score.device, dtype=score.dtype))
+        signed_point_gate = self._geometry_signed_point_gate(point_count, device, dtype, camera=camera)
+        if signed_point_gate is not None:
+            signed_point_mask, signed_point_weight = signed_point_gate
+            mask = mask & signed_point_mask
+            score = score * signed_point_weight.to(device=score.device, dtype=score.dtype)
+        mask = self._topk_bool_mask(mask, score, self.geometry_fidelity_max_points)
+        if not bool(mask.any().item()):
+            return torch.zeros((point_count,), dtype=dtype, device=device)
+
+        active_score = score[mask]
+        denom = torch.quantile(active_score.detach(), 0.90).clamp_min(1.0e-6)
+        weight = (score / denom).clamp(0.0, 1.0)
+        power = max(float(self.geometry_fidelity_power), 1.0e-6)
+        if not np.isclose(power, 1.0):
+            weight = weight.pow(power)
+        return torch.where(mask, weight, torch.zeros_like(weight))
+
+    def _forward_trunk_xbar_teacher_gate(
+        self,
+        layer_weights,
+        region_probs,
+        dominant_joint,
+        boundary_score,
+        thin_score,
+        surface_distance,
+        non_rigid_delta_norm,
+        candidate_xyz=None,
+        current_xyz=None,
+        camera=None,
+    ):
+        point_count = int(boundary_score.shape[0])
+        device = boundary_score.device
+        dtype = boundary_score.dtype
+        if (
+            not self.forward_trunk_xbar_teacher_enable
+            or not self.forward_trunk_xbar_enable
+            or point_count <= 0
+            or self.forward_trunk_xbar_teacher_center_strength <= 0.0
+        ):
+            return torch.zeros((point_count,), dtype=dtype, device=device)
+
+        layer_names = {"rigid": 0, "soft": 1, "free": 2}
+        region_names = {"body": 0, "soft": 1, "cloth": 2}
+        layer_ids = torch.argmax(layer_weights, dim=-1)
+        region_ids = torch.argmax(region_probs, dim=-1)
+        mask = boundary_score >= float(self.forward_trunk_xbar_teacher_boundary_min)
+
+        parsed_layers = self._parse_id_list(
+            self.forward_trunk_xbar_teacher_layer_ids,
+            name_to_id=layer_names,
+        )
+        if parsed_layers:
+            mask = mask & self._values_to_mask(layer_ids, parsed_layers)
+        parsed_regions = self._parse_id_list(
+            self.forward_trunk_xbar_teacher_region_ids,
+            name_to_id=region_names,
+        )
+        if parsed_regions:
+            mask = mask & self._values_to_mask(region_ids, parsed_regions)
+        parsed_joints = self._parse_id_list(self.forward_trunk_xbar_teacher_joint_ids)
+        if parsed_joints:
+            mask = mask & self._values_to_mask(dominant_joint, parsed_joints)
+
+        thin_min = self._optional_float(self.forward_trunk_xbar_teacher_thin_min)
+        surface_min = self._optional_float(self.forward_trunk_xbar_teacher_surface_min)
+        surface_max = self._optional_float(self.forward_trunk_xbar_teacher_surface_max)
+        if thin_min is not None:
+            mask = mask & (thin_score >= thin_min)
+        if surface_min is not None:
+            mask = mask & (surface_distance >= surface_min)
+        if surface_max is not None:
+            mask = mask & (surface_distance <= surface_max)
+        if self.forward_trunk_xbar_teacher_non_rigid_min > 0.0:
+            mask = mask & (non_rigid_delta_norm >= self.forward_trunk_xbar_teacher_non_rigid_min)
+
+        score = boundary_score.clamp(0.0, 1.0) + 0.25 * thin_score.clamp(0.0, 1.0)
+        if self.forward_trunk_xbar_teacher_non_rigid_min > 0.0:
+            denom = non_rigid_delta_norm.detach().quantile(0.90).clamp_min(1.0e-6)
+            score = score + 0.25 * (non_rigid_delta_norm / denom).clamp(0.0, 1.0)
+
+        component_gate = self._geometry_component_gate_with_config(
+            candidate_xyz,
+            camera,
+            current_xyz=current_xyz,
+            enable=self.forward_trunk_xbar_teacher_component_enable,
+            component_csv=self.forward_trunk_xbar_teacher_component_csv,
+            direction=self.forward_trunk_xbar_teacher_component_direction,
+            pad_px=self.forward_trunk_xbar_teacher_component_pad_px,
+            ellipse_scale=self.forward_trunk_xbar_teacher_component_ellipse_scale,
+            max_components=self.forward_trunk_xbar_teacher_component_max,
+            min_area=self.forward_trunk_xbar_teacher_component_min_area,
+            required=self.forward_trunk_xbar_teacher_component_required,
+            improvement_enable=self.forward_trunk_xbar_teacher_component_improvement_enable,
+            improvement_margin_px=self.forward_trunk_xbar_teacher_component_improvement_margin_px,
+        )
+        if component_gate is not None:
+            component_mask, component_weight = component_gate
+            mask = mask & component_mask
+            score = score * (0.35 + 0.65 * component_weight.to(device=score.device, dtype=score.dtype))
+        elif self.forward_trunk_xbar_teacher_component_required:
+            mask = torch.zeros_like(mask)
+
+        mask = self._topk_bool_mask(mask, score, self.forward_trunk_xbar_teacher_max_points)
+        if not bool(mask.any().item()):
+            return torch.zeros((point_count,), dtype=dtype, device=device)
+
+        active_score = score[mask]
+        denom = torch.quantile(active_score.detach(), 0.90).clamp_min(1.0e-6)
+        weight = (score / denom).clamp(0.0, 1.0)
+        power = max(float(self.forward_trunk_xbar_teacher_power), 1.0e-6)
+        if not np.isclose(power, 1.0):
+            weight = weight.pow(power)
+        return torch.where(mask, weight, torch.zeros_like(weight))
+
+    @staticmethod
+    def _blend_rotation_matrices(base_rotation, target_rotation, blend_weight):
+        if blend_weight.numel() == 0:
+            return base_rotation
+        blend = blend_weight.reshape(-1, 1, 1).clamp(0.0, 1.0)
+        mixed = base_rotation * (1.0 - blend) + target_rotation * blend
+        try:
+            u, _, vh = torch.linalg.svd(mixed.float())
+            rot = torch.matmul(u, vh)
+            det = torch.det(rot)
+            if bool((det < 0.0).any().item()):
+                u = u.clone()
+                u[det < 0.0, :, -1] *= -1.0
+                rot = torch.matmul(u, vh)
+            return rot.to(dtype=base_rotation.dtype)
+        except RuntimeError:
+            return mixed.to(dtype=base_rotation.dtype)
+
+    def _select_pose_render_state(
+        self,
+        xyz,
+        x_bar,
+        x_bar_base,
+        x_rigid,
+        x_soft,
+        x_free,
+        R_bar,
+        R_dom,
+        R_soft,
+        R_lbs,
+        forward_layer_weights,
+    ):
+        mode = str(self.pose_render_mode or "layer_blend").lower()
+        rotation_mode = str(self.pose_render_rotation_mode or "matching").lower()
+        if mode in ("layer_blend", "xbar", "bar", "default"):
+            target_xyz = x_bar
+            matching_rotation = R_bar
+        elif mode in ("layer_blend_base", "xbar_base", "base"):
+            target_xyz = x_bar_base
+            matching_rotation = R_bar
+        elif mode in ("rigid", "x_rigid", "dom", "dominant"):
+            target_xyz = x_rigid
+            matching_rotation = R_dom
+        elif mode in ("soft", "x_soft", "soft_anchor"):
+            target_xyz = x_soft
+            matching_rotation = R_soft
+        elif mode in ("free", "x_free", "lbs", "free_lbs"):
+            target_xyz = x_free
+            matching_rotation = R_lbs
+        elif mode in ("hard_layer", "argmax"):
+            layer_ids = torch.argmax(forward_layer_weights, dim=-1)
+            target_xyz = torch.where(
+                (layer_ids == 0).unsqueeze(-1),
+                x_rigid,
+                torch.where((layer_ids == 1).unsqueeze(-1), x_soft, x_free),
+            )
+            matching_rotation = torch.where(
+                (layer_ids == 0).view(-1, 1, 1),
+                R_dom,
+                torch.where((layer_ids == 1).view(-1, 1, 1), R_soft, R_lbs),
+            )
+        elif mode in ("soft_free_blend", "free_soft_blend"):
+            soft_free = forward_layer_weights[:, [1, 2]]
+            denom = soft_free.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
+            soft_w = soft_free[:, [0]] / denom
+            free_w = soft_free[:, [1]] / denom
+            target_xyz = soft_w * x_soft + free_w * x_free
+            matching_rotation = soft_w.unsqueeze(-1) * R_soft + free_w.unsqueeze(-1) * R_lbs
+        elif mode in ("rigid_soft_blend", "soft_rigid_blend"):
+            rigid_soft = forward_layer_weights[:, [0, 1]]
+            denom = rigid_soft.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
+            rigid_w = rigid_soft[:, [0]] / denom
+            soft_w = rigid_soft[:, [1]] / denom
+            target_xyz = rigid_w * x_rigid + soft_w * x_soft
+            matching_rotation = rigid_w.unsqueeze(-1) * R_dom + soft_w.unsqueeze(-1) * R_soft
+        else:
+            target_xyz = x_bar
+            matching_rotation = R_bar
+
+        if rotation_mode in ("bar", "xbar", "layer_blend"):
+            target_rotation = R_bar
+        elif rotation_mode in ("rigid", "dom", "dominant"):
+            target_rotation = R_dom
+        elif rotation_mode in ("soft", "soft_anchor"):
+            target_rotation = R_soft
+        elif rotation_mode in ("free", "lbs", "free_lbs"):
+            target_rotation = R_lbs
+        elif rotation_mode in ("matching", "mode"):
+            target_rotation = matching_rotation
+        else:
+            target_rotation = R_bar
+
+        center_blend = float(np.clip(self.pose_render_center_blend, 0.0, 1.0))
+        if center_blend < 1.0:
+            target_xyz = x_bar * (1.0 - center_blend) + target_xyz * center_blend
+
+        rotation_blend = float(np.clip(self.pose_render_rotation_blend, 0.0, 1.0))
+        if rotation_blend < 1.0:
+            target_rotation = self._blend_rotation_matrices(R_bar, target_rotation, target_rotation.new_full((target_rotation.shape[0],), rotation_blend))
+
+        if self.rotation_orthogonalize_enable:
+            target_rotation = self._orthogonalize_rotation_matrix(target_rotation)
+        return target_xyz, target_rotation
 
     def _project_points_to_triangles(self, points, tri_verts):
         return closest_point_on_triangles(points, tri_verts)
@@ -3166,6 +3963,22 @@ class ExplicitBinding(RigidDeform):
             gate = gate.detach()
         return gate
 
+    @staticmethod
+    def _orthogonalize_rotation_matrix(rotation):
+        if not torch.is_tensor(rotation) or rotation.numel() == 0:
+            return rotation
+        try:
+            u, _, vh = torch.linalg.svd(rotation)
+            orthogonal = torch.matmul(u, vh)
+            det = torch.linalg.det(orthogonal)
+            if bool((det < 0.0).any().item()):
+                u = u.clone()
+                u[det < 0.0, :, -1] *= -1.0
+                orthogonal = torch.matmul(u, vh)
+            return orthogonal
+        except RuntimeError:
+            return rotation
+
     def _apply_hybrid_probability_field(
         self,
         base_weights,
@@ -3262,6 +4075,7 @@ class ExplicitBinding(RigidDeform):
         semantic_distance,
         surface_distance,
         non_rigid_delta_norm,
+        camera=None,
     ):
         local_offset = canonical_xyz - anchor_xyz
         non_rigid_delta = xyz - canonical_xyz
@@ -3279,6 +4093,16 @@ class ExplicitBinding(RigidDeform):
             non_rigid_delta_norm.unsqueeze(-1),
             boundary_score.unsqueeze(-1),
         ]
+        if self.forward_trunk_viewdir_enable:
+            center = getattr(camera, 'camera_center', None) if camera is not None else None
+            if torch.is_tensor(center):
+                center = center.to(device=xyz.device, dtype=xyz.dtype).reshape(1, 3)
+                view_dir = safe_normalize(center - xyz)
+            else:
+                view_dir = torch.zeros_like(xyz)
+            if self.forward_trunk_viewdir_detach:
+                view_dir = view_dir.detach()
+            features.append(view_dir)
         if self.forward_trunk_feature_detach:
             features = [feat.detach() if torch.is_tensor(feat) else feat for feat in features]
         return torch.cat(features, dim=-1)
@@ -3433,6 +4257,9 @@ class ExplicitBinding(RigidDeform):
         setattr(deformed_gaussians, 'binding_forward_trunk_support_delta_local', empty_xyz)
         setattr(deformed_gaussians, 'binding_forward_trunk_xbar_delta', empty_xyz)
         setattr(deformed_gaussians, 'binding_forward_trunk_xbar_delta_local', empty_xyz)
+        setattr(deformed_gaussians, 'binding_forward_trunk_xbar_teacher_weight', empty_scalar)
+        setattr(deformed_gaussians, 'binding_forward_trunk_xbar_teacher_target', empty_xyz)
+        setattr(deformed_gaussians, 'binding_forward_trunk_xbar_teacher_center_blend', empty_scalar)
         setattr(deformed_gaussians, 'binding_hybrid_gate', empty_scalar)
         setattr(deformed_gaussians, 'binding_hybrid_anchor_delta', empty_joint_weights)
         setattr(deformed_gaussians, 'binding_hybrid_layer_delta', empty_weights)
@@ -3442,6 +4269,7 @@ class ExplicitBinding(RigidDeform):
         setattr(deformed_gaussians, 'binding_residual_anchor_delta', empty_joint_weights)
         setattr(deformed_gaussians, 'binding_residual_xbar_delta', empty_xyz)
         setattr(deformed_gaussians, 'binding_residual_xbar_delta_local', empty_xyz)
+        setattr(deformed_gaussians, 'binding_geometry_fidelity_weight', empty_scalar)
         setattr(deformed_gaussians, 'binding_non_rigid_delta', empty_scalar)
         setattr(deformed_gaussians, 'binding_non_rigid_rigid_carry', empty_scalar)
         setattr(deformed_gaussians, 'binding_non_rigid_soft_carry', empty_scalar)
@@ -3485,6 +4313,8 @@ class ExplicitBinding(RigidDeform):
             'binding_forward_trunk_support_abs_mean': zero,
             'binding_forward_trunk_xbar_reg': zero,
             'binding_forward_trunk_xbar_abs_mean': zero,
+            'binding_forward_trunk_xbar_teacher': zero,
+            'binding_forward_trunk_xbar_teacher_weight_mean': zero,
             'binding_hybrid_gate_mean': zero,
             'binding_hybrid_anchor_reg': zero,
             'binding_hybrid_anchor_shift_mean': zero,
@@ -3497,6 +4327,7 @@ class ExplicitBinding(RigidDeform):
             'binding_residual_anchor_shift_mean': zero,
             'binding_residual_xbar_reg': zero,
             'binding_residual_xbar_abs_mean': zero,
+            'binding_geometry_fidelity_weight_mean': zero,
             'binding_canonical': zero,
             'binding_semantic': zero,
         }
@@ -3563,15 +4394,26 @@ class ExplicitBinding(RigidDeform):
             )
 
         point_scale = gaussians.get_scaling.min(dim=-1).values.detach()
-        layer_weights, region_probs, thin_score, part_rigid, part_free = self._apply_v41_priors(
-            layer_weights,
-            region_probs,
-            dominant_joint,
-            point_scale,
-            confidence,
-            effective_surface_distance,
-            semantic_distance,
-        )
+        if self.v41_priors_enable:
+            layer_weights, region_probs, thin_score, part_rigid, part_free = self._apply_v41_priors(
+                layer_weights,
+                region_probs,
+                dominant_joint,
+                point_scale,
+                confidence,
+                effective_surface_distance,
+                semantic_distance,
+            )
+        else:
+            thin_score = self._compute_thin_accessory_score(
+                point_scale,
+                effective_surface_distance,
+                confidence,
+                semantic_distance,
+                dominant_joint,
+            )
+            part_rigid = self.joint_rigid_prior[dominant_joint]
+            part_free = self.joint_free_prior[dominant_joint]
         layer_weights, layer_sharpen_gate, layer_sharpen_power = self._apply_non_rigid_layer_sharpen(
             layer_weights,
             non_rigid_delta_norm,
@@ -3590,6 +4432,21 @@ class ExplicitBinding(RigidDeform):
             semantic_distance,
             thin_score,
         )
+        binding_layer_adapter_reg = None
+        if hasattr(gaussians, 'apply_binding_layer_logits_adapter'):
+            layer_weights = gaussians.apply_binding_layer_logits_adapter(
+                layer_weights,
+                boundary_score,
+            )
+            boundary_score = self._compute_boundary_score(
+                layer_weights,
+                effective_surface_distance,
+                thin_score,
+                confidence,
+            )
+            if hasattr(gaussians, 'binding_layer_logits_adapter_regularization'):
+                binding_layer_adapter_reg = gaussians.binding_layer_logits_adapter_regularization()
+
         semantic_adapter_reg = None
         if hasattr(gaussians, 'apply_semantic_logits_adapter'):
             region_probs, compact_semantic_probs = gaussians.apply_semantic_logits_adapter(
@@ -3598,6 +4455,16 @@ class ExplicitBinding(RigidDeform):
             )
             if hasattr(gaussians, 'semantic_logits_adapter_regularization'):
                 semantic_adapter_reg = gaussians.semantic_logits_adapter_regularization()
+        asset_region_probs = region_probs
+        asset_compact_semantic_probs = compact_semantic_probs
+        asset_semantic_adapter_reg = None
+        if hasattr(gaussians, 'apply_semantic_logits_adapter_for_supervision'):
+            asset_region_probs, asset_compact_semantic_probs = gaussians.apply_semantic_logits_adapter_for_supervision(
+                region_probs.detach(),
+                compact_semantic_probs.detach(),
+            )
+            if hasattr(gaussians, 'semantic_asset_logits_adapter_regularization'):
+                asset_semantic_adapter_reg = gaussians.semantic_asset_logits_adapter_regularization()
 
         forward_anchor_weights = anchor_weights
         forward_layer_weights = layer_weights
@@ -3627,6 +4494,7 @@ class ExplicitBinding(RigidDeform):
                 semantic_distance,
                 effective_surface_distance,
                 non_rigid_delta_norm,
+                camera=camera,
             )
             forward_trunk_output = self.forward_trunk_mlp(forward_trunk_input)
             forward_trunk_output = torch.nan_to_num(forward_trunk_output, nan=0.0, posinf=0.0, neginf=0.0)
@@ -3860,6 +4728,8 @@ class ExplicitBinding(RigidDeform):
             forward_layer_weights[:, [1]].unsqueeze(-1) * R_soft +
             forward_layer_weights[:, [2]].unsqueeze(-1) * R_lbs
         )
+        if self.rotation_orthogonalize_enable:
+            R_bar = self._orthogonalize_rotation_matrix(R_bar)
         if self.forward_trunk_xbar_enable:
             forward_trunk_xbar_delta_world = torch.bmm(
                 R_bar,
@@ -3868,12 +4738,125 @@ class ExplicitBinding(RigidDeform):
         x_bar = x_bar + forward_trunk_xbar_delta_world
         x_bar_after_forward_trunk = x_bar
         x_bar = x_bar + residual_xbar_delta_world
-        T_fwd = compose_pointwise_transform(R_bar, xyz, x_bar)
+        target_mode = self.geometry_fidelity_target.lower()
+        if target_mode in ("free_lbs", "lbs", "prebinding_lbs"):
+            geometry_target_xyz = x_free
+            geometry_target_R = R_lbs
+        elif target_mode in ("source", "prebinding", "xyz"):
+            geometry_target_xyz = xyz
+            geometry_target_R = torch.eye(
+                3,
+                dtype=R_bar.dtype,
+                device=R_bar.device,
+            ).unsqueeze(0).repeat(R_bar.shape[0], 1, 1)
+        elif target_mode in ("rigid", "dom", "dominant"):
+            geometry_target_xyz = x_rigid
+            geometry_target_R = R_dom
+        elif target_mode in ("soft", "soft_anchor"):
+            geometry_target_xyz = x_soft
+            geometry_target_R = R_soft
+        else:
+            geometry_target_xyz = x_free
+            geometry_target_R = R_lbs
+        geometry_fidelity_weight = self._geometry_fidelity_gate(
+            forward_layer_weights,
+            region_probs,
+            forward_dominant_joint,
+            boundary_score,
+            thin_score,
+            effective_surface_distance,
+            non_rigid_delta_norm,
+            candidate_xyz=geometry_target_xyz,
+            current_xyz=x_bar,
+            camera=camera,
+        )
+        x_bar_pre_geometry_fidelity = x_bar
+        teacher_xbar_weight = self._forward_trunk_xbar_teacher_gate(
+            forward_layer_weights,
+            region_probs,
+            forward_dominant_joint,
+            boundary_score,
+            thin_score,
+            effective_surface_distance,
+            non_rigid_delta_norm,
+            candidate_xyz=geometry_target_xyz,
+            current_xyz=x_bar_base,
+            camera=camera,
+        )
+        teacher_center_blend = (
+            teacher_xbar_weight * self.forward_trunk_xbar_teacher_center_strength
+        ).clamp(0.0, 1.0).unsqueeze(-1)
+        teacher_xbar_delta_target = (
+            (geometry_target_xyz.detach() - x_bar_base.detach()) * teacher_center_blend.detach()
+        )
+        if self.forward_trunk_xbar_teacher_enable and self.forward_trunk_xbar_enable:
+            teacher_weight_sum = teacher_xbar_weight.detach().sum().clamp_min(1.0)
+            teacher_diff = forward_trunk_xbar_delta_world - teacher_xbar_delta_target
+            if self.forward_trunk_xbar_teacher_loss in ("l2", "mse"):
+                teacher_loss = (
+                    teacher_diff.square().sum(dim=-1) * teacher_xbar_weight.detach()
+                ).sum() / teacher_weight_sum
+            else:
+                teacher_loss = (
+                    teacher_diff.abs().sum(dim=-1) * teacher_xbar_weight.detach()
+                ).sum() / teacher_weight_sum
+        else:
+            teacher_loss = x_bar.sum() * 0.0
+        center_blend = (
+            geometry_fidelity_weight * self.geometry_fidelity_center_strength
+        ).clamp(0.0, 1.0).unsqueeze(-1)
+        if bool((center_blend > 0.0).any().item()):
+            x_bar = x_bar * (1.0 - center_blend) + geometry_target_xyz * center_blend
+        rotation_blend = (
+            geometry_fidelity_weight * self.geometry_fidelity_rotation_strength
+        ).clamp(0.0, 1.0)
+        if bool((rotation_blend > 0.0).any().item()):
+            R_bar = self._blend_rotation_matrices(R_bar, geometry_target_R, rotation_blend)
+        render_xyz, render_pose_R = self._select_pose_render_state(
+            xyz,
+            x_bar,
+            x_bar_base,
+            x_rigid,
+            x_soft,
+            x_free,
+            R_bar,
+            R_dom,
+            R_soft,
+            R_lbs,
+            forward_layer_weights,
+        )
+        render_fwd_transform = compose_pointwise_transform(render_pose_R, xyz, render_xyz)
+        render_rotation_precomp = torch.matmul(render_pose_R, build_rotation(gaussians._rotation))
+        if self.identity_render_enable:
+            render_xyz = xyz
+            base_rotation = build_rotation(gaussians._rotation)
+            if self.identity_render_rotation_mode in ("binding", "xbar", "deformed"):
+                render_rotation_precomp = torch.matmul(R_bar, build_rotation(gaussians._rotation))
+            else:
+                render_rotation_precomp = base_rotation
+            if self.identity_render_fwd_transform_mode in ("identity", "none"):
+                render_fwd_transform = torch.eye(
+                    4,
+                    dtype=xyz.dtype,
+                    device=xyz.device,
+                ).unsqueeze(0).repeat(xyz.shape[0], 1, 1)
+            elif self.identity_render_fwd_transform_mode in ("translation", "translate", "center"):
+                render_fwd_transform = compose_pointwise_transform(
+                    torch.eye(
+                        3,
+                        dtype=xyz.dtype,
+                        device=xyz.device,
+                    ).unsqueeze(0).repeat(xyz.shape[0], 1, 1),
+                    canonical_xyz,
+                    xyz,
+                )
+            else:
+                render_fwd_transform = compose_pointwise_transform(R_bar, xyz, x_bar)
 
         deformed_gaussians = gaussians.clone()
-        deformed_gaussians.set_fwd_transform(T_fwd.detach())
-        deformed_gaussians._xyz = x_bar
-        setattr(deformed_gaussians, 'rotation_precomp', torch.matmul(R_bar, build_rotation(gaussians._rotation)))
+        deformed_gaussians.set_fwd_transform(render_fwd_transform.detach())
+        deformed_gaussians._xyz = render_xyz
+        setattr(deformed_gaussians, 'rotation_precomp', render_rotation_precomp)
         setattr(deformed_gaussians, 'binding_weights', forward_layer_weights.detach())
         setattr(deformed_gaussians, 'binding_weights_raw', forward_layer_weights)
         setattr(deformed_gaussians, 'binding_distance', effective_bone_distance.detach())
@@ -3886,10 +4869,16 @@ class ExplicitBinding(RigidDeform):
         setattr(deformed_gaussians, 'binding_layer_ids', torch.argmax(forward_layer_weights, dim=-1).detach())
         setattr(deformed_gaussians, 'binding_region_probs', region_probs.detach())
         setattr(deformed_gaussians, 'binding_region_probs_raw', region_probs)
+        setattr(deformed_gaussians, 'binding_region_probs_asset', asset_region_probs.detach())
+        setattr(deformed_gaussians, 'binding_region_probs_asset_raw', asset_region_probs)
         setattr(deformed_gaussians, 'binding_region_ids', torch.argmax(region_probs, dim=-1).detach())
+        setattr(deformed_gaussians, 'binding_region_ids_asset', torch.argmax(asset_region_probs, dim=-1).detach())
         setattr(deformed_gaussians, 'binding_compact_semantic_probs', compact_semantic_probs.detach())
         setattr(deformed_gaussians, 'binding_compact_semantic_probs_raw', compact_semantic_probs)
+        setattr(deformed_gaussians, 'binding_compact_semantic_probs_asset', asset_compact_semantic_probs.detach())
+        setattr(deformed_gaussians, 'binding_compact_semantic_probs_asset_raw', asset_compact_semantic_probs)
         setattr(deformed_gaussians, 'binding_compact_semantic_ids', torch.argmax(compact_semantic_probs, dim=-1).detach())
+        setattr(deformed_gaussians, 'binding_compact_semantic_ids_asset', torch.argmax(asset_compact_semantic_probs, dim=-1).detach())
         setattr(deformed_gaussians, 'binding_compact_semantic_names', COMPACT_SEMANTIC_NAMES)
         setattr(deformed_gaussians, 'binding_semantic_score', binding['semantic_score'].detach())
         setattr(deformed_gaussians, 'binding_semantic_distance', binding['semantic_distance'].detach())
@@ -3915,6 +4904,7 @@ class ExplicitBinding(RigidDeform):
         setattr(deformed_gaussians, 'binding_residual_anchor_delta', residual_anchor_delta.detach())
         setattr(deformed_gaussians, 'binding_residual_xbar_delta', residual_xbar_delta_world.detach())
         setattr(deformed_gaussians, 'binding_residual_xbar_delta_local', residual_xbar_delta_local.detach())
+        setattr(deformed_gaussians, 'binding_geometry_fidelity_weight', geometry_fidelity_weight.detach())
         setattr(deformed_gaussians, 'binding_non_rigid_delta', non_rigid_delta_norm.detach())
         setattr(deformed_gaussians, 'binding_non_rigid_rigid_carry', torch.norm(rigid_nr_carry, dim=-1).detach())
         setattr(deformed_gaussians, 'binding_non_rigid_soft_carry', torch.norm(soft_nr_carry, dim=-1).detach())
@@ -3922,6 +4912,47 @@ class ExplicitBinding(RigidDeform):
         setattr(deformed_gaussians, 'binding_non_rigid_layer_sharpen_gate', layer_sharpen_gate.detach())
         setattr(deformed_gaussians, 'binding_non_rigid_layer_sharpen_power', layer_sharpen_power.detach())
         setattr(deformed_gaussians, 'binding_geometry_xyz', geometry_xyz.detach())
+        setattr(deformed_gaussians, 'binding_x_rigid', x_rigid.detach())
+        setattr(deformed_gaussians, 'binding_x_soft', x_soft.detach())
+        setattr(deformed_gaussians, 'binding_x_free', x_free.detach())
+        setattr(deformed_gaussians, 'binding_x_bar_base', x_bar_base.detach())
+        setattr(deformed_gaussians, 'binding_x_bar_pre_geometry_fidelity', x_bar_pre_geometry_fidelity.detach())
+        setattr(deformed_gaussians, 'binding_x_bar', x_bar.detach())
+        pose_render_mode_id = {
+            'rigid': 1,
+            'x_rigid': 1,
+            'dom': 1,
+            'dominant': 1,
+            'soft': 2,
+            'x_soft': 2,
+            'soft_anchor': 2,
+            'free': 3,
+            'x_free': 3,
+            'lbs': 3,
+            'free_lbs': 3,
+            'hard_layer': 4,
+            'argmax': 4,
+            'soft_free_blend': 5,
+            'free_soft_blend': 5,
+            'rigid_soft_blend': 6,
+            'soft_rigid_blend': 6,
+            'layer_blend_base': 7,
+            'xbar_base': 7,
+            'base': 7,
+        }.get(str(self.pose_render_mode or 'layer_blend').lower(), 0)
+        setattr(deformed_gaussians, 'binding_pose_render_mode_id', torch.full_like(boundary_score.detach(), float(pose_render_mode_id)))
+        setattr(deformed_gaussians, 'binding_v41_priors_enable', torch.full_like(boundary_score.detach(), 1.0 if self.v41_priors_enable else 0.0))
+        setattr(deformed_gaussians, 'binding_identity_render_enable', torch.full_like(boundary_score.detach(), 1.0 if self.identity_render_enable else 0.0))
+        setattr(deformed_gaussians, 'binding_render_xyz', render_xyz.detach())
+        setattr(deformed_gaussians, 'binding_geometry_target_xyz', geometry_target_xyz.detach())
+        setattr(deformed_gaussians, 'binding_geometry_fidelity_center_blend', center_blend.reshape(-1).detach())
+        setattr(deformed_gaussians, 'binding_forward_trunk_xbar_teacher_weight', teacher_xbar_weight.detach())
+        setattr(deformed_gaussians, 'binding_forward_trunk_xbar_teacher_target', teacher_xbar_delta_target.detach())
+        setattr(
+            deformed_gaussians,
+            'binding_forward_trunk_xbar_teacher_center_blend',
+            teacher_center_blend.reshape(-1).detach(),
+        )
 
         slip_distance = torch.norm(x_free - x_rigid, dim=-1)
         entropy = -(forward_layer_weights * torch.log(forward_layer_weights.clamp_min(1e-8))).sum(dim=-1)
@@ -3993,6 +5024,8 @@ class ExplicitBinding(RigidDeform):
             'binding_forward_trunk_support_abs_mean': forward_trunk_support_delta_local.abs().mean(),
             'binding_forward_trunk_xbar_reg': forward_trunk_xbar_shift.mean(),
             'binding_forward_trunk_xbar_abs_mean': forward_trunk_xbar_delta_local.abs().mean(),
+            'binding_forward_trunk_xbar_teacher': teacher_loss,
+            'binding_forward_trunk_xbar_teacher_weight_mean': teacher_xbar_weight.mean(),
             'binding_hybrid_gate_mean': hybrid_gate.mean(),
             'binding_hybrid_anchor_reg': hybrid_anchor_delta.abs().mean(),
             'binding_hybrid_anchor_shift_mean': hybrid_anchor_shift.mean(),
@@ -4005,9 +5038,14 @@ class ExplicitBinding(RigidDeform):
             'binding_residual_anchor_shift_mean': residual_anchor_shift.mean(),
             'binding_residual_xbar_reg': residual_xbar_shift.mean(),
             'binding_residual_xbar_abs_mean': residual_xbar_delta_local.abs().mean(),
+            'binding_geometry_fidelity_weight_mean': geometry_fidelity_weight.mean(),
         }
         if torch.is_tensor(semantic_adapter_reg):
             self.loss_reg['binding_semantic_adapter_reg'] = semantic_adapter_reg
+        if torch.is_tensor(asset_semantic_adapter_reg):
+            self.loss_reg['binding_semantic_asset_adapter_reg'] = asset_semantic_adapter_reg
+        if torch.is_tensor(binding_layer_adapter_reg):
+            self.loss_reg['binding_layer_logits_adapter_reg'] = binding_layer_adapter_reg
 
         if (
             self.training

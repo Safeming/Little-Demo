@@ -19,11 +19,22 @@ SUPPORTED_PRESETS = {
     "v320_v307_signed_geometry",
     "v320_selected_geometry",
     "stageb_signed_geometry",
+    "v338_temporal_selector_grow_only_guard",
+    "stageb_v338_signed_geometry",
+    "formal_v338_signed_geometry",
 }
 V320_PRESETS = {
     "v320_v307_signed_geometry",
     "v320_selected_geometry",
     "stageb_signed_geometry",
+    "v338_temporal_selector_grow_only_guard",
+    "stageb_v338_signed_geometry",
+    "formal_v338_signed_geometry",
+}
+V338_PRESETS = {
+    "v338_temporal_selector_grow_only_guard",
+    "stageb_v338_signed_geometry",
+    "formal_v338_signed_geometry",
 }
 FORMAL_SUBJECT = "CoreView_377"
 FORMAL_ASSET_SUBDIR = ("assets", "adopted_geometry", "377")
@@ -62,6 +73,7 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
     binding_internal = preset in ("v308_binding_internal", "binding_internal")
     learned_xbar = preset in ("v313_learned_xbar", "learned_xbar")
     v320_selected_geometry = preset in V320_PRESETS
+    v338_guarded_geometry = preset in V338_PRESETS
 
     defaults = _formal_asset_defaults(repo_root) if v320_selected_geometry else {}
     pipeline = config.get("pipeline", OmegaConf.create({}))
@@ -101,10 +113,18 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
         and _same_path(point_csv, defaults.get("point_csv", ""))
     )
     if uses_formal_defaults:
-        validation = _validate_formal_377_asset(config, repo_root, component_csv, point_csv)
+        validation = _validate_formal_377_asset(
+            config,
+            repo_root,
+            component_csv,
+            point_csv,
+            require_signed_point_json=v338_guarded_geometry,
+        )
 
     center_strength = float(config.get("explicit_binding_adopted_center_strength", 0.45))
     outer_px = float(config.get("explicit_binding_adopted_outer_px", 0.35))
+    if v338_guarded_geometry and not _has_config_value(config, "explicit_binding_adopted_outer_px"):
+        outer_px = 0.18
     component_required = _as_bool(config.get("explicit_binding_adopted_component_required", not binding_internal))
     improvement_guard = _as_bool(config.get("explicit_binding_adopted_improvement_guard", True))
     max_points = int(config.get("explicit_binding_adopted_max_points", 96))
@@ -123,6 +143,21 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
         center_strength=center_strength,
         outer_px=outer_px,
     )
+    if v338_guarded_geometry:
+        signed_point_json = _config_path(
+            config,
+            "explicit_binding_adopted_signed_point_json",
+            default=defaults.get("signed_point_json", ""),
+        )
+        if not signed_point_json:
+            raise ValueError("v338 explicit_binding_render_preset requires signed point json")
+        if not Path(signed_point_json).exists():
+            raise FileNotFoundError(f"v338 signed point json not found: {signed_point_json}")
+        overrides.update({
+            "pipeline.covariance_signed_point_json": signed_point_json,
+            "pipeline.covariance_signed_point_screen_actuator_enable": not learned_xbar,
+            "explicit_binding_adopted_signed_point_json_resolved": signed_point_json,
+        })
     overrides.update({
         "explicit_binding_adopted_asset_validation": validation,
     })
@@ -137,10 +172,11 @@ def _formal_asset_defaults(repo_root):
         "manifest": str(asset_dir / "manifest.json"),
         "component_csv": str(asset_dir / "v320_selected_components.csv"),
         "point_csv": str(asset_dir / "v304_point_contributors_all.csv"),
+        "signed_point_json": str(asset_dir / "v338_temporal_selector_grow_only_guard.json"),
     }
 
 
-def _validate_formal_377_asset(config, repo_root, component_csv, point_csv):
+def _validate_formal_377_asset(config, repo_root, component_csv, point_csv, require_signed_point_json=False):
     dataset = config.get("dataset", OmegaConf.create({}))
     subject = str(dataset.get("subject", "") or "")
     allow_mismatch = _as_bool(config.get("explicit_binding_adopted_allow_subject_mismatch", False))
@@ -177,8 +213,40 @@ def _validate_formal_377_asset(config, repo_root, component_csv, point_csv):
         raise ValueError("component_csv sha256 mismatch for formal adopted geometry asset")
     if point_hash != expected_hash.get("point_csv"):
         raise ValueError("point_csv sha256 mismatch for formal adopted geometry asset")
+    signed_point_hash = ""
+    signed_point_stats = {}
+    if require_signed_point_json:
+        defaults = _formal_asset_defaults(repo_root)
+        signed_point_json = _config_path(
+            config,
+            "explicit_binding_adopted_signed_point_json",
+            default=defaults.get("signed_point_json", ""),
+        )
+        if not signed_point_json or not Path(signed_point_json).exists():
+            raise FileNotFoundError(f"v338 signed_point_json not found: {signed_point_json}")
+        signed_point_hash = _sha256(signed_point_json)
+        if signed_point_hash != expected_hash.get("signed_point_json"):
+            raise ValueError("signed_point_json sha256 mismatch for formal adopted geometry asset")
+        try:
+            signed_data = json.loads(Path(signed_point_json).read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"failed to parse signed_point_json: {signed_point_json}") from exc
+        by_image = signed_data.get("by_image", {}) if isinstance(signed_data, dict) else {}
+        temporal = signed_data.get("temporal_propagation", {}) if isinstance(signed_data, dict) else {}
+        expected_stats = manifest.get("signed_point_json_stats", {})
+        expected_by_image = int(expected_stats.get("by_image_count", -1))
+        if expected_by_image >= 0 and len(by_image) != expected_by_image:
+            raise ValueError(
+                f"signed_point_json by_image count mismatch: got {len(by_image)}, expected {expected_by_image}"
+            )
+        signed_point_stats = {
+            "signed_point_json_sha256": signed_point_hash,
+            "signed_point_by_image_count": len(by_image),
+            "signed_point_drop_images": len(temporal.get("drop_images", [])) if isinstance(temporal, dict) else 0,
+            "signed_point_grow_only_images": len(temporal.get("grow_only_images", [])) if isinstance(temporal, dict) else 0,
+        }
 
-    return {
+    validation = {
         "subject": FORMAL_SUBJECT,
         "manifest": str(manifest_path),
         "component_csv_sha256": component_hash,
@@ -187,6 +255,8 @@ def _validate_formal_377_asset(config, repo_root, component_csv, point_csv):
         "point_rows": point_rows,
         "status": "validated",
     }
+    validation.update(signed_point_stats)
+    return validation
 
 
 def _formal_overrides(
@@ -331,3 +401,8 @@ def _same_path(left, right):
     if not left or not right:
         return False
     return Path(left).resolve() == Path(right).resolve()
+
+
+def _has_config_value(config, key):
+    value = config.get(key, None)
+    return value is not None and str(value).strip() != ""
