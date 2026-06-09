@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+RUN_ID="${RUN_ID:-v305_boundary_safe_sh_$(TZ=Asia/Shanghai date '+%Y%m%d_%H%M%S_bjt')}"
+GPU="${GPU:-0}"
+PYTHON_BIN="${PYTHON_BIN:-/opt/miniconda3/envs/ictrl/bin/python}"
+
+DEFAULT_AUDIT_DIR="$ROOT/exp/stageB/logs/377_stageB_v304_consistent_component_audit_v304_consistent_component_geometry_20260519_100431_bjt_audit_all_views_sparse"
+AUDIT_DIR="${AUDIT_DIR:-$DEFAULT_AUDIT_DIR}"
+if [ -s "$AUDIT_DIR/component_contributors.csv" ] && [ -s "$AUDIT_DIR/point_contributors_all.csv" ]; then
+  REUSE_AUDIT="${REUSE_AUDIT:-1}"
+else
+  REUSE_AUDIT="${REUSE_AUDIT:-0}"
+fi
+
+export RUN_ID
+export GPU
+export PYTHON_BIN
+export AUDIT_DIR
+export REUSE_AUDIT
+
+export EXP_ROOT="${EXP_ROOT:-$ROOT/exp/stageB/377_explicit_binding_v305_boundary_safe_sh_refine_${RUN_ID}}"
+export LOG_DIR="${LOG_DIR:-$ROOT/exp/stageB/logs/377_explicit_binding_v305_boundary_safe_sh_refine_${RUN_ID}}"
+
+export TRAIN_ITERS="${TRAIN_ITERS:-100}"
+export TRAIN_CHECKPOINT_STEPS="${TRAIN_CHECKPOINT_STEPS:-100}"
+export TRAIN_FEATURE_LR="${TRAIN_FEATURE_LR:-0.00005}"
+export TRAIN_TEXTURE_LR="${TRAIN_TEXTURE_LR:-0.0}"
+export TRAIN_TEX_LATENT_LR="${TRAIN_TEX_LATENT_LR:-0.0}"
+export TRAIN_TEXTURE_TRAINABLE_PATTERNS="${TRAIN_TEXTURE_TRAINABLE_PATTERNS:-[__no_texture_mlp__]}"
+export TRAIN_LAMBDA_L1="${TRAIN_LAMBDA_L1:-0.035}"
+export TRAIN_LAMBDA_L1_FG="${TRAIN_LAMBDA_L1_FG:-0.100}"
+export TRAIN_LAMBDA_L1_BOUNDARY="${TRAIN_LAMBDA_L1_BOUNDARY:-0.0}"
+export TRAIN_LAMBDA_PERCEPTUAL="${TRAIN_LAMBDA_PERCEPTUAL:-0.0}"
+export TRAIN_GRAD_CLIP="${TRAIN_GRAD_CLIP:-0.0010}"
+
+export TRAIN_SCREEN_COLOR_PROTECT_ENABLE="${TRAIN_SCREEN_COLOR_PROTECT_ENABLE:-true}"
+export TRAIN_SCREEN_COLOR_PROTECT_BOUNDARY_WIDTH="${TRAIN_SCREEN_COLOR_PROTECT_BOUNDARY_WIDTH:-18}"
+export TRAIN_SCREEN_COLOR_PROTECT_OUTER_START="${TRAIN_SCREEN_COLOR_PROTECT_OUTER_START:-1}"
+export TRAIN_SCREEN_COLOR_PROTECT_OUTER_END="${TRAIN_SCREEN_COLOR_PROTECT_OUTER_END:-42}"
+export TRAIN_SCREEN_COLOR_PROTECT_RADIUS_PAD="${TRAIN_SCREEN_COLOR_PROTECT_RADIUS_PAD:-3}"
+export TRAIN_SCREEN_COLOR_PROTECT_MIN_RADIUS="${TRAIN_SCREEN_COLOR_PROTECT_MIN_RADIUS:-0.0}"
+export TRAIN_SCREEN_COLOR_PROTECT_MAX_POINTS="${TRAIN_SCREEN_COLOR_PROTECT_MAX_POINTS:-0}"
+export TRAIN_BOUNDARY_COLOR_PROTECT_ENABLE="${TRAIN_BOUNDARY_COLOR_PROTECT_ENABLE:-true}"
+export TRAIN_BOUNDARY_COLOR_PROTECT_VERBOSE="${TRAIN_BOUNDARY_COLOR_PROTECT_VERBOSE:-false}"
+
+export EST_SECONDS="${EST_SECONDS:-3600}"
+export REFINE_EST_SECONDS="${REFINE_EST_SECONDS:-3000}"
+
+bash tools/run_377_explicit_binding_v304_consistent_component_geometry_refine.sh

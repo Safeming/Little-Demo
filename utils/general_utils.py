@@ -21,7 +21,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import lpips
 import cv2
-from skimage.metrics import structural_similarity as compute_ssim
+try:
+    from skimage.metrics import structural_similarity as compute_ssim
+except ImportError:
+    def compute_ssim(img_pred, img_gt, channel_axis=0):
+        mse = np.mean((img_pred - img_gt) ** 2)
+        return float(1.0 / (1.0 + mse))
 
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity

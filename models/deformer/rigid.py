@@ -433,6 +433,7 @@ class SkinningField(RigidDeform):
 
 class ExplicitBinding(RigidDeform):
     _geometry_component_cache = {}
+    _geometry_component_row_guard_cache = {}
 
     def __init__(self, cfg, metadata):
         super().__init__(cfg)
@@ -579,6 +580,9 @@ class ExplicitBinding(RigidDeform):
         )
         self.geometry_fidelity_component_improvement_margin_px = float(
             cfg.get('geometry_fidelity_component_improvement_margin_px', 0.0)
+        )
+        self.geometry_fidelity_component_row_guard_json = str(
+            cfg.get('geometry_fidelity_component_row_guard_json', '')
         )
         self.geometry_fidelity_signed_point_json = str(cfg.get('geometry_fidelity_signed_point_json', ''))
         self.geometry_fidelity_signed_point_max = int(cfg.get('geometry_fidelity_signed_point_max', -1))
@@ -1050,17 +1054,21 @@ class ExplicitBinding(RigidDeform):
             with open(path, "r", encoding="utf-8") as handle:
                 import csv
                 reader = csv.DictReader(handle)
-                for row in reader:
+                for row_index, row in enumerate(reader):
                     image_name = str(row.get("image_name", "")).strip()
                     direction = str(row.get("direction", "")).strip().lower()
                     if not image_name or direction not in ("inner", "outer"):
                         continue
                     try:
                         record = {
+                            "row_index": int(row_index),
                             "direction": direction,
+                            "component_id": int(float(row.get("component_id", -1) or -1)),
                             "area": float(row.get("area", 0.0) or 0.0),
                             "cx": float(row.get("centroid_x", 0.0) or 0.0),
                             "cy": float(row.get("centroid_y", 0.0) or 0.0),
+                            "x": float(row.get("bbox_x", 0.0) or 0.0),
+                            "y": float(row.get("bbox_y", 0.0) or 0.0),
                             "w": float(row.get("bbox_w", 0.0) or 0.0),
                             "h": float(row.get("bbox_h", 0.0) or 0.0),
                             "near_score_sum": float(row.get("near_score_sum", 0.0) or 0.0),
@@ -1078,6 +1086,100 @@ class ExplicitBinding(RigidDeform):
                 )
         cls._geometry_component_cache[path] = by_image
         return by_image
+
+    @classmethod
+    def _load_geometry_component_row_guard(cls, path):
+        path = str(path or "").strip()
+        if not path:
+            return {}
+        cached = cls._geometry_component_row_guard_cache.get(path)
+        if cached is not None:
+            return cached
+        by_image = {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                import json
+                data = json.load(handle)
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            rows = (
+                data.get("drops")
+                or data.get("drop_rows")
+                or data.get("component_row_drops")
+                or data.get("guards")
+                or []
+            )
+        elif isinstance(data, list):
+            rows = data
+        else:
+            rows = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            image_name = str(item.get("image_name", "") or "").strip()
+            direction = str(item.get("direction", "") or "").strip().lower()
+            if direction == "under":
+                direction = "inner"
+            elif direction == "over":
+                direction = "outer"
+            if not image_name or direction not in ("inner", "outer", "*", "all"):
+                continue
+            by_image.setdefault(image_name, []).append({
+                "direction": direction,
+                "row_index": item.get("row_index", item.get("csv_row_index", None)),
+                "component_id": item.get("component_id", None),
+                "bbox_x": item.get("bbox_x", None),
+                "bbox_y": item.get("bbox_y", None),
+                "bbox_w": item.get("bbox_w", None),
+                "bbox_h": item.get("bbox_h", None),
+                "centroid_x": item.get("centroid_x", item.get("cx", None)),
+                "centroid_y": item.get("centroid_y", item.get("cy", None)),
+                "tol_px": float(item.get("tol_px", 1.0) or 1.0),
+            })
+        cls._geometry_component_row_guard_cache[path] = by_image
+        return by_image
+
+    @staticmethod
+    def _geometry_component_record_guarded(record, specs, direction):
+        if not specs:
+            return False
+        direction = str(direction or "").strip().lower()
+
+        def _same_int(lhs, rhs):
+            try:
+                return int(float(lhs)) == int(float(rhs))
+            except Exception:
+                return False
+
+        def _same_float(lhs, rhs, tol):
+            try:
+                return abs(float(lhs) - float(rhs)) <= float(tol)
+            except Exception:
+                return False
+
+        for spec in specs:
+            spec_direction = str(spec.get("direction", "") or "").strip().lower()
+            if spec_direction not in ("*", "all", direction):
+                continue
+            row_index = spec.get("row_index", None)
+            if row_index is not None and str(row_index) != "" and _same_int(record.get("row_index", None), row_index):
+                return True
+            component_id = spec.get("component_id", None)
+            if component_id is not None and str(component_id) != "" and _same_int(record.get("component_id", None), component_id):
+                return True
+            tol = float(spec.get("tol_px", 1.0) or 1.0)
+            bbox_keys = (("x", "bbox_x"), ("y", "bbox_y"), ("w", "bbox_w"), ("h", "bbox_h"))
+            if all(spec.get(spec_key, None) is not None for _, spec_key in bbox_keys):
+                if all(_same_float(record.get(rec_key, None), spec.get(spec_key, None), tol) for rec_key, spec_key in bbox_keys):
+                    return True
+            if spec.get("centroid_x", None) is not None and spec.get("centroid_y", None) is not None:
+                if (
+                    _same_float(record.get("cx", None), spec.get("centroid_x", None), tol)
+                    and _same_float(record.get("cy", None), spec.get("centroid_y", None), tol)
+                ):
+                    return True
+        return False
 
     def _geometry_component_gate(self, candidate_xyz, camera, current_xyz=None):
         point_count = int(candidate_xyz.shape[0]) if torch.is_tensor(candidate_xyz) else 0
@@ -1108,6 +1210,13 @@ class ExplicitBinding(RigidDeform):
         direction = str(self.geometry_fidelity_component_direction or "inner").lower()
         records = self._load_geometry_components(self.geometry_fidelity_component_csv)
         records = records.get(image_name, {}).get(direction, [])
+        row_guard = self._load_geometry_component_row_guard(self.geometry_fidelity_component_row_guard_json)
+        guard_specs = row_guard.get(image_name, [])
+        if guard_specs:
+            records = [
+                rec for rec in records
+                if not self._geometry_component_record_guarded(rec, guard_specs, direction)
+            ]
         records = [
             rec for rec in records
             if float(rec.get("area", 0.0)) >= self.geometry_fidelity_component_min_area
@@ -1214,6 +1323,7 @@ class ExplicitBinding(RigidDeform):
         required=None,
         improvement_enable=None,
         improvement_margin_px=None,
+        row_guard_json=None,
     ):
         old_values = (
             self.geometry_fidelity_component_enable,
@@ -1226,6 +1336,7 @@ class ExplicitBinding(RigidDeform):
             self.geometry_fidelity_component_required,
             self.geometry_fidelity_component_improvement_enable,
             self.geometry_fidelity_component_improvement_margin_px,
+            self.geometry_fidelity_component_row_guard_json,
         )
         self.geometry_fidelity_component_enable = bool(enable)
         self.geometry_fidelity_component_csv = str(component_csv or "")
@@ -1237,6 +1348,7 @@ class ExplicitBinding(RigidDeform):
         self.geometry_fidelity_component_required = bool(required)
         self.geometry_fidelity_component_improvement_enable = bool(improvement_enable)
         self.geometry_fidelity_component_improvement_margin_px = float(improvement_margin_px)
+        self.geometry_fidelity_component_row_guard_json = str(row_guard_json or "")
         try:
             return self._geometry_component_gate(candidate_xyz, camera, current_xyz=current_xyz)
         finally:
@@ -1251,6 +1363,7 @@ class ExplicitBinding(RigidDeform):
                 self.geometry_fidelity_component_required,
                 self.geometry_fidelity_component_improvement_enable,
                 self.geometry_fidelity_component_improvement_margin_px,
+                self.geometry_fidelity_component_row_guard_json,
             ) = old_values
 
     @staticmethod
@@ -1870,6 +1983,7 @@ class ExplicitBinding(RigidDeform):
             required=self.forward_trunk_xbar_teacher_component_required,
             improvement_enable=self.forward_trunk_xbar_teacher_component_improvement_enable,
             improvement_margin_px=self.forward_trunk_xbar_teacher_component_improvement_margin_px,
+            row_guard_json="",
         )
         if component_gate is not None:
             component_mask, component_weight = component_gate

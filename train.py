@@ -24,6 +24,10 @@ from utils.general_utils import fix_random, Evaluator, PSEvaluator
 from tqdm import tqdm
 from utils.loss_utils import full_aiap_loss
 from utils.graphics_utils import geom_transform_points
+from utils.boundary_support_bank import (
+    promote_boundary_candidate_support,
+    update_boundary_candidate_support_bank,
+)
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
@@ -930,6 +934,13 @@ def _boundary_live_score_cache_key(data, config):
     return image_name or f'c{cam_id}_f{frame_id}'
 
 
+def _safe_getattr(obj, name, default=None):
+    try:
+        return getattr(obj, name)
+    except (AttributeError, KeyError):
+        return default
+
+
 def _apply_boundary_live_score_cache(scene, data, cache, config):
     if not _boundary_live_score_cache_enabled(config):
         return None, False
@@ -1024,6 +1035,30 @@ def _build_boundary_tag_mask(boundary_score, deformed_gaussian, config):
     )
 
 
+def _apply_boundary_direction_dominance_gate(under_score, over_score, config):
+    if not bool(config.opt.get('boundary_direction_dominance_gate_enable', False)):
+        return under_score, over_score, 0, 0
+    if not torch.is_tensor(under_score) or not torch.is_tensor(over_score):
+        return under_score, over_score, 0, 0
+    if under_score.shape[0] != over_score.shape[0]:
+        return under_score, over_score, 0, 0
+
+    under = under_score.detach().float().clamp(0.0, 1.0)
+    over = over_score.detach().float().clamp(0.0, 1.0)
+    margin = float(config.opt.get('boundary_direction_dominance_margin', 1.15))
+    margin = max(margin, 1.0)
+    min_abs = float(config.opt.get('boundary_direction_dominance_min_abs', 0.0))
+    eps = 1.0e-6
+
+    keep_under = (under >= min_abs) & ((under + eps) >= (over * margin))
+    keep_over = (over >= min_abs) & ((over + eps) >= (under * margin))
+    gated_under = torch.where(keep_under, under_score, torch.zeros_like(under_score))
+    gated_over = torch.where(keep_over, over_score, torch.zeros_like(over_score))
+    dropped_under = int(((under_score > 0) & ~keep_under).sum().item())
+    dropped_over = int(((over_score > 0) & ~keep_over).sum().item())
+    return gated_under, gated_over, dropped_under, dropped_over
+
+
 def _clear_scene_binding_state(scene):
     if hasattr(scene.gaussians, 'clear_binding_state'):
         scene.gaussians.clear_binding_state()
@@ -1108,6 +1143,169 @@ def _maybe_refresh_boundary_tags(scene, boundary_score, deformed_gaussian, confi
         tag_count = int((boundary_tag > 0).sum().item())
         print(f'[ITER {iteration}] boundary-tagged subset updated: {tag_count} / {boundary_tag.numel()} ({tag_fraction:.4f})')
     return scene.gaussians.get_boundary_tags()
+
+
+def _maybe_refresh_boundary_direction_tags(
+    scene,
+    under_score,
+    over_score,
+    deformed_gaussian,
+    config,
+    iteration,
+    local_iteration=None,
+):
+    if not bool(config.opt.get('boundary_direction_tag_enable', False)):
+        return None, None
+    if under_score is None and over_score is None:
+        return scene.gaussians.get_boundary_under_tags(), scene.gaussians.get_boundary_over_tags()
+
+    scene.gaussians.ensure_boundary_state_matches_points(verbose=False)
+    tag_iteration = local_iteration if (
+        local_iteration is not None
+        and bool(config.opt.get('boundary_tag_schedule_use_local_iteration', False))
+    ) else iteration
+
+    init_iter = int(config.opt.get('boundary_direction_tag_init_iter', config.opt.get('boundary_tag_init_iter', 0)))
+    if tag_iteration < init_iter:
+        return scene.gaussians.get_boundary_under_tags(), scene.gaussians.get_boundary_over_tags()
+
+    update_interval = int(config.opt.get('boundary_direction_tag_update_interval', config.opt.get('boundary_tag_update_interval', 0)))
+    update_until_iter = int(config.opt.get('boundary_direction_tag_update_until_iter', config.opt.get('boundary_tag_update_until_iter', init_iter)))
+    has_tags = (
+        scene.gaussians.has_boundary_direction_tags('under')
+        or scene.gaussians.has_boundary_direction_tags('over')
+    )
+    should_update = not has_tags
+    if not should_update and update_interval > 0 and tag_iteration <= update_until_iter:
+        should_update = ((tag_iteration - init_iter) % update_interval == 0)
+    if not should_update:
+        return scene.gaussians.get_boundary_under_tags(), scene.gaussians.get_boundary_over_tags()
+
+    under_score, over_score, dropped_under, dropped_over = _apply_boundary_direction_dominance_gate(
+        under_score,
+        over_score,
+        config,
+    )
+    under_tag = _build_boundary_tag_mask(under_score, deformed_gaussian, config) if torch.is_tensor(under_score) else None
+    over_tag = _build_boundary_tag_mask(over_score, deformed_gaussian, config) if torch.is_tensor(over_score) else None
+    conflict_mode = str(config.opt.get('boundary_direction_conflict_mode', 'suppress'))
+
+    scene.gaussians.set_boundary_direction_tags(under_tag, over_tag, conflict_mode=conflict_mode)
+    if bool(config.opt.get('boundary_tag_verbose', True)):
+        under_state = scene.gaussians.get_boundary_direction_tag_state('under')
+        over_state = scene.gaussians.get_boundary_direction_tag_state('over')
+        under_count = int((under_state > 0).sum().item()) if torch.is_tensor(under_state) else 0
+        over_count = int((over_state > 0).sum().item()) if torch.is_tensor(over_state) else 0
+        total = int(scene.gaussians.get_xyz.shape[0])
+        print(
+            f'[ITER {iteration}] boundary-direction tags updated: '
+            f'under={under_count} over={over_count} total={total} '
+            f'dominance_dropped_under={dropped_under} dominance_dropped_over={dropped_over}'
+        )
+    return scene.gaussians.get_boundary_under_tags(), scene.gaussians.get_boundary_over_tags()
+
+
+def _maybe_update_boundary_support_bank(
+    scene,
+    data,
+    under_score,
+    over_score,
+    valid_mask,
+    config,
+    iteration,
+    local_iteration=None,
+):
+    if not bool(config.opt.get("boundary_support_bank_enable", False)):
+        return False
+    if under_score is None and over_score is None:
+        return False
+    if not hasattr(scene.gaussians, "ensure_boundary_support_bank_initialized"):
+        return False
+
+    scene.gaussians.ensure_boundary_support_bank_initialized(source_iteration=iteration)
+
+    key_mode = str(config.opt.get("boundary_support_bank_key", "image")).lower()
+    image_name = str(getattr(data, "image_name", ""))
+    cam_id = str(getattr(data, "cam_id", "unknown_cam"))
+    frame_id = str(getattr(data, "frame_id", "unknown_frame"))
+    if key_mode in ("image", "camera_frame", "frame_camera"):
+        key = image_name or f"c{cam_id}_f{frame_id}"
+    elif key_mode == "frame":
+        key = f"f{frame_id}"
+    else:
+        key = f"c{cam_id}_f{frame_id}"
+
+    state = scene.gaussians.get_boundary_support_bank_state()
+    update_boundary_candidate_support_bank(
+        state,
+        under_score=under_score,
+        over_score=over_score,
+        valid_mask=valid_mask,
+        key=key,
+        iteration=int(iteration),
+        ema=float(config.opt.get("boundary_support_bank_ema", 0.72)),
+        score_threshold=float(config.opt.get("boundary_support_bank_score_threshold", 0.50)),
+        bad_frame=bool(_safe_getattr(data, "boundary_bad_frame", False)),
+    )
+
+    tag_iteration = local_iteration if (
+        local_iteration is not None
+        and bool(config.opt.get("boundary_tag_schedule_use_local_iteration", False))
+    ) else iteration
+    init_iter = int(config.opt.get("boundary_support_bank_promote_init_iter", 0))
+    interval = int(config.opt.get("boundary_support_bank_promote_interval", 40))
+    until_iter = int(config.opt.get("boundary_support_bank_promote_until_iter", init_iter))
+    should_promote = tag_iteration >= init_iter and interval > 0 and tag_iteration <= until_iter and (
+        (tag_iteration - init_iter) % interval == 0
+    )
+    if should_promote:
+        max_effective_ratio = config.opt.get("boundary_support_bank_max_effective_ratio", None)
+        max_new_only_ratio = config.opt.get("boundary_support_bank_max_new_only_ratio", None)
+        promote_boundary_candidate_support(
+            state,
+            min_hits=int(config.opt.get("boundary_support_bank_min_hits", 2)),
+            min_view_bits=int(config.opt.get("boundary_support_bank_min_views", 2)),
+            min_frame_bits=int(config.opt.get("boundary_support_bank_min_frames", 1)),
+            score_threshold=float(config.opt.get("boundary_support_bank_promote_threshold", 0.60)),
+            dominance_margin=float(config.opt.get("boundary_support_bank_dominance_margin", 1.15)),
+            iteration=int(iteration),
+            under_max_effective_ratio=config.opt.get(
+                "boundary_support_bank_under_max_effective_ratio",
+                max_effective_ratio,
+            ),
+            over_max_effective_ratio=config.opt.get(
+                "boundary_support_bank_over_max_effective_ratio",
+                max_effective_ratio,
+            ),
+            under_max_new_only_ratio=config.opt.get(
+                "boundary_support_bank_under_max_new_only_ratio",
+                max_new_only_ratio,
+            ),
+            over_max_new_only_ratio=config.opt.get(
+                "boundary_support_bank_over_max_new_only_ratio",
+                max_new_only_ratio,
+            ),
+        )
+    scene.gaussians.set_boundary_support_bank_state(state)
+    scene.gaussians.apply_boundary_support_bank_effective_tags(
+        conflict_mode=str(config.opt.get("boundary_direction_conflict_mode", "freeze"))
+    )
+    if should_promote and bool(config.opt.get("boundary_support_bank_verbose", True)):
+        diag = scene.gaussians.get_boundary_support_bank_diagnostics()
+        print(
+            "[BoundarySupportBank] "
+            f"iter={iteration} "
+            f"under_jaccard={diag.get('under_jaccard', 1.0):.4f} "
+            f"over_jaccard={diag.get('over_jaccard', 1.0):.4f} "
+            f"under_lost={int(diag.get('under_adopted_lost', 0))} "
+            f"over_lost={int(diag.get('over_adopted_lost', 0))} "
+            f"under_new={int(diag.get('under_new_only', 0))} "
+            f"over_new={int(diag.get('over_new_only', 0))} "
+            f"under_blocked={int(diag.get('support_under_last_promote_blocked', 0))} "
+            f"over_blocked={int(diag.get('support_over_last_promote_blocked', 0))}",
+            flush=True,
+        )
+    return True
 
 
 def _get_boundary_effective_score(scene, boundary_score, deformed_gaussian, config, iteration, local_iteration=None):
@@ -1408,6 +1606,69 @@ def _register_boundary_grad_hooks(scene, boundary_score, config):
                 frozen_converter_params.append(param)
 
     return hooks, frozen_converter_params
+
+
+def _register_directional_boundary_grad_hooks(scene, boundary_score, config, direction):
+    if boundary_score is None:
+        return [], []
+
+    direction = str(direction).lower()
+    hooks = []
+    gaussian = scene.gaussians
+    freeze_base = bool(config.opt.get('directional_boundary_freeze_base_gaussian_for_boundary_loss', True))
+    base_scale = 0.0 if freeze_base else 1.0
+    if direction == 'grow':
+        grow_scale = config.opt.get('directional_boundary_grow_residual_scale', 1.0)
+        shrink_scale = 0.0
+    elif direction == 'shrink':
+        grow_scale = 0.0
+        shrink_scale = config.opt.get('directional_boundary_shrink_residual_scale', 1.0)
+    else:
+        grow_scale = 0.0
+        shrink_scale = 0.0
+
+    param_specs = [
+        (gaussian._xyz, config.opt.get('directional_boundary_base_xyz_scale', base_scale)),
+        (gaussian._features_dc, 0.0),
+        (gaussian._features_rest, 0.0),
+        (gaussian._opacity, config.opt.get('directional_boundary_base_opacity_scale', base_scale)),
+        (gaussian._scaling, config.opt.get('directional_boundary_base_scaling_scale', base_scale)),
+        (gaussian._rotation, config.opt.get('directional_boundary_base_rotation_scale', base_scale)),
+        (gaussian._boundary_opacity_residual, 0.0),
+        (gaussian._boundary_scaling_residual, 0.0),
+        (gaussian._boundary_grow_opacity_residual, grow_scale),
+        (gaussian._boundary_shrink_opacity_residual, shrink_scale),
+        (gaussian._boundary_grow_scaling_residual, config.opt.get('directional_boundary_grow_scaling_residual_scale', 0.0) if direction == 'grow' else 0.0),
+        (gaussian._boundary_shrink_scaling_residual, config.opt.get('directional_boundary_shrink_scaling_residual_scale', 0.0) if direction == 'shrink' else 0.0),
+    ]
+    for param, param_scale in param_specs:
+        mask = _make_boundary_param_mask(param, boundary_score, param_scale)
+        if mask is None:
+            continue
+        hooks.append(param.register_hook(lambda grad, mask=mask: grad * mask))
+
+    frozen_converter_params = []
+    if bool(config.opt.get('boundary_aware_freeze_converter_for_boundary_loss', True)):
+        for param in scene.converter.parameters():
+            if param.requires_grad:
+                param.requires_grad_(False)
+                frozen_converter_params.append(param)
+
+    return hooks, frozen_converter_params
+
+
+def _register_directional_boundary_residual_freeze_hooks(scene):
+    hooks = []
+    gaussian = scene.gaussians
+    for param in (
+        getattr(gaussian, '_boundary_grow_opacity_residual', None),
+        getattr(gaussian, '_boundary_shrink_opacity_residual', None),
+        getattr(gaussian, '_boundary_grow_scaling_residual', None),
+        getattr(gaussian, '_boundary_shrink_scaling_residual', None),
+    ):
+        if torch.is_tensor(param):
+            hooks.append(param.register_hook(lambda grad: torch.zeros_like(grad)))
+    return hooks
 
 
 def _remove_grad_hooks(hooks):
@@ -5611,6 +5872,16 @@ def training(config):
     if checkpoint and resume_cfg and bool(resume_cfg.get('clear_binding_state_on_resume', False)):
         _clear_scene_binding_state(scene)
         print('Resume safety: cleared binding state for resume rebind.')
+    if checkpoint and bool(opt.get("boundary_support_bank_enable", False)):
+        scene.gaussians.ensure_boundary_support_bank_initialized(source_iteration=int(loaded_iteration))
+        scene.gaussians.apply_boundary_support_bank_effective_tags(
+            conflict_mode=str(opt.get("boundary_direction_conflict_mode", "freeze"))
+        )
+        print(
+            "[BoundarySupportBank] initialized adopted support from checkpoint tags: "
+            f"source_iteration={int(loaded_iteration)}",
+            flush=True,
+        )
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -5893,6 +6164,29 @@ def training(config):
                     live_boundary_subset_score = live_boundary_subset_score.to(candidate_score.device) * candidate_score
         if hasattr(scene.gaussians, "set_live_boundary_score_state"):
             scene.gaussians.set_live_boundary_score_state(live_boundary_subset_score)
+        boundary_bank_updated = _maybe_update_boundary_support_bank(
+            scene,
+            data,
+            live_boundary_image_under_score,
+            live_boundary_image_over_score,
+            live_boundary_image_valid,
+            config,
+            schedule_iteration,
+            local_iteration=local_iteration,
+        )
+        if (
+            not boundary_bank_updated
+            and bool(config.opt.get('boundary_direction_tag_enable', False))
+        ):
+            _maybe_refresh_boundary_direction_tags(
+                scene,
+                live_boundary_image_under_score,
+                live_boundary_image_over_score,
+                render_pkg["deformed_gaussian"],
+                config,
+                schedule_iteration,
+                local_iteration=local_iteration,
+            )
         _update_boundary_live_score_cache(
             boundary_live_score_cache,
             boundary_live_cache_key,
@@ -7744,6 +8038,17 @@ def training(config):
         boundary_tags_for_reg = scene.gaussians.get_boundary_tags()
         if boundary_tags_for_reg is not None:
             boundary_mask_reg = boundary_tags_for_reg.unsqueeze(-1)
+            if bool(config.opt.get('boundary_direction_reg_union_enable', False)):
+                under_tags_for_reg = scene.gaussians.get_boundary_direction_tag_state('under')
+                over_tags_for_reg = scene.gaussians.get_boundary_direction_tag_state('over')
+                direction_tags_for_reg = None
+                if torch.is_tensor(under_tags_for_reg) and under_tags_for_reg.shape[0] == boundary_tags_for_reg.shape[0]:
+                    direction_tags_for_reg = under_tags_for_reg.to(device=boundary_tags_for_reg.device, dtype=boundary_tags_for_reg.dtype)
+                if torch.is_tensor(over_tags_for_reg) and over_tags_for_reg.shape[0] == boundary_tags_for_reg.shape[0]:
+                    over_tags_for_reg = over_tags_for_reg.to(device=boundary_tags_for_reg.device, dtype=boundary_tags_for_reg.dtype)
+                    direction_tags_for_reg = over_tags_for_reg if direction_tags_for_reg is None else torch.maximum(direction_tags_for_reg, over_tags_for_reg)
+                if direction_tags_for_reg is not None:
+                    boundary_mask_reg = torch.maximum(boundary_tags_for_reg, direction_tags_for_reg).unsqueeze(-1)
             if lambda_boundary_opacity_residual_reg > 0.0:
                 loss_boundary_opacity_residual_reg = ((scene.gaussians._boundary_opacity_residual * boundary_mask_reg) ** 2).sum() / boundary_mask_reg.sum().clamp_min(1.0)
                 base_loss += lambda_boundary_opacity_residual_reg * loss_boundary_opacity_residual_reg
@@ -7754,7 +8059,7 @@ def training(config):
                 smooth_positions = _boundary_regularization_positions(scene)
                 smooth_k = int(config.opt.get('boundary_residual_smooth_k', 8))
                 smooth_quantile = float(config.opt.get('boundary_residual_smooth_distance_quantile', 0.5))
-                point_mask = boundary_tags_for_reg > 0
+                point_mask = boundary_mask_reg.squeeze(-1) > 0
                 if lambda_boundary_opacity_residual_smooth > 0.0:
                     loss_boundary_opacity_residual_smooth = _boundary_residual_smoothness_loss(
                         scene.gaussians._boundary_opacity_residual,
@@ -8079,8 +8384,16 @@ def training(config):
                 print(f"[TrainDiagnostic] iter={schedule_iteration} skipped backward.")
         elif use_boundary_aware_backward:
             base_loss_value = float(base_loss.detach().abs().item()) if torch.is_tensor(base_loss) else 0.0
+            directional_split_residual_enable = bool(config.opt.get('directional_boundary_residual_enable', False))
             if base_loss_value > 0.0:
-                (base_loss * gradient_accumulation_scale).backward(retain_graph=True)
+                freeze_hooks = (
+                    _register_directional_boundary_residual_freeze_hooks(scene)
+                    if directional_split_residual_enable else []
+                )
+                try:
+                    (base_loss * gradient_accumulation_scale).backward(retain_graph=True)
+                finally:
+                    _remove_grad_hooks(freeze_hooks)
             directional_boundary_specs = []
             boundary_signed_mixed_loss_scale = float(C(
                 schedule_iteration,
@@ -8105,6 +8418,7 @@ def training(config):
                     boundary_mixed_loss,
                     boundary_effective_score,
                     boundary_signed_mixed_loss_scale,
+                    'mixed',
                 ))
             if (
                 boundary_signed_routing_enable
@@ -8117,6 +8431,7 @@ def training(config):
                     boundary_shrink_loss,
                     boundary_shrink_effective_score,
                     boundary_signed_shrink_loss_scale,
+                    'shrink',
                 ))
             if (
                 boundary_signed_routing_enable
@@ -8129,15 +8444,24 @@ def training(config):
                     boundary_grow_loss,
                     boundary_grow_effective_score,
                     boundary_signed_grow_loss_scale,
+                    'grow',
                 ))
 
             if directional_boundary_specs:
-                for idx, (boundary_term, boundary_term_score, boundary_term_scale) in enumerate(directional_boundary_specs):
+                for idx, (boundary_term, boundary_term_score, boundary_term_scale, boundary_term_direction) in enumerate(directional_boundary_specs):
                     if boundary_term_scale != 1.0:
                         boundary_term = boundary_term * boundary_term_scale
                     if gradient_accumulation_scale != 1.0:
                         boundary_term = boundary_term * gradient_accumulation_scale
-                    hooks, frozen_converter_params = _register_boundary_grad_hooks(scene, boundary_term_score, config)
+                    if directional_split_residual_enable:
+                        hooks, frozen_converter_params = _register_directional_boundary_grad_hooks(
+                            scene,
+                            boundary_term_score,
+                            config,
+                            boundary_term_direction,
+                        )
+                    else:
+                        hooks, frozen_converter_params = _register_boundary_grad_hooks(scene, boundary_term_score, config)
                     try:
                         boundary_term.backward(retain_graph=idx < len(directional_boundary_specs) - 1)
                     finally:
@@ -8871,6 +9195,41 @@ def training(config):
                 log_loss['loss/boundary_tag_mean'] = boundary_tags.mean().item()
                 log_loss['loss/boundary_opacity_residual_abs_mean'] = (scene.gaussians._boundary_opacity_residual.abs() * boundary_tags.unsqueeze(-1)).sum().item() / boundary_tags.sum().clamp_min(1.0).item()
                 log_loss['loss/boundary_scaling_residual_abs_mean'] = (scene.gaussians._boundary_scaling_residual.abs() * boundary_tags.unsqueeze(-1)).sum().item() / boundary_tags.sum().clamp_min(1.0).item()
+            boundary_under_tags = scene.gaussians.get_boundary_direction_tag_state('under')
+            if torch.is_tensor(boundary_under_tags):
+                log_loss['loss/boundary_under_tag_fraction'] = (boundary_under_tags > 0).float().mean().item()
+                log_loss['loss/boundary_under_tag_mean'] = boundary_under_tags.mean().item()
+                denom = boundary_under_tags.sum().clamp_min(1.0).item()
+                log_loss['loss/boundary_grow_opacity_residual_mean'] = (
+                    scene.gaussians._boundary_grow_opacity_residual * boundary_under_tags.unsqueeze(-1)
+                ).sum().item() / denom
+                log_loss['loss/boundary_grow_opacity_residual_abs_mean'] = (
+                    scene.gaussians._boundary_grow_opacity_residual.abs() * boundary_under_tags.unsqueeze(-1)
+                ).sum().item() / denom
+            boundary_over_tags = scene.gaussians.get_boundary_direction_tag_state('over')
+            if torch.is_tensor(boundary_over_tags):
+                log_loss['loss/boundary_over_tag_fraction'] = (boundary_over_tags > 0).float().mean().item()
+                log_loss['loss/boundary_over_tag_mean'] = boundary_over_tags.mean().item()
+                denom = boundary_over_tags.sum().clamp_min(1.0).item()
+                log_loss['loss/boundary_shrink_opacity_residual_mean'] = (
+                    scene.gaussians._boundary_shrink_opacity_residual * boundary_over_tags.unsqueeze(-1)
+                ).sum().item() / denom
+                log_loss['loss/boundary_shrink_opacity_residual_abs_mean'] = (
+                    scene.gaussians._boundary_shrink_opacity_residual.abs() * boundary_over_tags.unsqueeze(-1)
+                ).sum().item() / denom
+            if bool(config.opt.get("boundary_support_bank_enable", False)):
+                support_diag = scene.gaussians.get_boundary_support_bank_diagnostics()
+                for key, value in support_diag.items():
+                    if isinstance(value, (int, float)):
+                        log_loss[f"loss/boundary_support_bank_{key}"] = float(value)
+                state = scene.gaussians.get_boundary_support_bank_state()
+                if state is not None:
+                    log_loss["loss/boundary_support_bank_candidate_under_hits_mean"] = (
+                        state["boundary_candidate_under_hits"].float().mean().item()
+                    )
+                    log_loss["loss/boundary_support_bank_candidate_over_hits_mean"] = (
+                        state["boundary_candidate_over_hits"].float().mean().item()
+                    )
             log_loss.update({
                 'loss/loss_' + k: v for k, v in loss_reg.items()
             })

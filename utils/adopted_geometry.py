@@ -74,6 +74,37 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
     learned_xbar = preset in ("v313_learned_xbar", "learned_xbar")
     v320_selected_geometry = preset in V320_PRESETS
     v338_guarded_geometry = preset in V338_PRESETS
+    disable_signed_point_json = v338_guarded_geometry and _as_bool(
+        config.get("explicit_binding_adopted_disable_signed_point_json", False)
+    )
+    disable_signed_point_screen_actuator = v338_guarded_geometry and _as_bool(
+        config.get("explicit_binding_adopted_disable_signed_point_screen_actuator", False)
+    )
+    disable_signed_dynamic = v320_selected_geometry and _as_bool(
+        config.get("explicit_binding_adopted_disable_signed_dynamic", False)
+    )
+    disable_geometry_fidelity = v320_selected_geometry and _as_bool(
+        config.get("explicit_binding_adopted_disable_geometry_fidelity", False)
+    )
+    signed_point_screen_actuator_drop_images = str(
+        config.get("explicit_binding_adopted_signed_point_screen_actuator_drop_images", "") or ""
+    ).strip()
+    signed_dynamic_over_drop_images = str(
+        config.get("explicit_binding_adopted_signed_dynamic_over_drop_images", "") or ""
+    ).strip()
+    signed_dynamic_under_drop_images = str(
+        config.get("explicit_binding_adopted_signed_dynamic_under_drop_images", "") or ""
+    ).strip()
+    signed_dynamic_component_row_guard_json = _config_path(
+        config,
+        "explicit_binding_adopted_signed_dynamic_component_row_guard_json",
+        default="",
+    )
+    signed_dynamic_component_local_asset_json = _config_path(
+        config,
+        "explicit_binding_adopted_signed_dynamic_component_local_asset_json",
+        default="",
+    )
 
     defaults = _formal_asset_defaults(repo_root) if v320_selected_geometry else {}
     pipeline = config.get("pipeline", OmegaConf.create({}))
@@ -118,7 +149,7 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
             repo_root,
             component_csv,
             point_csv,
-            require_signed_point_json=v338_guarded_geometry,
+            require_signed_point_json=(v338_guarded_geometry and not disable_signed_point_json),
         )
 
     center_strength = float(config.get("explicit_binding_adopted_center_strength", 0.45))
@@ -143,7 +174,63 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
         center_strength=center_strength,
         outer_px=outer_px,
     )
-    if v338_guarded_geometry:
+    if disable_signed_dynamic:
+        overrides.update({
+            "pipeline.covariance_signed_dynamic_enable": False,
+            "pipeline.covariance_signed_dynamic_component_csv": "",
+            "pipeline.covariance_signed_dynamic_point_csv": "",
+            "pipeline.covariance_signed_dynamic_over_drop_images": "",
+            "pipeline.covariance_signed_dynamic_under_drop_images": "",
+            "pipeline.covariance_signed_dynamic_component_row_guard_json": "",
+            "pipeline.covariance_signed_dynamic_component_local_asset_json": "",
+            "explicit_binding_adopted_disable_signed_dynamic_applied": True,
+            "explicit_binding_adopted_signed_dynamic_over_drop_images_resolved": "",
+            "explicit_binding_adopted_signed_dynamic_under_drop_images_resolved": "",
+            "explicit_binding_adopted_signed_dynamic_component_row_guard_json_resolved": "",
+            "explicit_binding_adopted_signed_dynamic_component_local_asset_json_resolved": "",
+        })
+    else:
+        overrides["explicit_binding_adopted_disable_signed_dynamic_applied"] = False
+        overrides.update({
+            "pipeline.covariance_signed_dynamic_over_drop_images": signed_dynamic_over_drop_images,
+            "pipeline.covariance_signed_dynamic_under_drop_images": signed_dynamic_under_drop_images,
+            "pipeline.covariance_signed_dynamic_component_row_guard_json": signed_dynamic_component_row_guard_json,
+            "pipeline.covariance_signed_dynamic_component_local_asset_json": (
+                signed_dynamic_component_local_asset_json
+            ),
+            "model.deformer.rigid.geometry_fidelity_component_row_guard_json": (
+                signed_dynamic_component_row_guard_json
+            ),
+            "explicit_binding_adopted_signed_dynamic_over_drop_images_resolved": signed_dynamic_over_drop_images,
+            "explicit_binding_adopted_signed_dynamic_under_drop_images_resolved": signed_dynamic_under_drop_images,
+            "explicit_binding_adopted_signed_dynamic_component_row_guard_json_resolved": (
+                signed_dynamic_component_row_guard_json
+            ),
+            "explicit_binding_adopted_signed_dynamic_component_local_asset_json_resolved": (
+                signed_dynamic_component_local_asset_json
+            ),
+        })
+    if disable_geometry_fidelity:
+        overrides.update({
+            "model.deformer.rigid.geometry_fidelity_gate_enable": False,
+            "model.deformer.rigid.geometry_fidelity_component_enable": False,
+            "model.deformer.rigid.geometry_fidelity_component_csv": "",
+            "model.deformer.rigid.geometry_fidelity_component_row_guard_json": "",
+            "explicit_binding_adopted_disable_geometry_fidelity_applied": True,
+        })
+    else:
+        overrides["explicit_binding_adopted_disable_geometry_fidelity_applied"] = False
+    if v338_guarded_geometry and disable_signed_point_json:
+        overrides.update({
+            "pipeline.covariance_signed_point_json": "",
+            "pipeline.covariance_signed_point_screen_actuator_enable": False,
+            "pipeline.covariance_signed_point_screen_actuator_drop_images": "",
+            "explicit_binding_adopted_signed_point_json_resolved": "",
+            "explicit_binding_adopted_disable_signed_point_json_applied": True,
+            "explicit_binding_adopted_disable_signed_point_screen_actuator_applied": True,
+            "explicit_binding_adopted_signed_point_screen_actuator_drop_images_resolved": "",
+        })
+    elif v338_guarded_geometry:
         signed_point_json = _config_path(
             config,
             "explicit_binding_adopted_signed_point_json",
@@ -155,8 +242,18 @@ def apply_explicit_binding_render_preset(config, repo_root=None):
             raise FileNotFoundError(f"v338 signed point json not found: {signed_point_json}")
         overrides.update({
             "pipeline.covariance_signed_point_json": signed_point_json,
-            "pipeline.covariance_signed_point_screen_actuator_enable": not learned_xbar,
+            "pipeline.covariance_signed_point_screen_actuator_enable": (
+                not learned_xbar and not disable_signed_point_screen_actuator
+            ),
+            "pipeline.covariance_signed_point_screen_actuator_drop_images": signed_point_screen_actuator_drop_images,
             "explicit_binding_adopted_signed_point_json_resolved": signed_point_json,
+            "explicit_binding_adopted_disable_signed_point_json_applied": False,
+            "explicit_binding_adopted_disable_signed_point_screen_actuator_applied": (
+                bool(disable_signed_point_screen_actuator)
+            ),
+            "explicit_binding_adopted_signed_point_screen_actuator_drop_images_resolved": (
+                signed_point_screen_actuator_drop_images
+            ),
         })
     overrides.update({
         "explicit_binding_adopted_asset_validation": validation,
@@ -294,6 +391,7 @@ def _formal_overrides(
         "pipeline.covariance_signed_dynamic_component_required": component_required,
         "pipeline.covariance_signed_dynamic_component_top_ids_enable": False,
         "pipeline.covariance_signed_dynamic_component_top_ids_only": False,
+        "pipeline.covariance_signed_dynamic_component_local_asset_json": "",
         "pipeline.covariance_signed_dynamic_max_over_points": max_points,
         "pipeline.covariance_signed_dynamic_max_under_points": max_points,
         "pipeline.covariance_signed_screen_actuator_enable": not learned_xbar,
@@ -330,6 +428,7 @@ def _formal_overrides(
         "model.deformer.rigid.geometry_fidelity_max_points": 1024,
         "model.deformer.rigid.geometry_fidelity_component_enable": (not binding_internal and not learned_xbar),
         "model.deformer.rigid.geometry_fidelity_component_csv": component_csv_value,
+        "model.deformer.rigid.geometry_fidelity_component_row_guard_json": "",
         "model.deformer.rigid.geometry_fidelity_component_direction": "inner",
         "model.deformer.rigid.geometry_fidelity_component_pad_px": 2,
         "model.deformer.rigid.geometry_fidelity_component_ellipse_scale": 1.05,

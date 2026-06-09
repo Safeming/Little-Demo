@@ -123,5 +123,64 @@
       "opacity_outer": -2.648
     },
     "policy": "Adopt v338 grow_only_guard; do not adopt v339 full-frame component field or v321/v322/v323 color/texture repair checkpoints."
+  },
+  "semantic_asset_baseline": {
+    "run": "formal_377_v338_mainline_20260522_141739_bjt",
+    "checkpoint": "/remote-home/ming/3dgs-avatar-release-main/exp/formal/377_v338_semantic_train_formal_377_v338_mainline_20260522_141739_bjt/ckpt138410.pth",
+    "checkpoint_sha256": "7b13d1140b13474e7ecd9656a0b8e9dd721383ad7271448f4f1ca8fba4b99b92",
+    "asset_root": "/remote-home/ming/3dgs-avatar-release-main/exp/formal/377_v338_semantic_assets_formal_377_v338_mainline_20260522_141739_bjt/test-view/semantic_editable_assets",
+    "asset_check": "/remote-home/ming/3dgs-avatar-release-main/exp/formal/logs/377_v338_mainline_formal_377_v338_mainline_20260522_141739_bjt/asset_check.json",
+    "asset_check_status": "pass",
+    "asset_check_counts": {
+      "num_views": 30,
+      "source_rgb_png": 30,
+      "preview_png": 30,
+      "parser_preview_png": 30,
+      "motion_npz": 30,
+      "compact_head_mask_png": 180,
+      "mask_export_mode": "fine_parser"
+    },
+    "dense_gate": {
+      "script": "tools/formal/run_377_v338_raw_contour_gate.sh",
+      "run": "formal_v338_mainline_dense_gate_20260522",
+      "summary": "/remote-home/ming/3dgs-avatar-release-main/exp/formal/logs/377_v338_raw_contour_gate_formal_v338_mainline_dense_gate_20260522/summary.tsv",
+      "summary_sha256": "67e8ca1796a01447539023b8addbe8a3508593dfb2edcba0e1f428837e3c8923",
+      "worst_frames": "/remote-home/ming/3dgs-avatar-release-main/exp/formal/logs/377_v338_raw_contour_gate_formal_v338_mainline_dense_gate_20260522/worst_frames.tsv",
+      "worst_frames_sha256": "bed36c80eb58ada53d17c001f5dbe5c4e678d1eda185b987f11319d6cd420b0c",
+      "test_views": [
+        21,
+        22,
+        23
+      ],
+      "test_frames": [
+        0,
+        570,
+        1
+      ],
+      "samples": 1710,
+      "status": "strict_pass",
+      "variant": "candidate_v338_temporal_selector_grow_only_guard",
+      "metrics": {
+        "fg": 0.04583262,
+        "boundary": 0.0654871,
+        "edge": 2.768674,
+        "inner": 658.0684,
+        "outer": 4583.7801,
+        "hard": 0.16956376,
+        "opacity_inner": 185.8754,
+        "opacity_outer": 13281.3977
+      },
+      "delta_vs_baseline": {
+        "fg": -1.28e-06,
+        "boundary": -1.12e-06,
+        "edge": -0.001781,
+        "inner": -0.1877,
+        "outer": -0.7029,
+        "hard": -2.893e-05,
+        "opacity_inner": -0.0316,
+        "opacity_outer": -2.648
+      }
+    },
+    "policy": "Adopt ckpt138410.pth as the current StageB semantic editable asset baseline. This checkpoint is for semantic asset adapter/export only; v338 no-train signed geometry remains the adopted raw render geometry."
   }
 }

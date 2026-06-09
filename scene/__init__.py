@@ -200,6 +200,8 @@ class Scene:
         gaussians_delay = self.cfg.model.gaussian.get('delay', 0)
         if iteration >= gaussians_delay:
             self.gaussians.optimizer.step()
+            if hasattr(self.gaussians, 'clamp_directional_boundary_residuals'):
+                self.gaussians.clamp_directional_boundary_residuals()
         self.gaussians.optimizer.zero_grad(set_to_none=True)
         self.converter.optimize(iteration)
 

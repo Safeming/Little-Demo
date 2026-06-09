@@ -388,7 +388,15 @@ class GaussianConverter(nn.Module):
     def set_optimizer(self):
         latent_weight_decay = _resolve_scheduled_scalar(0, self._latent_weight_decay_cfg, default=0.05)
         opt_params = []
-        _append_param_group(opt_params, self.deformer.rigid.parameters(), self.cfg.opt.get('rigid_lr', 0.), name='rigid')
+        rigid_named = list(self.deformer.rigid.named_parameters())
+        rigid_trainable_patterns = self.cfg.opt.get('rigid_trainable_name_patterns', None)
+        rigid_frozen_patterns = self.cfg.opt.get('rigid_frozen_name_patterns', None)
+        rigid_params, rigid_names, rigid_skipped = _filter_named_parameters(
+            rigid_named,
+            include_patterns=rigid_trainable_patterns,
+            exclude_patterns=rigid_frozen_patterns,
+        )
+        _append_param_group(opt_params, rigid_params, self.cfg.opt.get('rigid_lr', 0.), name='rigid')
         # {'params': self.deformer.non_rigid.parameters(), 'lr': self.cfg.opt.get('non_rigid_lr', 0.)},
         _append_param_group(
             opt_params,
@@ -444,6 +452,17 @@ class GaussianConverter(nn.Module):
                 self.cfg.opt.get('camera_geometry_lr', 0.0),
                 name='camera_geometry',
             )
+        if rigid_trainable_patterns or rigid_frozen_patterns:
+            print(
+                '[GaussianConverter] rigid optimizer filter: '
+                f'trainable={len(rigid_names)} skipped={len(rigid_skipped)} '
+                f'patterns={_cfg_list(rigid_trainable_patterns)} '
+                f'exclude={_cfg_list(rigid_frozen_patterns)}'
+            )
+            if rigid_names:
+                preview = ','.join(rigid_names[:8])
+                suffix = '...' if len(rigid_names) > 8 else ''
+                print(f'[GaussianConverter] rigid trainable preview: {preview}{suffix}')
         if texture_trainable_patterns or texture_frozen_patterns:
             print(
                 '[GaussianConverter] texture optimizer filter: '

@@ -25,6 +25,7 @@ PANEL_SPECS = {
     'body_prob': ('Body Prob', 'binding_maps/body_prob'),
     'soft_prob': ('Soft Prob', 'binding_maps/soft_prob'),
     'cloth_prob': ('Cloth Prob', 'binding_maps/cloth_prob'),
+    'boundary_support': ('Support', 'binding_maps/boundary_support'),
 }
 DEFAULT_PANELS = ['gt', 'render', 'layer', 'region', 'thin']
 
