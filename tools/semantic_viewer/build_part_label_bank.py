@@ -23,6 +23,9 @@ from utils.part_label_bank import (
     apply_lower_label_guard,
     apply_neighbor_reliable_fill,
     apply_reliable_label_mask,
+    compute_semantic_margin,
+    compute_soft_edit_weights,
+    finalize_votes,
     finalize_trained_semantic_probs,
     save_part_label_bank,
     summarize_part_label_bank,
@@ -148,7 +151,8 @@ def _project_points(points: torch.Tensor, view) -> tuple[torch.Tensor, torch.Ten
     width = int(view.image_width)
     height = int(view.image_height)
     px = (ndc[:, 0] + 1.0) * 0.5 * float(max(width - 1, 1))
-    py = (1.0 - (ndc[:, 1] + 1.0) * 0.5) * float(max(height - 1, 1))
+    # The exported semantic asset masks use the same y-axis convention as NDC here.
+    py = (ndc[:, 1] + 1.0) * 0.5 * float(max(height - 1, 1))
     valid = torch.isfinite(ndc).all(dim=-1)
     valid &= ndc[:, 2] > 0.0
     valid &= px >= 0.0
@@ -199,8 +203,9 @@ def build_output_manifest(
     depth_margin: float,
     min_part_hit_ratio: float,
     source_type: str = "trained_semantic_asset_probs",
+    soft_edit_weight_field: str | None = None,
 ) -> dict:
-    return {
+    manifest = {
         "schema_version": 1,
         "source_checkpoint": str(checkpoint),
         "source_config": str(config),
@@ -216,6 +221,10 @@ def build_output_manifest(
         "min_part_hit_ratio": float(min_part_hit_ratio),
         "source_type": str(source_type),
     }
+    if soft_edit_weight_field:
+        manifest["soft_edit_weight_field"] = str(soft_edit_weight_field)
+        manifest["soft_edit_part_names"] = list(PART_NAMES)
+    return manifest
 
 
 def _as_numpy_bool(value, point_count: int) -> np.ndarray:
@@ -276,6 +285,11 @@ def accumulate_projected_votes(
     mask_threshold: float = 0.5,
     min_part_hit_ratio: float = 0.0,
     view_name: str = "",
+    footprint_mode: str = "center",
+    footprint_radius_scale: float = 1.0,
+    min_footprint_radius: int = 1,
+    max_footprint_radius: int = 12,
+    min_footprint_hit_ratio: float = 0.50,
 ) -> dict[str, int]:
     if torch.is_tensor(xy):
         xy_np = xy.detach().float().cpu().numpy()
@@ -328,9 +342,50 @@ def accumulate_projected_votes(
         mask = np.asarray(part_masks[name], dtype=np.float32)
         if mask.shape != (height, width):
             raise ValueError(f"{name} mask shape {mask.shape} does not match image {(height, width)}")
-        values.append(mask[py[valid_idx], px[valid_idx]])
-    part_values = np.stack(values, axis=1)
-    hits = part_values >= float(mask_threshold)
+        values.append(mask)
+
+    mode = str(footprint_mode or "center").strip().lower()
+    if mode not in ("center", "footprint"):
+        raise ValueError(f"unsupported footprint_mode: {footprint_mode}")
+    if mode == "center":
+        part_values = np.stack([mask[py[valid_idx], px[valid_idx]] for mask in values], axis=1)
+        hits = part_values >= float(mask_threshold)
+        footprint_vote_count = 0
+        mean_winning_footprint_hit_ratio = 0.0
+    else:
+        part_values = np.zeros((valid_idx.size, len(PART_NAMES)), dtype=np.float32)
+        support_valid = np.zeros((valid_idx.size,), dtype=bool)
+        min_radius = max(0, int(min_footprint_radius))
+        max_radius = max(min_radius, int(max_footprint_radius))
+        for local_row, point_idx in enumerate(valid_idx):
+            x = int(px[point_idx])
+            y = int(py[point_idx])
+            point_radius = int(np.ceil(float(radii_np[point_idx]) * float(footprint_radius_scale)))
+            point_radius = max(min_radius, min(max_radius, point_radius))
+            y0 = max(0, y - point_radius)
+            y1 = min(height, y + point_radius + 1)
+            x0 = max(0, x - point_radius)
+            x1 = min(width, x + point_radius + 1)
+            yy, xx = np.ogrid[y0:y1, x0:x1]
+            disk = ((yy - y) * (yy - y) + (xx - x) * (xx - x)) <= (point_radius * point_radius)
+            support = (
+                disk
+                & (fg[y0:y1, x0:x1] >= float(mask_threshold))
+                & (valid[y0:y1, x0:x1] >= float(mask_threshold))
+            )
+            support_count = int(np.sum(support))
+            if support_count <= 0:
+                continue
+            support_valid[local_row] = True
+            for part_idx, mask in enumerate(values):
+                part_values[local_row, part_idx] = float(
+                    np.sum((mask[y0:y1, x0:x1] >= float(mask_threshold)) & support)
+                ) / float(support_count)
+        hits = (part_values >= float(min_footprint_hit_ratio)) & support_valid[:, None]
+        footprint_vote_count = int(np.sum(support_valid))
+        winning = part_values.max(axis=1) if part_values.size else np.zeros((0,), dtype=np.float32)
+        accepted = hits.sum(axis=1) > 0
+        mean_winning_footprint_hit_ratio = float(winning[accepted].mean()) if np.any(accepted) else 0.0
     hit_count = hits.sum(axis=1)
     has_hit = hit_count > 0
     if not np.any(has_hit):
@@ -345,6 +400,8 @@ def accumulate_projected_votes(
             "valid_mask_count": int(valid_idx.size),
             "part_vote_count": 0,
             "conflict_count": 0,
+            "footprint_vote_count": int(footprint_vote_count),
+            "mean_winning_footprint_hit_ratio": float(mean_winning_footprint_hit_ratio),
         }
     conflicted = hit_count > 1
     vote_idx = valid_idx[has_hit]
@@ -364,6 +421,8 @@ def accumulate_projected_votes(
         "part_vote_count": int(vote_idx.size),
         "conflict_count": int(conflicted.sum()),
         "part_hit_ratio": part_hit_ratio,
+        "footprint_vote_count": int(footprint_vote_count),
+        "mean_winning_footprint_hit_ratio": float(mean_winning_footprint_hit_ratio),
     }
 
 
@@ -431,6 +490,12 @@ def parse_args():
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--asset-root", required=True, type=Path)
+    parser.add_argument(
+        "--label-bank-source",
+        choices=("trained-semantic", "projected-2d-voting"),
+        default="trained-semantic",
+        help="Source used to assign per-Gaussian part labels.",
+    )
     parser.add_argument("--iteration", type=int, default=-1)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--max-views", type=int, default=0)
@@ -443,6 +508,12 @@ def parse_args():
     parser.add_argument("--mask-threshold", type=float, default=0.5)
     parser.add_argument("--depth-margin", type=float, default=0.02)
     parser.add_argument("--min-part-hit-ratio", type=float, default=0.0)
+    parser.add_argument("--vote-footprint-mode", choices=("center", "footprint"), default="center")
+    parser.add_argument("--vote-use-render-radii", action="store_true")
+    parser.add_argument("--vote-footprint-radius-scale", type=float, default=1.0)
+    parser.add_argument("--vote-min-footprint-radius", type=int, default=1)
+    parser.add_argument("--vote-max-footprint-radius", type=int, default=12)
+    parser.add_argument("--vote-min-footprint-hit-ratio", type=float, default=0.50)
     parser.add_argument(
         "--min-opacity",
         type=float,
@@ -485,7 +556,142 @@ def parse_args():
     parser.add_argument("--neighbor-fill-min-reliable-neighbors", type=int, default=5)
     parser.add_argument("--neighbor-fill-majority-ratio", type=float, default=0.70)
     parser.add_argument("--neighbor-fill-min-candidate-confidence", type=float, default=0.50)
+    parser.add_argument(
+        "--export-soft-edit-weights",
+        action="store_true",
+        help="Export soft_edit_weights for reliability-aware semantic edit selection.",
+    )
+    parser.add_argument("--soft-edit-reliable-floor", type=float, default=0.0)
+    parser.add_argument("--soft-edit-margin-power", type=float, default=1.0)
+    parser.add_argument("--soft-edit-confidence-power", type=float, default=1.0)
     return parser.parse_args()
+
+
+def collect_trained_semantic_bank(scene, records, iteration: int, point_count: int) -> tuple[dict, list[dict]]:
+    semantic_prob_sum = np.zeros((point_count, len(PART_NAMES)), dtype=np.float64)
+    semantic_prob_count = np.zeros((point_count,), dtype=np.int32)
+    semantic_source_names = None
+    view_stats = []
+    for record in records:
+        dataset_index = _find_dataset_index(scene.test_dataset, record["image_name"])
+        if dataset_index is None:
+            raise RuntimeError(f"image {record['image_name']} not present in dataset")
+        view = scene.test_dataset[dataset_index]
+        deformed_gaussian, _, colors_precomp = scene.convert_gaussians(view, iteration, compute_loss=False)
+        if not torch.is_tensor(getattr(deformed_gaussian, "get_xyz", None)):
+            raise RuntimeError("scene.convert_gaussians did not return GaussianModel with get_xyz tensor")
+        if int(deformed_gaussian.get_xyz.shape[0]) != point_count:
+            raise RuntimeError(
+                f"deformed point count changed: got {int(deformed_gaussian.get_xyz.shape[0])}, expected {point_count}"
+            )
+        probs_np, names = _semantic_probs_from_deformed_gaussian(deformed_gaussian)
+        if probs_np.shape[0] != point_count:
+            raise RuntimeError(
+                f"semantic probability point count mismatch: got {probs_np.shape[0]}, expected {point_count}"
+            )
+        if semantic_source_names is None:
+            semantic_source_names = names
+        elif tuple(semantic_source_names) != tuple(names):
+            raise RuntimeError(f"semantic class names changed across views: {semantic_source_names} vs {names}")
+        remap = [names.index(name) for name in PART_NAMES]
+        semantic_prob_sum += probs_np[:, remap].astype(np.float64, copy=False)
+        semantic_prob_count += 1
+        view_stats.append(
+            {
+                "image_name": str(record["image_name"]),
+                "semantic_prob_count": int(probs_np.shape[0]),
+                "semantic_class_names": list(names),
+            }
+        )
+        del colors_precomp
+        del deformed_gaussian
+        torch.cuda.empty_cache()
+
+    if semantic_source_names is None:
+        raise RuntimeError("no semantic probabilities were collected")
+    semantic_probs_bank_order = semantic_prob_sum / np.maximum(semantic_prob_count.reshape(-1, 1), 1)
+    return finalize_trained_semantic_probs(semantic_probs_bank_order, PART_NAMES), view_stats
+
+
+def collect_projected_2d_voting_bank(scene, asset_root: Path, records, iteration: int, point_count: int, args) -> tuple[dict, list[dict]]:
+    render_scene = None
+    background = None
+    if bool(getattr(args, "vote_use_render_radii", False)):
+        from gaussian_renderer import render as render_scene
+
+        bg_color = [1, 1, 1] if bool(scene.cfg.dataset.white_background) else [0, 0, 0]
+        background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    per_part_votes = np.zeros((point_count, len(PART_NAMES)), dtype=np.int32)
+    visible_vote_count = np.zeros((point_count,), dtype=np.int32)
+    conflict_count = np.zeros((point_count,), dtype=np.int32)
+    view_stats = []
+    for record in records:
+        dataset_index = _find_dataset_index(scene.test_dataset, record["image_name"])
+        if dataset_index is None:
+            raise RuntimeError(f"image {record['image_name']} not present in dataset")
+        view = scene.test_dataset[dataset_index]
+        render_pkg = None
+        if render_scene is not None:
+            render_pkg = render_scene(
+                view,
+                iteration,
+                scene,
+                scene.cfg.pipeline,
+                background,
+                compute_loss=False,
+                return_opacity=False,
+            )
+            deformed_gaussian = render_pkg["deformed_gaussian"]
+            colors_precomp = None
+        else:
+            deformed_gaussian, _, colors_precomp = scene.convert_gaussians(view, iteration, compute_loss=False)
+        if not torch.is_tensor(getattr(deformed_gaussian, "get_xyz", None)):
+            raise RuntimeError("scene.convert_gaussians did not return GaussianModel with get_xyz tensor")
+        if int(deformed_gaussian.get_xyz.shape[0]) != point_count:
+            raise RuntimeError(
+                f"deformed point count changed: got {int(deformed_gaussian.get_xyz.shape[0])}, expected {point_count}"
+            )
+        xy, proj_valid, depth = _project_points(deformed_gaussian.get_xyz, view)
+        part_masks, foreground_mask, valid_mask = _load_record_masks(asset_root, record)
+        if render_pkg is not None:
+            visibility_filter = render_pkg["visibility_filter"][:point_count].detach().bool().to(deformed_gaussian.get_xyz.device)
+            radii = render_pkg["radii"][:point_count].detach().float().to(deformed_gaussian.get_xyz.device)
+        else:
+            visibility_filter = torch.ones((point_count,), dtype=torch.bool, device=deformed_gaussian.get_xyz.device)
+            radii = torch.ones((point_count,), dtype=torch.float32, device=deformed_gaussian.get_xyz.device)
+        stats = accumulate_projected_votes(
+            xy=xy,
+            depth=depth,
+            depth_margin=float(args.depth_margin),
+            proj_valid=proj_valid,
+            visibility_filter=visibility_filter,
+            radii=radii,
+            image_size=(int(view.image_width), int(view.image_height)),
+            part_masks=part_masks,
+            foreground_mask=foreground_mask,
+            valid_mask=valid_mask,
+            per_part_votes=per_part_votes,
+            visible_vote_count=visible_vote_count,
+            conflict_count=conflict_count,
+            mask_threshold=float(args.mask_threshold),
+            min_part_hit_ratio=float(args.min_part_hit_ratio),
+            view_name=str(record["image_name"]),
+            footprint_mode=str(getattr(args, "vote_footprint_mode", "center")),
+            footprint_radius_scale=float(getattr(args, "vote_footprint_radius_scale", 1.0)),
+            min_footprint_radius=int(getattr(args, "vote_min_footprint_radius", 1)),
+            max_footprint_radius=int(getattr(args, "vote_max_footprint_radius", 12)),
+            min_footprint_hit_ratio=float(getattr(args, "vote_min_footprint_hit_ratio", 0.50)),
+        )
+        stats["image_name"] = str(record["image_name"])
+        view_stats.append(stats)
+        del colors_precomp
+        del deformed_gaussian
+        if render_pkg is not None:
+            del render_pkg
+        torch.cuda.empty_cache()
+    finalized = finalize_votes(per_part_votes, visible_vote_count, conflict_count)
+    finalized["source_type"] = "multiview_2d_mask_votes"
+    return finalized, view_stats
 
 
 def main() -> int:
@@ -507,46 +713,6 @@ def main() -> int:
         loaded_iteration = int(scene.load_checkpoint(str(checkpoint)))
         iteration = int(args.iteration) if int(args.iteration) >= 0 else loaded_iteration
         point_count = int(scene.gaussians.get_xyz.shape[0])
-        semantic_prob_sum = np.zeros((point_count, len(PART_NAMES)), dtype=np.float64)
-        semantic_prob_count = np.zeros((point_count,), dtype=np.int32)
-        semantic_source_names = None
-        view_stats = []
-        for record in records:
-            dataset_index = _find_dataset_index(scene.test_dataset, record["image_name"])
-            if dataset_index is None:
-                raise RuntimeError(f"image {record['image_name']} not present in dataset")
-            view = scene.test_dataset[dataset_index]
-            deformed_gaussian, _, colors_precomp = scene.convert_gaussians(view, iteration, compute_loss=False)
-            if not torch.is_tensor(getattr(deformed_gaussian, "get_xyz", None)):
-                raise RuntimeError("scene.convert_gaussians did not return GaussianModel with get_xyz tensor")
-            if int(deformed_gaussian.get_xyz.shape[0]) != point_count:
-                raise RuntimeError(
-                    f"deformed point count changed: got {int(deformed_gaussian.get_xyz.shape[0])}, expected {point_count}"
-                )
-            probs_np, names = _semantic_probs_from_deformed_gaussian(deformed_gaussian)
-            if probs_np.shape[0] != point_count:
-                raise RuntimeError(
-                    f"semantic probability point count mismatch: got {probs_np.shape[0]}, expected {point_count}"
-                )
-            if semantic_source_names is None:
-                semantic_source_names = names
-            elif tuple(semantic_source_names) != tuple(names):
-                raise RuntimeError(f"semantic class names changed across views: {semantic_source_names} vs {names}")
-            remap = [names.index(name) for name in PART_NAMES]
-            semantic_prob_sum += probs_np[:, remap].astype(np.float64, copy=False)
-            semantic_prob_count += 1
-            stats = {
-                "semantic_prob_count": int(probs_np.shape[0]),
-                "semantic_class_names": list(names),
-            }
-            stats["image_name"] = str(record["image_name"])
-            view_stats.append(stats)
-            del deformed_gaussian
-            torch.cuda.empty_cache()
-
-        if semantic_source_names is None:
-            raise RuntimeError("no semantic probabilities were collected")
-        semantic_probs_bank_order = semantic_prob_sum / np.maximum(semantic_prob_count.reshape(-1, 1), 1)
         semantic_valid_mask = None
         opacity_stats = None
         if float(args.min_opacity) > 0.0:
@@ -557,7 +723,14 @@ def main() -> int:
                 "valid_point_count": int(semantic_valid_mask.sum()),
                 "filtered_point_count": int(point_count - int(semantic_valid_mask.sum())),
             }
-        finalized = finalize_trained_semantic_probs(semantic_probs_bank_order, PART_NAMES, valid_mask=semantic_valid_mask)
+        if args.label_bank_source == "trained-semantic":
+            finalized, view_stats = collect_trained_semantic_bank(scene, records, iteration, point_count)
+            if semantic_valid_mask is not None:
+                finalized = finalize_trained_semantic_probs(finalized["semantic_probs"], PART_NAMES, valid_mask=semantic_valid_mask)
+        elif args.label_bank_source == "projected-2d-voting":
+            finalized, view_stats = collect_projected_2d_voting_bank(scene, asset_root, records, iteration, point_count, args)
+        else:
+            raise RuntimeError(f"unsupported label bank source: {args.label_bank_source}")
         face_guard_stats = None
         if bool(args.face_guard_enable):
             scale_max = _gaussian_scale_max_numpy(scene.gaussians, point_count)
@@ -605,6 +778,29 @@ def main() -> int:
                 min_candidate_confidence=float(args.neighbor_fill_min_candidate_confidence),
             )
             finalized["source_type"] = str(finalized.get("source_type", "trained_semantic_asset_probs")) + "_neighbor_fill"
+        soft_edit_stats = None
+        if bool(args.export_soft_edit_weights):
+            if "semantic_margin" not in finalized:
+                finalized["semantic_margin"] = compute_semantic_margin(finalized["semantic_probs"])
+            finalized["soft_edit_weights"] = compute_soft_edit_weights(
+                semantic_probs=finalized["semantic_probs"],
+                confidence=finalized["confidence"],
+                semantic_margin=finalized["semantic_margin"],
+                reliable_mask=finalized.get("reliable_mask"),
+                reliable_floor=float(args.soft_edit_reliable_floor),
+                confidence_power=float(args.soft_edit_confidence_power),
+                margin_power=float(args.soft_edit_margin_power),
+            )
+            soft_edit_stats = {
+                "enabled": True,
+                "weight_field": "soft_edit_weights",
+                "reliable_floor": float(args.soft_edit_reliable_floor),
+                "confidence_power": float(args.soft_edit_confidence_power),
+                "margin_power": float(args.soft_edit_margin_power),
+                "mean_weight": float(np.mean(finalized["soft_edit_weights"])),
+                "max_weight": float(np.max(finalized["soft_edit_weights"])) if point_count else 0.0,
+            }
+            finalized["source_type"] = str(finalized.get("source_type", "trained_semantic_asset_probs")) + "_soft_edit"
         save_part_label_bank(
             output,
             **finalized,
@@ -627,6 +823,8 @@ def main() -> int:
             summary["semantic_neighbor_fill"] = neighbor_fill_stats
             summary["editable_unknown_count"] = int(np.sum(np.asarray(finalized["editable_label"], dtype=np.int16) < 0))
             summary["editable_known_count"] = int(np.sum(np.asarray(finalized["editable_label"], dtype=np.int16) >= 0))
+        if soft_edit_stats is not None:
+            summary["soft_edit_weights"] = soft_edit_stats
         summary_path = args.summary_json.resolve() if args.summary_json else output.with_name("part_label_bank_summary.json")
         write_summary_json(summary_path, summary)
         preview_path = args.preview_ply.resolve() if args.preview_ply else output.with_name("part_label_bank_preview.ply")
@@ -647,6 +845,7 @@ def main() -> int:
             processed_views=len(records),
             depth_margin=float(args.depth_margin),
             min_part_hit_ratio=float(args.min_part_hit_ratio),
+            soft_edit_weight_field="soft_edit_weights" if soft_edit_stats is not None else None,
         )
         if opacity_stats is not None:
             manifest["min_opacity"] = float(args.min_opacity)
@@ -658,6 +857,9 @@ def main() -> int:
         if reliability_stats is not None:
             manifest["semantic_reliability"] = reliability_stats
             manifest["preview_label_field"] = "editable_label" if bool(args.preview_use_editable_label) else "part_label"
+            manifest["source_type"] = str(finalized.get("source_type", manifest.get("source_type", "trained_semantic_asset_probs")))
+        if soft_edit_stats is not None:
+            manifest["soft_edit_weights"] = soft_edit_stats
             manifest["source_type"] = str(finalized.get("source_type", manifest.get("source_type", "trained_semantic_asset_probs")))
         if neighbor_fill_stats is not None:
             manifest["semantic_neighbor_fill"] = neighbor_fill_stats

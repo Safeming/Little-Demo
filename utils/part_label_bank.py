@@ -49,6 +49,12 @@ def finalize_votes(per_part_votes, visible_vote_count, conflict_count) -> dict[s
         raise ValueError("conflict_count shape mismatch")
 
     vote_count_i32 = votes_i32.sum(axis=1, dtype=np.int32)
+    semantic_probs = np.zeros((point_count, len(PART_NAMES)), dtype=np.float32)
+    has_any_vote = vote_count_i32 > 0
+    if np.any(has_any_vote):
+        semantic_probs[has_any_vote] = votes_i32[has_any_vote].astype(np.float32) / vote_count_i32[
+            has_any_vote
+        ].astype(np.float32)[:, None]
     part_label = np.full((point_count,), -1, dtype=np.int16)
     confidence = np.zeros((point_count,), dtype=np.float32)
     has_vote = vote_count_i32 > 0
@@ -65,6 +71,7 @@ def finalize_votes(per_part_votes, visible_vote_count, conflict_count) -> dict[s
         "per_part_votes": _require_int16_range("per_part_votes", votes_i32),
         "visible_vote_count": _require_int16_range("visible_vote_count", visible_i32),
         "conflict_count": _require_int16_range("conflict_count", conflict_i32),
+        "semantic_probs": semantic_probs,
     }
 
 
@@ -153,6 +160,149 @@ def compute_semantic_reliable_mask(
             raise ValueError("opacity point count must match part_label")
         reliable &= np.isfinite(opacity_arr) & (opacity_arr >= float(min_opacity))
     return reliable.astype(np.uint8, copy=False)
+
+
+def compute_soft_edit_weights(
+    *,
+    semantic_probs,
+    confidence,
+    semantic_margin,
+    reliable_mask=None,
+    reliable_floor: float = 0.0,
+    confidence_power: float = 1.0,
+    margin_power: float = 1.0,
+) -> np.ndarray:
+    probs = np.asarray(semantic_probs, dtype=np.float32)
+    if probs.ndim != 2 or probs.shape[1] != len(PART_NAMES):
+        raise ValueError(f"semantic_probs must have shape [N, {len(PART_NAMES)}]")
+    point_count = probs.shape[0]
+    conf = np.asarray(confidence, dtype=np.float32).reshape(-1)
+    margin = np.asarray(semantic_margin, dtype=np.float32).reshape(-1)
+    if conf.shape[0] != point_count:
+        raise ValueError("confidence point count must match semantic_probs")
+    if margin.shape[0] != point_count:
+        raise ValueError("semantic_margin point count must match semantic_probs")
+
+    conf_factor = np.zeros((point_count,), dtype=np.float32)
+    margin_factor = np.zeros((point_count,), dtype=np.float32)
+    valid_conf = np.isfinite(conf)
+    valid_margin = np.isfinite(margin)
+    conf_factor[valid_conf] = np.clip(conf[valid_conf], 0.0, 1.0) ** float(confidence_power)
+    margin_factor[valid_margin] = np.clip(margin[valid_margin], 0.0, 1.0) ** float(margin_power)
+    reliability_factor = np.ones((point_count,), dtype=np.float32)
+    if reliable_mask is not None:
+        reliable = np.asarray(reliable_mask, dtype=np.uint8).reshape(-1) > 0
+        if reliable.shape[0] != point_count:
+            raise ValueError("reliable_mask point count must match semantic_probs")
+        reliability_factor[~reliable] = float(reliable_floor)
+
+    weights = probs * conf_factor[:, None] * margin_factor[:, None] * reliability_factor[:, None]
+    weights[~np.isfinite(weights)] = 0.0
+    return np.clip(weights, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def compute_evidence_calibrated_soft_edit_weights(
+    *,
+    soft_edit_weights,
+    footprint_target_ratio,
+    footprint_outer_ratio,
+    view_support_count,
+    conflict_ratio=None,
+    center_outer_ratio=None,
+    center_valid_count=None,
+    parts: tuple[str, ...] | list[str] | None = None,
+    min_support_views: int = 5,
+    min_center_views: int = 0,
+    target_retention_floor: float = 0.60,
+    outer_penalty_power: float = 1.0,
+    conflict_penalty_power: float = 1.0,
+    center_penalty_power: float = 0.0,
+    center_target_retention_floor: float = 0.75,
+) -> tuple[np.ndarray, dict]:
+    weights = np.asarray(soft_edit_weights, dtype=np.float32)
+    target = np.asarray(footprint_target_ratio, dtype=np.float32)
+    outer = np.asarray(footprint_outer_ratio, dtype=np.float32)
+    support = np.asarray(view_support_count)
+    if weights.ndim != 2 or weights.shape[1] != len(PART_NAMES):
+        raise ValueError(f"soft_edit_weights must have shape [N, {len(PART_NAMES)}]")
+    if target.shape != weights.shape:
+        raise ValueError("footprint_target_ratio shape must match soft_edit_weights")
+    if outer.shape != weights.shape:
+        raise ValueError("footprint_outer_ratio shape must match soft_edit_weights")
+    if support.shape != weights.shape:
+        raise ValueError("view_support_count shape must match soft_edit_weights")
+    if conflict_ratio is None:
+        conflict = np.zeros_like(weights, dtype=np.float32)
+    else:
+        conflict = np.asarray(conflict_ratio, dtype=np.float32)
+        if conflict.shape != weights.shape:
+            raise ValueError("conflict_ratio shape must match soft_edit_weights")
+    if center_outer_ratio is None:
+        center_outer = np.zeros_like(weights, dtype=np.float32)
+    else:
+        center_outer = np.asarray(center_outer_ratio, dtype=np.float32)
+        if center_outer.shape != weights.shape:
+            raise ValueError("center_outer_ratio shape must match soft_edit_weights")
+    if center_valid_count is None:
+        center_support = np.zeros_like(weights, dtype=np.int16)
+    else:
+        center_support = np.asarray(center_valid_count)
+        if center_support.shape != weights.shape:
+            raise ValueError("center_valid_count shape must match soft_edit_weights")
+
+    selected_parts = list(PART_NAMES) if parts is None else [str(part) for part in parts]
+    unknown = [part for part in selected_parts if part not in PART_NAMES]
+    if unknown:
+        raise ValueError(f"unknown part(s): {unknown}")
+
+    updated = weights.copy()
+    part_stats = {}
+    enough_support = support.astype(np.int32) >= int(min_support_views)
+    target_floor = float(target_retention_floor)
+    outer_power = float(outer_penalty_power)
+    conflict_power = float(conflict_penalty_power)
+    center_power = float(center_penalty_power)
+    center_target_floor = float(center_target_retention_floor)
+    for part in selected_parts:
+        idx = PART_NAMES.index(part)
+        mask = enough_support[:, idx]
+        target_factor = np.clip(target[:, idx], target_floor, 1.0)
+        outer_penalty = np.clip(1.0 - outer[:, idx], 0.0, 1.0) ** outer_power
+        conflict_penalty = np.clip(1.0 - conflict[:, idx], 0.0, 1.0) ** conflict_power
+        raw_penalty = outer_penalty * conflict_penalty
+        target_protected = target[:, idx] >= target_floor
+        factor = np.where(target_protected, np.maximum(target_factor, raw_penalty), raw_penalty)
+        center_mask = np.zeros_like(mask, dtype=bool)
+        if center_power > 0.0 and int(min_center_views) > 0:
+            center_mask = center_support[:, idx].astype(np.int32) >= int(min_center_views)
+            center_penalty = np.clip(1.0 - center_outer[:, idx], 0.0, 1.0) ** center_power
+            center_combined = factor * center_penalty
+            center_protected = target[:, idx] >= center_target_floor
+            factor = np.where(center_mask, center_combined, factor)
+            factor = np.where(center_mask & center_protected, np.maximum(factor, center_target_floor), factor)
+        before = updated[:, idx].copy()
+        updated[mask, idx] = before[mask] * factor[mask]
+        changed = np.abs(updated[:, idx] - before) > 1.0e-8
+        part_stats[part] = {
+            "calibrated_count": int(np.sum(mask)),
+            "changed_count": int(np.sum(changed)),
+            "center_penalized_count": int(np.sum(mask & center_mask & (factor < 1.0))),
+            "old_weight_sum": float(np.sum(before)),
+            "new_weight_sum": float(np.sum(updated[:, idx])),
+            "removed_weight_sum": float(np.sum(before - updated[:, idx])),
+            "min_support_views": int(min_support_views),
+            "min_center_views": int(min_center_views),
+            "target_retention_floor": target_floor,
+            "center_penalty_power": center_power,
+            "center_target_retention_floor": center_target_floor,
+        }
+
+    summary = {
+        "mode": "evidence_calibrated_soft_edit_weights",
+        "parts": part_stats,
+        "total_removed_weight_sum": float(np.sum(weights - updated)),
+    }
+    return np.clip(updated, 0.0, 1.0).astype(np.float32, copy=False), summary
 
 
 def apply_reliable_label_mask(
@@ -502,6 +652,10 @@ def validate_part_label_bank_arrays(arrays: Mapping[str, np.ndarray]) -> None:
         _check_dtype(arrays, "editable_label", np.int16)
         if _as_array(arrays["editable_label"]).shape != (point_count,):
             raise ValueError(f"editable_label must have shape ({point_count},)")
+    if "soft_edit_weights" in arrays:
+        _check_dtype(arrays, "soft_edit_weights", np.float32)
+        if _as_array(arrays["soft_edit_weights"]).shape != (point_count, len(PART_NAMES)):
+            raise ValueError(f"soft_edit_weights must have shape ({point_count}, {len(PART_NAMES)})")
     if "neighbor_fill_mask" in arrays:
         _check_dtype(arrays, "neighbor_fill_mask", np.uint8)
         if _as_array(arrays["neighbor_fill_mask"]).shape != (point_count,):
@@ -524,6 +678,7 @@ def save_part_label_bank(
     semantic_margin=None,
     reliable_mask=None,
     editable_label=None,
+    soft_edit_weights=None,
     neighbor_fill_mask=None,
     source_type: str = "multiview_2d_mask_votes",
 ) -> None:
@@ -552,6 +707,8 @@ def save_part_label_bank(
         arrays["reliable_mask"] = np.asarray(reliable_mask, dtype=np.uint8)
     if editable_label is not None:
         arrays["editable_label"] = np.asarray(editable_label, dtype=np.int16)
+    if soft_edit_weights is not None:
+        arrays["soft_edit_weights"] = np.asarray(soft_edit_weights, dtype=np.float32)
     if neighbor_fill_mask is not None:
         arrays["neighbor_fill_mask"] = np.asarray(neighbor_fill_mask, dtype=np.uint8)
     validate_part_label_bank_arrays(arrays)

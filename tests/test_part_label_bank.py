@@ -9,8 +9,10 @@ from utils.part_label_bank import (
     apply_face_label_guard,
     apply_neighbor_reliable_fill,
     apply_reliable_label_mask,
+    compute_evidence_calibrated_soft_edit_weights,
     compute_semantic_margin,
     compute_semantic_reliable_mask,
+    compute_soft_edit_weights,
     apply_lower_label_guard,
     finalize_votes,
     finalize_trained_semantic_probs,
@@ -51,6 +53,27 @@ class PartLabelBankTests(unittest.TestCase):
         self.assertTrue(np.allclose(bank["confidence"], [1.0, 2.0 / 3.0, 0.0, 0.5]))
         self.assertEqual(bank["vote_count"].tolist(), [2, 3, 0, 2])
         self.assertEqual(bank["conflict_count"].tolist(), [0, 0, 0, 1])
+
+    def test_finalize_votes_exports_vote_normalized_semantic_probs(self):
+        per_part_votes = np.array(
+            [
+                [3, 1, 0, 0, 0, 0],
+                [0, 0, 0, 2, 2, 0],
+                [0, 0, 0, 0, 0, 0],
+            ],
+            dtype=np.int32,
+        )
+
+        bank = finalize_votes(
+            per_part_votes,
+            np.array([4, 4, 1], dtype=np.int32),
+            np.array([0, 1, 0], dtype=np.int32),
+        )
+
+        self.assertEqual(bank["semantic_probs"].dtype, np.float32)
+        self.assertTrue(np.allclose(bank["semantic_probs"][0], [0.75, 0.25, 0.0, 0.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(bank["semantic_probs"][1], [0.0, 0.0, 0.0, 0.5, 0.5, 0.0]))
+        self.assertTrue(np.allclose(bank["semantic_probs"][2], np.zeros((len(PART_NAMES),), dtype=np.float32)))
 
     def test_schema_validation_rejects_wrong_part_vote_shape(self):
         arrays = {
@@ -160,6 +183,47 @@ class PartLabelBankTests(unittest.TestCase):
         self.assertEqual(stats["valid_mask_count"], 3)
         self.assertEqual(stats["part_vote_count"], 3)
         self.assertEqual(stats["conflict_count"], 1)
+
+    def test_accumulate_projected_votes_can_use_footprint_hit_ratio(self):
+        xy = torch.tensor([[3.0, 3.0], [1.0, 1.0]], dtype=torch.float32)
+        proj_valid = torch.tensor([True, True])
+        visibility_filter = torch.tensor([True, True])
+        radii = torch.tensor([2.0, 2.0])
+        foreground = np.ones((7, 7), dtype=np.float32)
+        valid_mask = np.ones((7, 7), dtype=np.float32)
+        part_masks = {name: np.zeros((7, 7), dtype=np.float32) for name in PART_NAMES}
+        part_masks["lower"][2:5, 2:5] = 1.0
+        part_masks["shoes"][0:3, 0:3] = 1.0
+        per_part_votes = np.zeros((2, len(PART_NAMES)), dtype=np.int32)
+        visible_vote_count = np.zeros((2,), dtype=np.int32)
+        conflict_count = np.zeros((2,), dtype=np.int32)
+
+        stats = accumulate_projected_votes(
+            xy=xy,
+            proj_valid=proj_valid,
+            visibility_filter=visibility_filter,
+            radii=radii,
+            image_size=(7, 7),
+            part_masks=part_masks,
+            foreground_mask=foreground,
+            valid_mask=valid_mask,
+            per_part_votes=per_part_votes,
+            visible_vote_count=visible_vote_count,
+            conflict_count=conflict_count,
+            mask_threshold=0.5,
+            footprint_mode="footprint",
+            footprint_radius_scale=1.0,
+            min_footprint_radius=1,
+            max_footprint_radius=3,
+            min_footprint_hit_ratio=0.50,
+        )
+
+        self.assertEqual(per_part_votes[:, PART_NAMES.index("lower")].tolist(), [1, 0])
+        self.assertEqual(per_part_votes[:, PART_NAMES.index("shoes")].tolist(), [0, 1])
+        self.assertEqual(visible_vote_count.tolist(), [1, 1])
+        self.assertEqual(stats["part_vote_count"], 2)
+        self.assertEqual(stats["footprint_vote_count"], 2)
+        self.assertGreater(stats["mean_winning_footprint_hit_ratio"], 0.5)
 
     def test_accumulate_projected_votes_can_filter_occluded_points_by_depth(self):
         xy = torch.tensor(
@@ -369,6 +433,67 @@ class PartLabelBankTests(unittest.TestCase):
         self.assertEqual(stats["low_margin_count"], 1)
         self.assertEqual(stats["low_opacity_count"], 1)
 
+    def test_compute_soft_edit_weights_combines_probs_confidence_margin_and_reliability(self):
+        semantic_probs = np.array(
+            [
+                [0.80, 0.20, 0.00, 0.00, 0.00, 0.00],
+                [0.30, 0.70, 0.00, 0.00, 0.00, 0.00],
+            ],
+            dtype=np.float32,
+        )
+        confidence = np.array([0.90, 0.50], dtype=np.float32)
+        semantic_margin = np.array([0.60, 0.20], dtype=np.float32)
+        reliable_mask = np.array([1, 0], dtype=np.uint8)
+
+        weights = compute_soft_edit_weights(
+            semantic_probs=semantic_probs,
+            confidence=confidence,
+            semantic_margin=semantic_margin,
+            reliable_mask=reliable_mask,
+            reliable_floor=0.25,
+            confidence_power=2.0,
+            margin_power=1.0,
+        )
+
+        expected = semantic_probs.copy()
+        expected[0] *= 0.90**2 * 0.60
+        expected[1] *= 0.50**2 * 0.20 * 0.25
+        self.assertEqual(weights.dtype, np.float32)
+        self.assertEqual(weights.shape, (2, len(PART_NAMES)))
+        self.assertTrue(np.allclose(weights, expected))
+
+    def test_evidence_calibrated_soft_weights_penalize_stable_outer_without_deleting_target(self):
+        lower = PART_NAMES.index("lower")
+        weights = np.zeros((4, len(PART_NAMES)), dtype=np.float32)
+        weights[:, lower] = np.array([0.80, 0.80, 0.80, 0.10], dtype=np.float32)
+        target_ratio = np.zeros_like(weights)
+        outer_ratio = np.zeros_like(weights)
+        support = np.zeros_like(weights, dtype=np.int16)
+        conflict_ratio = np.zeros_like(weights)
+        target_ratio[:, lower] = np.array([0.90, 0.15, 0.80, 0.05], dtype=np.float32)
+        outer_ratio[:, lower] = np.array([0.10, 0.85, 0.20, 0.95], dtype=np.float32)
+        support[:, lower] = np.array([12, 12, 2, 12], dtype=np.int16)
+        conflict_ratio[:, lower] = np.array([0.00, 0.00, 0.00, 0.50], dtype=np.float32)
+
+        calibrated, stats = compute_evidence_calibrated_soft_edit_weights(
+            soft_edit_weights=weights,
+            footprint_target_ratio=target_ratio,
+            footprint_outer_ratio=outer_ratio,
+            view_support_count=support,
+            conflict_ratio=conflict_ratio,
+            parts=("lower",),
+            min_support_views=5,
+            target_retention_floor=0.60,
+            outer_penalty_power=1.0,
+            conflict_penalty_power=1.0,
+        )
+
+        self.assertGreaterEqual(calibrated[0, lower], 0.80 * 0.60)
+        self.assertLess(calibrated[1, lower], weights[1, lower] * 0.40)
+        self.assertAlmostEqual(float(calibrated[2, lower]), float(weights[2, lower]))
+        self.assertLess(calibrated[3, lower], weights[3, lower])
+        self.assertEqual(stats["parts"]["lower"]["calibrated_count"], 3)
+
     def test_part_label_bank_save_load_roundtrips_reliability_fields(self):
         import tempfile
         from pathlib import Path
@@ -404,6 +529,47 @@ class PartLabelBankTests(unittest.TestCase):
             self.assertEqual(loaded["reliable_mask"].dtype, np.uint8)
             self.assertEqual(loaded["editable_label"].dtype, np.int16)
             self.assertEqual(loaded["editable_label"].tolist(), [0, -1])
+
+    def test_part_label_bank_save_load_roundtrips_soft_edit_weights(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "part_label_bank.npz"
+            probs = np.array(
+                [
+                    [0.80, 0.10, 0.10, 0.00, 0.00, 0.00],
+                    [0.34, 0.33, 0.33, 0.00, 0.00, 0.00],
+                ],
+                dtype=np.float32,
+            )
+            bank = finalize_trained_semantic_probs(probs, PART_NAMES)
+            apply_reliable_label_mask(
+                bank,
+                opacity=np.array([0.010, 0.010], dtype=np.float32),
+                min_confidence=0.65,
+                min_margin=0.20,
+                min_opacity=0.005,
+            )
+            bank["soft_edit_weights"] = compute_soft_edit_weights(
+                semantic_probs=bank["semantic_probs"],
+                confidence=bank["confidence"],
+                semantic_margin=bank["semantic_margin"],
+                reliable_mask=bank["reliable_mask"],
+            )
+
+            save_part_label_bank(
+                out,
+                **bank,
+                source_checkpoint="/tmp/ckpt.pth",
+                source_asset_root="/tmp/assets",
+                source_iteration=141160,
+            )
+            loaded = load_part_label_bank(out)
+
+            self.assertEqual(loaded["soft_edit_weights"].dtype, np.float32)
+            self.assertEqual(loaded["soft_edit_weights"].shape, (2, len(PART_NAMES)))
+            self.assertTrue(np.allclose(loaded["soft_edit_weights"], bank["soft_edit_weights"]))
 
     def test_apply_neighbor_reliable_fill_only_fills_unknowns_with_same_label_majority(self):
         bank = {
@@ -570,6 +736,57 @@ class PartLabelBankTests(unittest.TestCase):
         self.assertEqual(manifest["processed_views"], 3)
         self.assertEqual(manifest["depth_margin"], 0.02)
         self.assertEqual(manifest["min_part_hit_ratio"], 0.25)
+
+    def test_build_output_manifest_can_record_soft_edit_field(self):
+        manifest = build_output_manifest(
+            checkpoint="/tmp/live/ckpt141160.pth",
+            config="/tmp/live/config.yaml",
+            asset_root="/tmp/assets/semantic_editable_assets",
+            output="/tmp/out/part_label_bank.npz",
+            summary_json="/tmp/out/summary.json",
+            preview_ply="/tmp/out/preview.ply",
+            point_count=46801,
+            source_iteration=141160,
+            processed_views=3,
+            depth_margin=0.02,
+            min_part_hit_ratio=0.25,
+            soft_edit_weight_field="soft_edit_weights",
+        )
+
+        self.assertEqual(manifest["soft_edit_weight_field"], "soft_edit_weights")
+        self.assertEqual(manifest["soft_edit_part_names"], list(PART_NAMES))
+
+    def test_parse_args_accepts_voting_and_soft_edit_modes(self):
+        import sys
+        from unittest import mock
+
+        from tools.semantic_viewer import build_part_label_bank
+
+        argv = [
+            "build_part_label_bank.py",
+            "--checkpoint",
+            "/tmp/ckpt.pth",
+            "--asset-root",
+            "/tmp/assets",
+            "--output",
+            "/tmp/out.npz",
+            "--label-bank-source",
+            "projected-2d-voting",
+            "--vote-footprint-mode",
+            "footprint",
+            "--vote-use-render-radii",
+            "--export-soft-edit-weights",
+            "--soft-edit-reliable-floor",
+            "0.25",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            args = build_part_label_bank.parse_args()
+
+        self.assertEqual(args.label_bank_source, "projected-2d-voting")
+        self.assertEqual(args.vote_footprint_mode, "footprint")
+        self.assertTrue(args.vote_use_render_radii)
+        self.assertTrue(args.export_soft_edit_weights)
+        self.assertEqual(args.soft_edit_reliable_floor, 0.25)
 
 
 if __name__ == "__main__":
