@@ -1,0 +1,19 @@
+# @package _global_
+
+opt:
+  lambda_surface_carrier_competition: 0.0
+  residual_surface_reallocation_enable: false
+  residual_surface_evidence_log_interval: 500
+
+  lambda_local_anchor_tether: [0.0, 200, 0.001, 1000, 0.004, 12000, 0.004]
+  local_anchor_tether_joint_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+  local_anchor_tether_normal_limit: 0.055
+  local_anchor_tether_tangent_limit: 0.15
+  local_anchor_tether_normal_weight: 1.0
+  local_anchor_tether_tangent_weight: 0.02
+  local_anchor_tether_smooth_l1_beta: 0.01
+  local_anchor_tether_log_interval: 500
+  local_anchor_tether_metric_gate_enable: false
+
+  surface_carrier_metric_gate_enable: false
+
