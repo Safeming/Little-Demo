@@ -192,3 +192,55 @@ def test_b5_support_diagnostics_apply_support_threshold():
     assert [row["support_threshold"] for row in rows] == [0.2, 0.6]
     assert [row["selected_count"] for row in rows] == [2, 1]
     assert all("allowed_support_fraction" in row for row in rows)
+
+
+def test_cached_footprint_ratios_match_reference_implementation():
+    from tools.analyze_projected_soft_edit_leakage import compute_footprint_leakage_for_selection
+    from tools.evaluate_semantic_editing_paper_protocol import (
+        compute_footprint_ratio_arrays,
+        summarize_footprint_selection_from_ratios,
+    )
+
+    xy = np.array([[2.0, 3.0], [4.0, 3.0], [-2.0, 1.0]], dtype=np.float32)
+    radii = np.array([1.0, 2.0, 1.0], dtype=np.float32)
+    selected = np.array([True, True, True])
+    weights = np.array([0.8, 0.4, 0.6], dtype=np.float32)
+    target = np.zeros((7, 7), dtype=np.float32)
+    target[2:5, 1:3] = 1.0
+    adjacent = np.zeros((7, 7), dtype=np.float32)
+    adjacent[2:5, 4:6] = 1.0
+    valid = np.ones((7, 7), dtype=np.float32)
+
+    reference = compute_footprint_leakage_for_selection(
+        part="face",
+        mode="reference",
+        view_name="view",
+        xy=xy,
+        selected=selected,
+        weights=weights,
+        radii=radii,
+        target_mask=target,
+        valid_mask=valid,
+        boundary_radius=2,
+        allowed_adjacent_masks={"hair": adjacent},
+    )
+    ratios = compute_footprint_ratio_arrays(
+        part="face",
+        xy=xy,
+        radii=radii,
+        target_mask=target,
+        valid_mask=valid,
+        boundary_radius=2,
+        allowed_adjacent_masks={"hair": adjacent},
+    )
+    cached = summarize_footprint_selection_from_ratios(selected, weights, ratios)
+
+    for key in (
+        "target_activation",
+        "outer_activation",
+        "boundary_activation",
+        "allowed_adjacent_activation",
+        "actionable_outer_activation",
+    ):
+        assert cached[key] == pytest.approx(reference[key], abs=1e-6)
+    assert cached["selected_count"] == reference["selected_count"]

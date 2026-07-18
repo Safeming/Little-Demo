@@ -7,9 +7,10 @@ import json
 from collections import OrderedDict
 from pathlib import Path
 
+import cv2
 import numpy as np
 
-from tools.analyze_projected_soft_edit_leakage import compute_footprint_leakage_for_selection
+from tools.analyze_projected_soft_edit_leakage import make_boundary_band, region_support_mask
 from utils.part_label_bank import (
     PART_NAMES,
     compute_semantic_margin,
@@ -174,6 +175,124 @@ def rasterize_footprint_weight_map(
     return output
 
 
+def compute_footprint_ratio_arrays(
+    *,
+    part: str,
+    xy,
+    radii,
+    target_mask,
+    valid_mask,
+    boundary_radius: int,
+    allowed_adjacent_masks: dict[str, np.ndarray] | None = None,
+    mask_threshold: float = 0.5,
+    min_footprint_radius: int = 1,
+    max_footprint_radius: int = 12,
+) -> dict[str, np.ndarray]:
+    points = np.asarray(xy, dtype=np.float32)
+    radii_arr = np.asarray(radii, dtype=np.float32).reshape(-1)
+    if points.ndim != 2 or points.shape[1] != 2 or points.shape[0] != radii_arr.shape[0]:
+        raise ValueError("xy and radii must have matching point counts")
+    target = np.asarray(target_mask, dtype=np.float32) >= float(mask_threshold)
+    valid = np.asarray(valid_mask, dtype=np.float32) >= float(mask_threshold)
+    if target.shape != valid.shape:
+        raise ValueError("target_mask and valid_mask must have matching shapes")
+    height, width = target.shape
+    px = np.rint(points[:, 0]).astype(np.int64)
+    py = np.rint(points[:, 1]).astype(np.int64)
+    in_image = (px >= 0) & (px < width) & (py >= 0) & (py < height)
+    min_radius = max(0, int(min_footprint_radius))
+    max_radius = max(min_radius, int(max_footprint_radius))
+    point_radius = np.clip(np.ceil(radii_arr).astype(np.int32), min_radius, max_radius)
+    eligible = in_image & np.isfinite(radii_arr) & (radii_arr > 0.0)
+    boundary = make_boundary_band(target, radius=int(boundary_radius), threshold=0.5)
+    region = region_support_mask(
+        part=part,
+        target_mask=target_mask,
+        allowed_adjacent_masks=allowed_adjacent_masks,
+        mask_threshold=float(mask_threshold),
+        region_support_mode="none",
+    )
+    adjacent_masks = []
+    for adjacent_mask in (allowed_adjacent_masks or {}).values():
+        adjacent = np.asarray(adjacent_mask, dtype=np.float32) >= float(mask_threshold)
+        if adjacent.shape != target.shape:
+            raise ValueError("allowed adjacent masks must match target_mask shape")
+        adjacent_masks.append(adjacent)
+    arrays = {
+        "observed": np.zeros((points.shape[0],), dtype=bool),
+        "target_ratio": np.zeros((points.shape[0],), dtype=np.float32),
+        "outer_ratio": np.zeros((points.shape[0],), dtype=np.float32),
+        "boundary_ratio": np.zeros((points.shape[0],), dtype=np.float32),
+        "allowed_adjacent_ratio": np.zeros((points.shape[0],), dtype=np.float32),
+        "actionable_outer_ratio": np.zeros((points.shape[0],), dtype=np.float32),
+    }
+    valid_float = valid.astype(np.float32)
+    sources = {
+        "target": (target & valid).astype(np.float32),
+        "boundary": (boundary & valid).astype(np.float32),
+        "region": (region & valid).astype(np.float32),
+    }
+    for radius in sorted({int(value) for value in point_radius[eligible]}):
+        indices = np.nonzero(eligible & (point_radius == radius))[0]
+        yy, xx = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+        kernel = ((yy * yy + xx * xx) <= radius * radius).astype(np.float32)
+        support_count = cv2.filter2D(valid_float, cv2.CV_32F, kernel, borderType=cv2.BORDER_CONSTANT)
+        denominator = support_count[py[indices], px[indices]]
+        observed = denominator > 0.0
+        observed_indices = indices[observed]
+        if observed_indices.size == 0:
+            continue
+        denominator = denominator[observed]
+
+        def sampled_ratio(source: np.ndarray) -> np.ndarray:
+            summed = cv2.filter2D(source, cv2.CV_32F, kernel, borderType=cv2.BORDER_CONSTANT)
+            return summed[py[observed_indices], px[observed_indices]] / denominator
+
+        target_ratio = sampled_ratio(sources["target"])
+        boundary_ratio = sampled_ratio(sources["boundary"])
+        region_ratio = sampled_ratio(sources["region"])
+        adjacent_ratio = np.zeros_like(target_ratio)
+        for adjacent in adjacent_masks:
+            adjacent_ratio = np.maximum(adjacent_ratio, sampled_ratio((adjacent & valid).astype(np.float32)))
+        outer_ratio = np.maximum(0.0, 1.0 - target_ratio)
+        boundary_allowed = np.where(
+            boundary_ratio > 0.0,
+            np.minimum(outer_ratio, adjacent_ratio),
+            0.0,
+        )
+        allowed_ratio = np.minimum(outer_ratio, np.maximum(boundary_allowed, region_ratio))
+        arrays["observed"][observed_indices] = True
+        arrays["target_ratio"][observed_indices] = target_ratio
+        arrays["outer_ratio"][observed_indices] = outer_ratio
+        arrays["boundary_ratio"][observed_indices] = boundary_ratio
+        arrays["allowed_adjacent_ratio"][observed_indices] = allowed_ratio
+        arrays["actionable_outer_ratio"][observed_indices] = np.maximum(0.0, outer_ratio - allowed_ratio)
+    return arrays
+
+
+def summarize_footprint_selection_from_ratios(selected, weights, ratios: dict[str, np.ndarray]) -> dict:
+    selected_arr = np.asarray(selected, dtype=bool).reshape(-1)
+    weights_arr = np.asarray(weights, dtype=np.float32).reshape(-1)
+    observed = np.asarray(ratios["observed"], dtype=bool).reshape(-1)
+    if selected_arr.shape != weights_arr.shape or selected_arr.shape != observed.shape:
+        raise ValueError("selected, weights, and footprint ratios must have matching point counts")
+    active = selected_arr & observed
+
+    def activation(key: str) -> float:
+        values = np.asarray(ratios[key], dtype=np.float32).reshape(-1)
+        return float(np.sum(weights_arr[active] * values[active], dtype=np.float64))
+
+    return {
+        "selected_count": int(np.sum(selected_arr)),
+        "observed_footprint_count": int(np.sum(active)),
+        "target_activation": activation("target_ratio"),
+        "outer_activation": activation("outer_ratio"),
+        "boundary_activation": activation("boundary_ratio"),
+        "allowed_adjacent_activation": activation("allowed_adjacent_ratio"),
+        "actionable_outer_activation": activation("actionable_outer_ratio"),
+    }
+
+
 def _write_csv(path: Path, rows: list[dict]) -> None:
     keys = sorted({key for row in rows for key in row})
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -332,6 +451,24 @@ def _allowed_adjacent_masks(protocol: dict, part: str, part_masks: dict) -> dict
     return {name: part_masks[name] for name in names if name in part_masks}
 
 
+def _ensure_footprint_ratio_cache(caches: list[dict], protocol: dict, boundary_radius: int) -> None:
+    radius_key = int(boundary_radius)
+    for cache in caches:
+        by_radius = cache.setdefault("footprint_ratio_cache", {}).setdefault(radius_key, {})
+        for part in protocol["parts"]:
+            if part in by_radius:
+                continue
+            by_radius[part] = compute_footprint_ratio_arrays(
+                part=part,
+                xy=cache["xy"],
+                radii=cache["radii"],
+                target_mask=cache["part_masks"][part],
+                valid_mask=cache["valid_mask"],
+                boundary_radius=radius_key,
+                allowed_adjacent_masks=_allowed_adjacent_masks(protocol, part, cache["part_masks"]),
+            )
+
+
 def _curve_for_baseline(
     baseline: str,
     *,
@@ -342,6 +479,7 @@ def _curve_for_baseline(
     boundary_radius: int,
     hard_target_activation: float | None = None,
 ) -> list[dict]:
+    _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
     if baseline in ("B1", "B2"):
         settings = [(0.5, float(strength)) for strength in protocol.get("matched_retention_targets", [0.3, 0.5, 0.7, 1.0])]
     else:
@@ -363,18 +501,10 @@ def _curve_for_baseline(
                 )
                 point_weights = weights * float(strength)
                 selected = (weights >= float(threshold)) & cache["projected"]
-                row = compute_footprint_leakage_for_selection(
-                    part=part,
-                    mode=baseline,
-                    view_name=cache["view"],
-                    xy=cache["xy"],
+                row = summarize_footprint_selection_from_ratios(
                     selected=selected,
                     weights=point_weights,
-                    radii=cache["radii"],
-                    target_mask=cache["part_masks"][part],
-                    valid_mask=cache["valid_mask"],
-                    boundary_radius=int(boundary_radius),
-                    allowed_adjacent_masks=_allowed_adjacent_masks(protocol, part, cache["part_masks"]),
+                    ratios=cache["footprint_ratio_cache"][int(boundary_radius)][part],
                 )
                 target_activation += float(row["target_activation"])
                 outer_activation += float(row["outer_activation"])
@@ -407,6 +537,7 @@ def _support_diagnostics_for_b5(
     protocol: dict,
     boundary_radius: int,
 ) -> list[dict]:
+    _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
     rows = []
     for support_threshold in protocol["validation_grid"]["support_thresholds"]:
         target_activation = 0.0
@@ -423,18 +554,10 @@ def _support_diagnostics_for_b5(
                     part_index=PART_NAMES.index(part),
                 )
                 selected = (support >= float(support_threshold)) & cache["projected"]
-                row = compute_footprint_leakage_for_selection(
-                    part=part,
-                    mode="B5_support",
-                    view_name=cache["view"],
-                    xy=cache["xy"],
+                row = summarize_footprint_selection_from_ratios(
                     selected=selected,
                     weights=support,
-                    radii=cache["radii"],
-                    target_mask=cache["part_masks"][part],
-                    valid_mask=cache["valid_mask"],
-                    boundary_radius=int(boundary_radius),
-                    allowed_adjacent_masks=_allowed_adjacent_masks(protocol, part, cache["part_masks"]),
+                    ratios=cache["footprint_ratio_cache"][int(boundary_radius)][part],
                 )
                 target_activation += float(row["target_activation"])
                 outer_activation += float(row["outer_activation"])
@@ -667,6 +790,17 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         boundary_radius=boundary_radius,
     )
     if bool(args.validation_sweep):
+        boundary_f1_by_threshold = {
+            float(threshold): _mean_boundary_f1_for_threshold(
+                baseline="B5",
+                threshold=float(threshold),
+                caches=caches,
+                trained_bank=trained_bank,
+                voting_bank=voting_bank,
+                protocol=protocol,
+            )
+            for threshold in protocol["validation_grid"]["soft_thresholds"]
+        }
         for radius in protocol["validation_grid"]["boundary_radii"]:
             b5_curve = _curve_for_baseline(
                 "B5",
@@ -687,14 +821,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 float(row["support_threshold"]): row for row in support_rows
             }
             for row in b5_curve:
-                boundary_f1 = _mean_boundary_f1_for_threshold(
-                    baseline="B5",
-                    threshold=float(row["threshold"]),
-                    caches=caches,
-                    trained_bank=trained_bank,
-                    voting_bank=voting_bank,
-                    protocol=protocol,
-                )
+                boundary_f1 = boundary_f1_by_threshold[float(row["threshold"])]
                 radius_rows.append({**row, "mean_boundary_f1": boundary_f1})
                 for support_threshold in protocol["validation_grid"]["support_thresholds"]:
                     support_row = support_by_threshold[float(support_threshold)]
