@@ -156,3 +156,14 @@ def test_file_fingerprint_hashes_file_content(tmp_path):
     assert module.file_fingerprint(left) == module.file_fingerprint(right)
     right.write_bytes(b"different")
     assert module.file_fingerprint(left) != module.file_fingerprint(right)
+
+
+def test_write_protocol_manifest_records_normalized_protocol_and_fingerprint(tmp_path):
+    module = _module()
+
+    path = module.write_protocol_manifest(tmp_path / "protocol_manifest.json", _protocol())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["protocol_name"] == "strict_test_v1"
+    assert payload["protocol_fingerprint"] == module.protocol_fingerprint(_protocol())
+    assert payload["splits"]["test"]["record_count"] == 1

@@ -161,6 +161,27 @@ def record_fingerprint(records: Iterable[dict]) -> str:
     return hashlib.sha256(_canonical_json(canonical_records).encode("utf-8")).hexdigest()
 
 
+def write_protocol_manifest(path: Path | str, protocol: dict) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = normalize_protocol(protocol)
+    payload = {
+        "protocol_name": normalized["protocol_name"],
+        "subject": normalized["subject"],
+        "protocol_fingerprint": protocol_fingerprint(normalized),
+        "splits": {
+            split_name: {
+                **normalized[split_name],
+                "record_count": len(_split_keys(normalized[split_name])),
+            }
+            for split_name in PROTOCOL_SPLITS
+        },
+        "protocol": normalized,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def validate_frozen_config(
     frozen_config: dict,
     *,

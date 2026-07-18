@@ -131,6 +131,7 @@ PY
 
 validate() {
   run "$PYTHON_BIN" -c "from utils.semantic_eval_protocol import load_protocol; load_protocol(r'$PROTOCOL'); print('protocol valid')"
+  run "$PYTHON_BIN" -c "from utils.semantic_eval_protocol import load_protocol, write_protocol_manifest; write_protocol_manifest(r'$OUTPUT_ROOT/protocol_manifest.json', load_protocol(r'$PROTOCOL'))"
   if [[ "$DRY_RUN" != "1" ]]; then
     [[ -f "$BASE_CKPT" ]]
     [[ -d "$DATA_ROOT/CoreView_377" ]]
