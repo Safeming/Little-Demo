@@ -135,6 +135,17 @@ def protocol_fingerprint(protocol: dict) -> str:
     return hashlib.sha256(_canonical_json(normalized).encode("utf-8")).hexdigest()
 
 
+def file_fingerprint(path: Path | str, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(int(chunk_size))
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def record_fingerprint(records: Iterable[dict]) -> str:
     canonical_records = sorted(
         [

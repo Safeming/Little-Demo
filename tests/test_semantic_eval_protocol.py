@@ -144,3 +144,15 @@ def test_write_protocol_provenance_records_selected_records(tmp_path):
     assert payload["selected_record_names"] == ["c17_f000060"]
     assert payload["protocol_fingerprint"] == module.protocol_fingerprint(protocol)
     assert payload["record_fingerprint"] == module.record_fingerprint(records)
+
+
+def test_file_fingerprint_hashes_file_content(tmp_path):
+    module = _module()
+    left = tmp_path / "left.bin"
+    right = tmp_path / "right.bin"
+    left.write_bytes(b"semantic-checkpoint")
+    right.write_bytes(b"semantic-checkpoint")
+
+    assert module.file_fingerprint(left) == module.file_fingerprint(right)
+    right.write_bytes(b"different")
+    assert module.file_fingerprint(left) != module.file_fingerprint(right)
