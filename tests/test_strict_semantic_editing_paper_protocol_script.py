@@ -42,6 +42,8 @@ def test_strict_runner_dry_run_wires_protocol_splits_and_fair_preview(tmp_path):
     assert "--soft-threshold 0.20" in output
     assert "--max-views 9" in output
     assert "protocol_manifest.json" in output
+    assert "--outer-penalty-power 0.5" in output
+    assert "--support-penalty-power 0.5" in output
 
 
 def test_strict_runner_declares_all_required_stages():

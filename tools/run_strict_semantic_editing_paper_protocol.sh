@@ -17,6 +17,7 @@ SEMANTIC_CKPT="${SEMANTIC_CKPT:-}"
 PARSER_ROOT="${PARSER_ROOT:-$ROOT/data/parsers_from_hulk_multiview}"
 DATA_ROOT="${DATA_ROOT:-$ROOT/data/ZJUMoCap}"
 TRAIN_STEPS="${TRAIN_STEPS:-2000}"
+CALIBRATION_PENALTY_POWER="${CALIBRATION_PENALTY_POWER:-0.5}"
 
 CALIBRATION_EXPORT="$OUTPUT_ROOT/assets/calibration"
 VALIDATION_EXPORT="$OUTPUT_ROOT/assets/validation"
@@ -203,6 +204,8 @@ calibrate() {
   run "$PYTHON_BIN" tools/calibrate_evidence_soft_edit_weights.py \
     --part-label-bank "$RAW_BANK" --checkpoint "$ckpt" --asset-root "$CALIBRATION_ASSETS" \
     --output "$CALIBRATED_BANK" --parts face hair upper lower shoes skin --mode support-aware \
+    --outer-penalty-power "$CALIBRATION_PENALTY_POWER" \
+    --support-penalty-power "$CALIBRATION_PENALTY_POWER" \
     --support-pair face:hair --support-pair hair:face --support-pair upper:skin \
     --support-pair upper:lower --support-pair lower:upper --support-pair lower:skin \
     --support-pair shoes:lower --support-pair shoes:skin --support-pair skin:upper --support-pair skin:lower \
