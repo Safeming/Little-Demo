@@ -474,6 +474,26 @@ def _ensure_footprint_ratio_cache(caches: list[dict], protocol: dict, boundary_r
             )
 
 
+def curve_settings_for_baseline(
+    baseline: str,
+    *,
+    protocol: dict,
+    fixed_soft_threshold: float | None = None,
+    soft_strength_sweep: bool = False,
+) -> list[tuple[float, float]]:
+    strengths = [
+        float(strength)
+        for strength in protocol.get("matched_retention_targets", [0.3, 0.5, 0.7, 1.0])
+    ]
+    if baseline in ("B1", "B2"):
+        return [(0.5, strength) for strength in strengths]
+    if soft_strength_sweep:
+        if fixed_soft_threshold is None:
+            raise ValueError("fixed soft threshold is required for a soft edit-strength sweep")
+        return [(float(fixed_soft_threshold), strength) for strength in strengths]
+    return [(float(threshold), 1.0) for threshold in protocol["validation_grid"]["soft_thresholds"]]
+
+
 def _curve_for_baseline(
     baseline: str,
     *,
@@ -483,12 +503,16 @@ def _curve_for_baseline(
     protocol: dict,
     boundary_radius: int,
     hard_target_activation: float | None = None,
+    fixed_soft_threshold: float | None = None,
+    soft_strength_sweep: bool = False,
 ) -> list[dict]:
     _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
-    if baseline in ("B1", "B2"):
-        settings = [(0.5, float(strength)) for strength in protocol.get("matched_retention_targets", [0.3, 0.5, 0.7, 1.0])]
-    else:
-        settings = [(float(threshold), 1.0) for threshold in protocol["validation_grid"]["soft_thresholds"]]
+    settings = curve_settings_for_baseline(
+        baseline,
+        protocol=protocol,
+        fixed_soft_threshold=fixed_soft_threshold,
+        soft_strength_sweep=soft_strength_sweep,
+    )
     rows = []
     for threshold, strength in settings:
         target_activation = 0.0
@@ -836,6 +860,8 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 protocol=protocol,
                 boundary_radius=boundary_radius,
                 hard_target_activation=hard_target,
+                fixed_soft_threshold=fixed_threshold,
+                soft_strength_sweep=not bool(args.validation_sweep),
             )
     curve_rows = [row for rows in curves.values() for row in rows]
     matched = []
@@ -924,6 +950,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "fixed_boundary_radius": boundary_radius,
         "retention_reference_baseline": retention_reference,
         "retention_reference_target_activation": hard_target,
+        "soft_curve_mode": (
+            "threshold_sweep" if bool(args.validation_sweep) else "frozen_threshold_edit_strength_sweep"
+        ),
         "uses_test_parser_for_calibration": False,
         "parser_oracle_baseline": "B0",
     }

@@ -291,3 +291,21 @@ def test_matched_retention_reference_prefers_fixed_voting_baseline():
 
     assert baseline == "B1"
     assert activation == pytest.approx(100.0)
+
+
+def test_fixed_soft_curve_sweeps_edit_strength_at_frozen_threshold():
+    from tools.evaluate_semantic_editing_paper_protocol import curve_settings_for_baseline
+
+    protocol = {
+        "matched_retention_targets": [0.3, 0.5, 0.6, 1.0],
+        "validation_grid": {"soft_thresholds": [0.5, 0.2, 0.05]},
+    }
+
+    settings = curve_settings_for_baseline(
+        "B5",
+        protocol=protocol,
+        fixed_soft_threshold=0.35,
+        soft_strength_sweep=True,
+    )
+
+    assert settings == [(0.35, 0.3), (0.35, 0.5), (0.35, 0.6), (0.35, 1.0)]
