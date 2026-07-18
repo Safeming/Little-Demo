@@ -182,6 +182,76 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _write_paper_figures(output_dir: Path, result: dict) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    colors = {
+        "B0": "#6B7280",
+        "B1": "#2563EB",
+        "B2": "#111827",
+        "B3": "#D97706",
+        "B4": "#0F766E",
+        "B5": "#DC2626",
+    }
+    curve_rows = list(result.get("curve", []))
+    fig, ax = plt.subplots(figsize=(5.6, 4.0))
+    for baseline in BASELINE_SPECS:
+        rows = sorted(
+            (row for row in curve_rows if row.get("baseline") == baseline),
+            key=lambda row: float(row["retention"]),
+        )
+        if not rows:
+            continue
+        ax.plot(
+            [float(row["retention"]) for row in rows],
+            [float(row["actionable_leakage"]) for row in rows],
+            marker="o",
+            linewidth=1.8,
+            markersize=4,
+            label=baseline,
+            color=colors[baseline],
+        )
+    ax.set_xlabel("Target activation retention vs. hard label")
+    ax.set_ylabel("Actionable footprint leakage")
+    ax.grid(True, color="#D1D5DB", linewidth=0.6, alpha=0.8)
+    if ax.lines:
+        ax.legend(frameon=False, ncol=2)
+    fig.tight_layout()
+    fig.savefig(output_dir / "leakage_retention_curve.png", dpi=220)
+    fig.savefig(output_dir / "leakage_retention_curve.pdf")
+    plt.close(fig)
+
+    part_rows = list(result.get("per_part", []))
+    parts = [part for part in PART_NAMES if any(row.get("part") == part for row in part_rows)]
+    baselines = [baseline for baseline in BASELINE_SPECS if any(row.get("baseline") == baseline for row in part_rows)]
+    fig, ax = plt.subplots(figsize=(7.2, 4.0))
+    x = np.arange(len(parts), dtype=np.float32)
+    width = 0.78 / max(len(baselines), 1)
+    for index, baseline in enumerate(baselines):
+        by_part = {row["part"]: float(row["iou"]) for row in part_rows if row.get("baseline") == baseline}
+        offset = (index - (len(baselines) - 1) / 2.0) * width
+        ax.bar(
+            x + offset,
+            [by_part.get(part, 0.0) for part in parts],
+            width=width,
+            label=baseline,
+            color=colors[baseline],
+        )
+    ax.set_xticks(x, parts)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("IoU")
+    ax.grid(True, axis="y", color="#D1D5DB", linewidth=0.6, alpha=0.8)
+    if baselines:
+        ax.legend(frameon=False, ncol=3)
+    fig.tight_layout()
+    fig.savefig(output_dir / "per_part_iou.png", dpi=220)
+    fig.savefig(output_dir / "per_part_iou.pdf")
+    plt.close(fig)
+
+
 def write_baseline_reports(output_dir: Path | str, result: dict) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,6 +271,7 @@ def write_baseline_reports(output_dir: Path | str, result: dict) -> None:
     )
     for filename, key in reports:
         _write_csv(output_dir / filename, list(result.get(key, [])))
+    _write_paper_figures(output_dir, result)
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:

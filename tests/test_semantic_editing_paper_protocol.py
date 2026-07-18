@@ -136,6 +136,8 @@ def test_write_baseline_reports_writes_required_outputs(tmp_path):
     assert (tmp_path / "leakage_retention_curve.csv").exists()
     assert (tmp_path / "matched_retention.csv").exists()
     assert (tmp_path / "support_diagnostics.csv").exists()
+    assert (tmp_path / "leakage_retention_curve.png").exists()
+    assert (tmp_path / "per_part_iou.png").exists()
 
 
 def test_rasterize_footprint_weight_map_uses_max_weight_in_overlaps():
