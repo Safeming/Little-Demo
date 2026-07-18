@@ -625,6 +625,35 @@ def _mean_boundary_f1_for_threshold(
     return float(np.mean(values)) if values else 0.0
 
 
+def resolve_evaluation_parameters(
+    *,
+    protocol_split: str,
+    selected_config: dict,
+    soft_threshold_override: float | None,
+    boundary_radius_override: int | None,
+) -> tuple[float, int]:
+    if str(protocol_split) == "test" and (
+        soft_threshold_override is not None or boundary_radius_override is not None
+    ):
+        raise ValueError("test evaluation forbids metric overrides; use frozen validation config")
+
+    fixed_threshold = float(
+        soft_threshold_override
+        if soft_threshold_override is not None
+        else selected_config.get("soft_threshold", 0.20)
+    )
+    boundary_radius = int(
+        boundary_radius_override
+        if boundary_radius_override is not None
+        else selected_config.get("boundary_radius", 2)
+    )
+    if not 0.0 <= fixed_threshold <= 1.0:
+        raise ValueError("soft threshold must be within [0, 1]")
+    if boundary_radius < 0:
+        raise ValueError("boundary radius must be non-negative")
+    return fixed_threshold, boundary_radius
+
+
 def evaluate_scene(args: argparse.Namespace) -> dict:
     import torch
     from gaussian_renderer import render
@@ -654,9 +683,13 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         if str(frozen.get("bank_fingerprint", "")) != bank_fp:
             raise ValueError("bank fingerprint mismatch in frozen validation config")
     selected_config = (frozen or {}).get("selected", {})
-    fixed_threshold = float(selected_config.get("soft_threshold", 0.20))
+    fixed_threshold, boundary_radius = resolve_evaluation_parameters(
+        protocol_split=args.protocol_split,
+        selected_config=selected_config,
+        soft_threshold_override=getattr(args, "soft_threshold", None),
+        boundary_radius_override=getattr(args, "boundary_radius", None),
+    )
     fixed_support_threshold = float(selected_config.get("support_threshold", 0.20))
-    boundary_radius = int(selected_config.get("boundary_radius", 2))
     trained_bank = load_part_label_bank(args.trained_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
     config_path = args.config.resolve() if args.config else asset_root.parent.parent / ".hydra" / "config.yaml"
@@ -886,6 +919,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--protocol", required=True, type=Path)
     parser.add_argument("--protocol-split", required=True, choices=("validation", "test"))
     parser.add_argument("--frozen-config", type=Path, default=None)
+    parser.add_argument("--soft-threshold", type=float, default=None)
+    parser.add_argument("--boundary-radius", type=int, default=None)
     parser.add_argument("--validation-sweep", action="store_true")
     parser.add_argument("--trained-bank", required=True, type=Path)
     parser.add_argument("--voting-bank", required=True, type=Path)

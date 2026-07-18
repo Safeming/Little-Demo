@@ -244,3 +244,36 @@ def test_cached_footprint_ratios_match_reference_implementation():
     ):
         assert cached[key] == pytest.approx(reference[key], abs=1e-6)
     assert cached["selected_count"] == reference["selected_count"]
+
+
+def test_parse_args_accepts_validation_metric_overrides():
+    from tools.evaluate_semantic_editing_paper_protocol import parse_args
+
+    args = parse_args(
+        [
+            "--protocol", "protocol.json",
+            "--protocol-split", "validation",
+            "--trained-bank", "trained.npz",
+            "--voting-bank", "voting.npz",
+            "--checkpoint", "ckpt.pth",
+            "--asset-root", "assets",
+            "--output-dir", "out",
+            "--soft-threshold", "0.05",
+            "--boundary-radius", "6",
+        ]
+    )
+
+    assert args.soft_threshold == pytest.approx(0.05)
+    assert args.boundary_radius == 6
+
+
+def test_test_split_rejects_metric_overrides():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_evaluation_parameters
+
+    with pytest.raises(ValueError, match="test evaluation forbids"):
+        resolve_evaluation_parameters(
+            protocol_split="test",
+            selected_config={"soft_threshold": 0.2, "boundary_radius": 4},
+            soft_threshold_override=0.05,
+            boundary_radius_override=None,
+        )
