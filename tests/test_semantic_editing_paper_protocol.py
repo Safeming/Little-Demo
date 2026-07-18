@@ -277,3 +277,17 @@ def test_test_split_rejects_metric_overrides():
             soft_threshold_override=0.05,
             boundary_radius_override=None,
         )
+
+
+def test_matched_retention_reference_prefers_fixed_voting_baseline():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_retention_reference
+
+    baseline, activation = resolve_retention_reference(
+        {
+            "B1": [{"target_activation": 10.0}, {"target_activation": 100.0}],
+            "B2": [{"target_activation": 20.0}, {"target_activation": 250.0}],
+        }
+    )
+
+    assert baseline == "B1"
+    assert activation == pytest.approx(100.0)

@@ -535,6 +535,27 @@ def _curve_for_baseline(
     return sorted(rows, key=lambda row: (float(row["retention"]), float(row["threshold"])))
 
 
+def resolve_retention_reference(raw_curves: dict[str, list[dict]]) -> tuple[str, float]:
+    reference_baseline = "B1" if "B1" in raw_curves else "B2"
+    rows = raw_curves.get(reference_baseline, [])
+    if not rows:
+        raise ValueError(f"retention reference baseline {reference_baseline} has no curve rows")
+    target_activation = max(float(row["target_activation"]) for row in rows)
+    if target_activation <= 0.0:
+        raise ValueError(f"retention reference baseline {reference_baseline} has no target activation")
+    return reference_baseline, target_activation
+
+
+def _normalize_curve_retention(rows: list[dict], reference_activation: float) -> list[dict]:
+    return [
+        {
+            **row,
+            "retention": _safe_ratio(float(row["target_activation"]), float(reference_activation)),
+        }
+        for row in rows
+    ]
+
+
 def _support_diagnostics_for_b5(
     *,
     caches: list[dict],
@@ -781,20 +802,31 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 )
     per_part, baseline_summary = _aggregate_metric_rows(per_view)
 
-    hard_curve = _curve_for_baseline(
-        "B2",
-        caches=caches,
-        trained_bank=trained_bank,
-        voting_bank=voting_bank,
-        protocol=protocol,
-        boundary_radius=boundary_radius,
-    )
-    hard_target = max(float(row["target_activation"]) for row in hard_curve)
-    curves = {"B2": _curve_for_baseline(
-        "B2", caches=caches, trained_bank=trained_bank, voting_bank=voting_bank,
-        protocol=protocol, boundary_radius=boundary_radius, hard_target_activation=hard_target,
-    )}
-    for baseline in ("B1", "B3", "B4", "B5"):
+    raw_curves = {
+        "B2": _curve_for_baseline(
+            "B2",
+            caches=caches,
+            trained_bank=trained_bank,
+            voting_bank=voting_bank,
+            protocol=protocol,
+            boundary_radius=boundary_radius,
+        )
+    }
+    if "B1" in args.baselines:
+        raw_curves["B1"] = _curve_for_baseline(
+            "B1",
+            caches=caches,
+            trained_bank=trained_bank,
+            voting_bank=voting_bank,
+            protocol=protocol,
+            boundary_radius=boundary_radius,
+        )
+    retention_reference, hard_target = resolve_retention_reference(raw_curves)
+    curves = {
+        baseline: _normalize_curve_retention(rows, hard_target)
+        for baseline, rows in raw_curves.items()
+    }
+    for baseline in ("B3", "B4", "B5"):
         if baseline in args.baselines:
             curves[baseline] = _curve_for_baseline(
                 baseline,
@@ -808,15 +840,15 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
     curve_rows = [row for rows in curves.values() for row in rows]
     matched = []
     for baseline, rows in curves.items():
-        if baseline == "B2":
+        if baseline == retention_reference:
             continue
         targets = shared_retention_targets(
-            {"B2": curves["B2"], baseline: rows},
+            {retention_reference: curves[retention_reference], baseline: rows},
             protocol.get("matched_retention_targets", []),
         )
         for target_retention in targets:
             row = interpolate_curve_at_retention(rows, target_retention)
-            row.update({"baseline": baseline, "reference_baseline": "B2"})
+            row.update({"baseline": baseline, "reference_baseline": retention_reference})
             matched.append(row)
 
     validation_candidates = []
@@ -890,6 +922,8 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "fixed_soft_threshold": fixed_threshold,
         "fixed_support_threshold": fixed_support_threshold,
         "fixed_boundary_radius": boundary_radius,
+        "retention_reference_baseline": retention_reference,
+        "retention_reference_target_activation": hard_target,
         "uses_test_parser_for_calibration": False,
         "parser_oracle_baseline": "B0",
     }
