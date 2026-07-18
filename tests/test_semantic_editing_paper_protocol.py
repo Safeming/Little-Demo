@@ -135,3 +135,58 @@ def test_write_baseline_reports_writes_required_outputs(tmp_path):
     assert (tmp_path / "per_view_metrics.csv").exists()
     assert (tmp_path / "leakage_retention_curve.csv").exists()
     assert (tmp_path / "matched_retention.csv").exists()
+    assert (tmp_path / "support_diagnostics.csv").exists()
+
+
+def test_rasterize_footprint_weight_map_uses_max_weight_in_overlaps():
+    from tools.evaluate_semantic_editing_paper_protocol import rasterize_footprint_weight_map
+
+    result = rasterize_footprint_weight_map(
+        xy=np.array([[2.0, 2.0], [3.0, 2.0]], dtype=np.float32),
+        radii=np.array([1.0, 1.0], dtype=np.float32),
+        weights=np.array([0.4, 0.8], dtype=np.float32),
+        image_shape=(5, 6),
+        threshold=0.2,
+        min_radius=1,
+        max_radius=1,
+    )
+
+    assert result.shape == (5, 6)
+    assert result[2, 2] == pytest.approx(0.8)
+    assert result[2, 3] == pytest.approx(0.8)
+    assert result[0, 0] == pytest.approx(0.0)
+
+
+def test_b5_support_diagnostics_apply_support_threshold():
+    from tools.evaluate_semantic_editing_paper_protocol import _support_diagnostics_for_b5
+
+    trained = _trained_bank()
+    trained["edit_support_weights"][:, 1] = np.array([0.8, 0.4], dtype=np.float32)
+    face = np.zeros((7, 7), dtype=np.float32)
+    face[2:5, 1:3] = 1.0
+    hair = np.zeros((7, 7), dtype=np.float32)
+    hair[2:5, 4:6] = 1.0
+    cache = {
+        "view": "c17_f000060",
+        "xy": np.array([[2.0, 3.0], [4.0, 3.0]], dtype=np.float32),
+        "radii": np.array([1.0, 1.0], dtype=np.float32),
+        "projected": np.array([True, True]),
+        "part_masks": {"face": face, "hair": hair},
+        "valid_mask": np.ones((7, 7), dtype=np.float32),
+    }
+    protocol = {
+        "parts": ["face"],
+        "allowed_adjacency": {"face": ["hair"]},
+        "validation_grid": {"support_thresholds": [0.2, 0.6]},
+    }
+
+    rows = _support_diagnostics_for_b5(
+        caches=[cache],
+        trained_bank=trained,
+        protocol=protocol,
+        boundary_radius=2,
+    )
+
+    assert [row["support_threshold"] for row in rows] == [0.2, 0.6]
+    assert [row["selected_count"] for row in rows] == [2, 1]
+    assert all("allowed_support_fraction" in row for row in rows)

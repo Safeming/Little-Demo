@@ -37,6 +37,8 @@ def test_strict_runner_dry_run_wires_protocol_splits_and_fair_preview(tmp_path):
     assert "--protocol-split test" in output
     assert "--formal-paper-mode" in output
     assert "--screen-mask-composite" not in output
+    assert "--checkpoint-fingerprint dry-run-checkpoint" in output
+    assert "--bank-fingerprint dry-run-bank" in output
 
 
 def test_strict_runner_declares_all_required_stages():
@@ -56,3 +58,6 @@ def test_strict_runner_declares_all_required_stages():
     ):
         assert stage in text
     assert "frozen_validation_config.json" in text
+    assert "from utils.semantic_eval_protocol import file_fingerprint" in text
+    assert "--checkpoint-fingerprint checkpoint" not in text
+    assert "--bank-fingerprint bank" not in text

@@ -86,6 +86,21 @@ resolve_semantic_ckpt() {
   find "$SEMANTIC_EXP_DIR" -maxdepth 1 -type f -name 'ckpt*.pth' -printf '%p\n' 2>/dev/null | sort -V | tail -n 1
 }
 
+artifact_fingerprint() {
+  local path="$1"
+  local dry_value="$2"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '%s\n' "$dry_value"
+    return
+  fi
+  "$PYTHON_BIN" - "$path" <<'PY'
+import sys
+from utils.semantic_eval_protocol import file_fingerprint
+
+print(file_fingerprint(sys.argv[1]))
+PY
+}
+
 validate() {
   run "$PYTHON_BIN" -c "from utils.semantic_eval_protocol import load_protocol; load_protocol(r'$PROTOCOL'); print('protocol valid')"
   if [[ "$DRY_RUN" != "1" ]]; then
@@ -167,14 +182,18 @@ calibrate() {
 
 select_validation() {
   local ckpt
+  local checkpoint_fp
+  local bank_fp
   ckpt="$(resolve_semantic_ckpt)"
   run "$PYTHON_BIN" tools/evaluate_semantic_editing_paper_protocol.py \
     --protocol "$PROTOCOL" --protocol-split validation --validation-sweep \
     --trained-bank "$CALIBRATED_BANK" --voting-bank "$VOTING_BANK" --checkpoint "$ckpt" \
     --asset-root "$VALIDATION_ASSETS" --output-dir "$VALIDATION_EVAL_DIR"
+  checkpoint_fp="$(artifact_fingerprint "$ckpt" dry-run-checkpoint)"
+  bank_fp="$(artifact_fingerprint "$CALIBRATED_BANK" dry-run-bank)"
   run "$PYTHON_BIN" tools/select_semantic_editing_validation_config.py \
     --protocol "$PROTOCOL" --candidates "$VALIDATION_EVAL_DIR/validation_candidates.csv" \
-    --checkpoint-fingerprint checkpoint --bank-fingerprint bank --output "$FROZEN_CONFIG"
+    --checkpoint-fingerprint "$checkpoint_fp" --bank-fingerprint "$bank_fp" --output "$FROZEN_CONFIG"
 }
 
 evaluate_test() {

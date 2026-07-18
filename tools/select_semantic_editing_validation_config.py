@@ -25,6 +25,8 @@ def select_validation_candidate(rows, *, minimum_retention: float = 0.60) -> dic
             -float(row.get("mean_boundary_f1", 0.0)),
             int(row.get("boundary_radius", 0)),
             float(row.get("soft_threshold", 0.0)),
+            -float(row.get("allowed_support_fraction", 0.0)),
+            float(row.get("actionable_support_fraction", 0.0)),
             float(row.get("support_threshold", 0.0)),
         )
     )
@@ -50,6 +52,8 @@ def write_frozen_validation_config(
             "min_mean_actionable_footprint_leakage",
             "max_mean_boundary_f1",
             "min_boundary_radius",
+            "max_allowed_support_fraction",
+            "min_actionable_support_fraction",
         ],
         "selected": dict(candidate),
     }

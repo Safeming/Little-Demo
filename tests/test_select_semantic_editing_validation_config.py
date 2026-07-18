@@ -57,6 +57,36 @@ def test_select_validation_candidate_uses_leakage_boundary_then_radius_order():
     assert selected["boundary_radius"] == 2
 
 
+def test_select_validation_candidate_uses_support_diagnostics_as_final_tiebreak():
+    from tools.select_semantic_editing_validation_config import select_validation_candidate
+
+    common = {
+        "soft_threshold": 0.2,
+        "boundary_radius": 2,
+        "aggregate_target_retention": 0.70,
+        "mean_actionable_footprint_leakage": 0.03,
+        "mean_boundary_f1": 0.80,
+    }
+    selected = select_validation_candidate(
+        [
+            {
+                **common,
+                "support_threshold": 0.1,
+                "allowed_support_fraction": 0.4,
+                "actionable_support_fraction": 0.2,
+            },
+            {
+                **common,
+                "support_threshold": 0.2,
+                "allowed_support_fraction": 0.8,
+                "actionable_support_fraction": 0.1,
+            },
+        ]
+    )
+
+    assert selected["support_threshold"] == 0.2
+
+
 def test_write_frozen_validation_config_records_fingerprints(tmp_path):
     from tools.select_semantic_editing_validation_config import write_frozen_validation_config
     from utils.semantic_eval_protocol import protocol_fingerprint
