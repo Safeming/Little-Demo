@@ -180,6 +180,7 @@ export_assets() {
     "++semantic_editable_use_direct_parser=true" \
     "++semantic_editable_export_compact_head=true" \
     "resume.partial_converter_missing_keys_allow_patterns=[texture.structured_trunk_,camera_geometry.,texture.shadow_handoff_approved]"
+  run "$PYTHON_BIN" -c "from utils.semantic_eval_protocol import load_protocol, prune_asset_records_to_protocol_split; print(prune_asset_records_to_protocol_split(r'$output/test-view/semantic_editable_assets', load_protocol(r'$PROTOCOL'), '$role'))"
 }
 
 build_banks() {

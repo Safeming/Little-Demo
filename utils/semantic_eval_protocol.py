@@ -182,6 +182,54 @@ def write_protocol_manifest(path: Path | str, protocol: dict) -> Path:
     return path
 
 
+def _nested_string_values(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _nested_string_values(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _nested_string_values(child)
+
+
+def prune_asset_records_to_protocol_split(
+    asset_root: Path | str,
+    protocol: dict,
+    split_name: str,
+) -> dict:
+    asset_root = Path(asset_root)
+    records_path = asset_root / "view_records.json"
+    records = json.loads(records_path.read_text(encoding="utf-8"))
+    selected = select_protocol_records(records, protocol, split_name)
+    selected_names = {str(record["image_name"]) for record in selected}
+    removed = [record for record in records if str(record.get("image_name", "")) not in selected_names]
+    removed_files = set()
+    for record in removed:
+        image_name = str(record.get("image_name", ""))
+        for value in _nested_string_values(record):
+            candidate = asset_root / value
+            if candidate.is_file() and candidate != records_path:
+                removed_files.add(candidate)
+        if image_name:
+            removed_files.update(path for path in asset_root.rglob(f"*{image_name}*") if path.is_file())
+    for path in sorted(removed_files):
+        path.unlink()
+    records_path.write_text(json.dumps(selected, indent=2, sort_keys=True), encoding="utf-8")
+    summary = {
+        "split_name": str(split_name),
+        "selected_record_count": len(selected),
+        "removed_record_count": len(removed),
+        "removed_record_names": sorted(str(record.get("image_name", "")) for record in removed),
+        "removed_file_count": len(removed_files),
+    }
+    (asset_root / "protocol_prune_summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return summary
+
+
 def validate_frozen_config(
     frozen_config: dict,
     *,

@@ -167,3 +167,41 @@ def test_write_protocol_manifest_records_normalized_protocol_and_fingerprint(tmp
     assert payload["protocol_name"] == "strict_test_v1"
     assert payload["protocol_fingerprint"] == module.protocol_fingerprint(_protocol())
     assert payload["splits"]["test"]["record_count"] == 1
+
+
+def test_prune_asset_records_to_protocol_split_removes_extra_records_and_files(tmp_path):
+    module = _module()
+    asset_root = tmp_path / "assets"
+    mask_dir = asset_root / "compact_head_masks" / "face"
+    mask_dir.mkdir(parents=True)
+    keep = mask_dir / "render_c21_f000180.png"
+    remove = mask_dir / "render_c21_f000300.png"
+    keep.write_bytes(b"keep")
+    remove.write_bytes(b"remove")
+    (asset_root / "view_records.json").write_text(
+        json.dumps(
+            [
+                {
+                    "image_name": "c21_f000180",
+                    "cam_id": 21,
+                    "frame_id": 180,
+                    "compact_head_mask_files": {"face": str(keep.relative_to(asset_root))},
+                },
+                {
+                    "image_name": "c21_f000300",
+                    "cam_id": 21,
+                    "frame_id": 300,
+                    "compact_head_mask_files": {"face": str(remove.relative_to(asset_root))},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = module.prune_asset_records_to_protocol_split(asset_root, _protocol(), "test")
+
+    records = json.loads((asset_root / "view_records.json").read_text(encoding="utf-8"))
+    assert [record["image_name"] for record in records] == ["c21_f000180"]
+    assert keep.exists()
+    assert not remove.exists()
+    assert summary["removed_record_names"] == ["c21_f000300"]
