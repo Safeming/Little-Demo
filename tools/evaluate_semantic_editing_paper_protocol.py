@@ -4,11 +4,16 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from collections import OrderedDict
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from tools.analyze_projected_soft_edit_leakage import make_boundary_band, region_support_mask
 from utils.part_label_bank import (
