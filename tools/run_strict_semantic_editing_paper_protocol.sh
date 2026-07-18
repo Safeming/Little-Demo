@@ -60,6 +60,17 @@ print(f"[{values[0]},{values[-1] + step},{step}]")
 PY
 }
 
+protocol_record_count() {
+  "$PYTHON_BIN" - "$PROTOCOL" "$1" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+split = payload[sys.argv[2]]
+print(len(split["camera_ids"]) * len(split["frame_ids"]))
+PY
+}
+
 SEMANTIC_VIEWS_SPEC="$(protocol_json semantic_train camera_ids)"
 SEMANTIC_FRAMES_CSV="$(protocol_json semantic_train frame_ids)"
 CALIBRATION_VIEWS_SPEC="$(protocol_json calibration camera_ids)"
@@ -68,6 +79,7 @@ VALIDATION_VIEWS_SPEC="$(protocol_json validation camera_ids)"
 VALIDATION_FRAMES_SPEC="$(protocol_range validation)"
 TEST_VIEWS_SPEC="$(protocol_json test camera_ids)"
 TEST_FRAMES_SPEC="$(protocol_range test)"
+TEST_RECORD_COUNT="$(protocol_record_count test)"
 
 run() {
   printf '[strict-paper] command:'
@@ -98,6 +110,22 @@ import sys
 from utils.semantic_eval_protocol import file_fingerprint
 
 print(file_fingerprint(sys.argv[1]))
+PY
+}
+
+frozen_selected_value() {
+  local key="$1"
+  local dry_value="$2"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '%s\n' "$dry_value"
+    return
+  fi
+  "$PYTHON_BIN" - "$FROZEN_CONFIG" "$key" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+print(payload["selected"][sys.argv[2]])
 PY
 }
 
@@ -198,6 +226,7 @@ select_validation() {
 
 evaluate_test() {
   local ckpt
+  local soft_threshold
   ckpt="$(resolve_semantic_ckpt)"
   if [[ "$DRY_RUN" != "1" && ! -f "$FROZEN_CONFIG" ]]; then
     echo "missing frozen_validation_config.json: $FROZEN_CONFIG" >&2
@@ -207,10 +236,12 @@ evaluate_test() {
     --protocol "$PROTOCOL" --protocol-split test --frozen-config "$FROZEN_CONFIG" \
     --trained-bank "$CALIBRATED_BANK" --voting-bank "$VOTING_BANK" --checkpoint "$ckpt" \
     --asset-root "$TEST_ASSETS" --output-dir "$TEST_EVAL_DIR"
+  soft_threshold="$(frozen_selected_value soft_threshold 0.20)"
   run "$PYTHON_BIN" tools/make_semantic_edit_render_preview.py \
     --part-label-bank "$CALIBRATED_BANK" --checkpoint "$ckpt" --asset-root "$TEST_ASSETS" \
     --output-dir "$TEST_EVAL_DIR/fair_preview" --parts face hair upper lower shoes skin \
-    --soft-weight-source auto-target --formal-paper-mode
+    --soft-weight-source auto-target --soft-threshold "$soft_threshold" \
+    --max-views "$TEST_RECORD_COUNT" --formal-paper-mode
 }
 
 case "$STAGE" in

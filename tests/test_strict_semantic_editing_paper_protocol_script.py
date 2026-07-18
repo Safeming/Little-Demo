@@ -39,6 +39,8 @@ def test_strict_runner_dry_run_wires_protocol_splits_and_fair_preview(tmp_path):
     assert "--screen-mask-composite" not in output
     assert "--checkpoint-fingerprint dry-run-checkpoint" in output
     assert "--bank-fingerprint dry-run-bank" in output
+    assert "--soft-threshold 0.20" in output
+    assert "--max-views 9" in output
 
 
 def test_strict_runner_declares_all_required_stages():
@@ -61,3 +63,4 @@ def test_strict_runner_declares_all_required_stages():
     assert "from utils.semantic_eval_protocol import file_fingerprint" in text
     assert "--checkpoint-fingerprint checkpoint" not in text
     assert "--bank-fingerprint bank" not in text
+    assert "frozen_selected_value" in text
