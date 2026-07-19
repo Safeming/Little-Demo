@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -62,3 +64,53 @@ def test_subject_semantic_launchers_do_not_load_377_geometry():
     assert "explicit_binding_render_preset" not in export_text
     assert '"dataset.subject=$SUBJECT"' in export_text
     assert "export_semantic_editable_assets=$EXPORT_EDITABLE" in export_text
+
+
+def test_multisubject_orchestrator_uses_frozen_scheme_a():
+    text = (ROOT / "tools/run_multisubject_strict_semantic_protocol.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for stage in (
+        "validate",
+        "semantic-train",
+        "export-calibration",
+        "export-validation",
+        "export-test",
+        "build-banks",
+        "calibrate-voting",
+        "evaluate-validation",
+        "evaluate-test",
+        "all",
+    ):
+        assert stage in text
+    assert "select_semantic_editing_validation_config.py" not in text
+    assert "materialize_fixed_semantic_evaluation_config.py" in text
+    assert '--part-label-bank "$VOTING_BANK"' in text
+    assert "--protocol-split calibration" in text
+    assert "--protocol-split test" in text
+    assert '--frozen-config "$FROZEN_CONFIG"' in text
+
+
+def test_multisubject_orchestrator_all_dry_run_needs_no_generated_checkpoint(tmp_path):
+    env = {
+        **os.environ,
+        "DRY_RUN": "1",
+        "SUBJECT": "CoreView_386",
+        "PROTOCOL": str(ROOT / "configs/semantic/coreview386_strict_paper_protocol.json"),
+        "OUTPUT_ROOT": str(tmp_path / "output"),
+        "BASE_EXP": str(tmp_path / "base"),
+        "BASE_CKPT": str(tmp_path / "base/ckpt40000.pth"),
+    }
+
+    result = subprocess.run(
+        ["bash", "tools/run_multisubject_strict_semantic_protocol.sh", "all"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "export-calibration" not in result.stderr
+    assert "dry-run-semantic-ckpt.pth" in result.stdout
