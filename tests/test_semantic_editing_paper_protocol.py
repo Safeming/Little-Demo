@@ -259,11 +259,13 @@ def test_parse_args_accepts_validation_metric_overrides():
             "--asset-root", "assets",
             "--output-dir", "out",
             "--soft-threshold", "0.05",
+            "--support-threshold", "0.3",
             "--boundary-radius", "6",
         ]
     )
 
     assert args.soft_threshold == pytest.approx(0.05)
+    assert args.support_threshold == pytest.approx(0.3)
     assert args.boundary_radius == 6
 
 
@@ -276,6 +278,17 @@ def test_test_split_rejects_metric_overrides():
             selected_config={"soft_threshold": 0.2, "boundary_radius": 4},
             soft_threshold_override=0.05,
             boundary_radius_override=None,
+        )
+
+
+def test_test_split_rejects_support_threshold_override():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_support_threshold
+
+    with pytest.raises(ValueError, match="test evaluation forbids"):
+        resolve_support_threshold(
+            protocol_split="test",
+            selected_config={"support_threshold": 0.3},
+            support_threshold_override=0.2,
         )
 
 

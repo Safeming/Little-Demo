@@ -699,6 +699,24 @@ def resolve_evaluation_parameters(
     return fixed_threshold, boundary_radius
 
 
+def resolve_support_threshold(
+    *,
+    protocol_split: str,
+    selected_config: dict,
+    support_threshold_override: float | None,
+) -> float:
+    if str(protocol_split) == "test" and support_threshold_override is not None:
+        raise ValueError("test evaluation forbids metric overrides; use frozen validation config")
+    threshold = float(
+        support_threshold_override
+        if support_threshold_override is not None
+        else selected_config.get("support_threshold", 0.20)
+    )
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("support threshold must be within [0, 1]")
+    return threshold
+
+
 def evaluate_scene(args: argparse.Namespace) -> dict:
     import torch
     from gaussian_renderer import render
@@ -734,7 +752,11 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         soft_threshold_override=getattr(args, "soft_threshold", None),
         boundary_radius_override=getattr(args, "boundary_radius", None),
     )
-    fixed_support_threshold = float(selected_config.get("support_threshold", 0.20))
+    fixed_support_threshold = resolve_support_threshold(
+        protocol_split=args.protocol_split,
+        selected_config=selected_config,
+        support_threshold_override=getattr(args, "support_threshold", None),
+    )
     trained_bank = load_part_label_bank(args.trained_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
     config_path = args.config.resolve() if args.config else asset_root.parent.parent / ".hydra" / "config.yaml"
@@ -983,6 +1005,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--protocol-split", required=True, choices=("validation", "test"))
     parser.add_argument("--frozen-config", type=Path, default=None)
     parser.add_argument("--soft-threshold", type=float, default=None)
+    parser.add_argument("--support-threshold", type=float, default=None)
     parser.add_argument("--boundary-radius", type=int, default=None)
     parser.add_argument("--validation-sweep", action="store_true")
     parser.add_argument("--trained-bank", required=True, type=Path)
