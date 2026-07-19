@@ -41,3 +41,24 @@ def test_coreview386_protocol_matches_cross_subject_split():
         "camera_ids": [21, 22, 23],
         "frame_ids": [180, 420, 540],
     }
+
+
+def test_subject_semantic_launchers_do_not_load_377_geometry():
+    train_text = (ROOT / "tools/formal/run_subject_semantic_train.sh").read_text(
+        encoding="utf-8"
+    )
+    export_text = (ROOT / "tools/formal/run_subject_semantic_export.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SUBJECT="${SUBJECT:?set SUBJECT}"' in train_text
+    assert "assets/adopted_geometry/377" not in train_text
+    assert "explicit_binding_render_preset" not in train_text
+    assert '"dataset.subject=$SUBJECT"' in train_text
+    assert "stageB_semantic_adapter_only_train=true" in train_text
+
+    assert 'SUBJECT="${SUBJECT:?set SUBJECT}"' in export_text
+    assert "assets/adopted_geometry/377" not in export_text
+    assert "explicit_binding_render_preset" not in export_text
+    assert '"dataset.subject=$SUBJECT"' in export_text
+    assert "export_semantic_editable_assets=$EXPORT_EDITABLE" in export_text
