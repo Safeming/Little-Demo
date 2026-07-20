@@ -3,6 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from omegaconf import OmegaConf
 
 
@@ -40,6 +41,46 @@ def test_coreview386_protocol_matches_cross_subject_split():
         "frame_ids": [60, 300],
     }
     assert payload["test"] == {
+        "camera_ids": [21, 22, 23],
+        "frame_ids": [180, 420, 540],
+    }
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "train_frame_end"),
+    [("387", 570), ("392", 550)],
+)
+def test_additional_subject_configs_follow_strict_multisubject_protocol(
+    subject_id, train_frame_end
+):
+    subject = f"CoreView_{subject_id}"
+    dataset = OmegaConf.load(
+        ROOT / f"configs/dataset/zjumocap_{subject_id}_multiview_hq.yaml"
+    )
+    protocol = json.loads(
+        (
+            ROOT
+            / f"configs/semantic/coreview{subject_id}_strict_paper_protocol.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert dataset.dataset.subject == subject
+    assert [str(value) for value in dataset.dataset.train_views] == [
+        str(value) for value in range(1, 21)
+    ]
+    assert [str(value) for value in dataset.dataset.val_views] == ["21", "22", "23"]
+    assert list(dataset.dataset.train_frames) == [0, train_frame_end, 1]
+    assert protocol["subject"] == subject
+    assert protocol["semantic_train"] == {
+        "camera_ids": list(range(1, 17)),
+        "frame_ids": [0, 120, 240, 360, 480],
+    }
+    assert protocol["calibration"] == protocol["semantic_train"]
+    assert protocol["validation"] == {
+        "camera_ids": [17, 18, 19, 20],
+        "frame_ids": [60, 300],
+    }
+    assert protocol["test"] == {
         "camera_ids": [21, 22, 23],
         "frame_ids": [180, 420, 540],
     }
