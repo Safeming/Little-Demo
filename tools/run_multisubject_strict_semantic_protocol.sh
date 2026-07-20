@@ -20,6 +20,10 @@ COMPACT_MAPPING_FILE="${COMPACT_MAPPING_FILE:-$ROOT/configs/semantic/hulk_cihp_c
 SEMANTIC_EXP_DIR="${SEMANTIC_EXP_DIR:-$OUTPUT_ROOT/semantic_train_strict}"
 SEMANTIC_CKPT="${SEMANTIC_CKPT:-}"
 TRAIN_STEPS="${TRAIN_STEPS:-2000}"
+GUARD_SOFT_THRESHOLDS="${GUARD_SOFT_THRESHOLDS:-0.05 0.1 0.15 0.2 0.25 0.35 0.5}"
+GUARD_SUPPORT_THRESHOLD="${GUARD_SUPPORT_THRESHOLD:-0.1}"
+GUARD_BOUNDARY_RADIUS="${GUARD_BOUNDARY_RADIUS:-6}"
+GUARD_B5_FALLBACK_THRESHOLD="${GUARD_B5_FALLBACK_THRESHOLD:-0.5}"
 
 CALIBRATION_EXPORT="$OUTPUT_ROOT/assets/calibration"
 VALIDATION_EXPORT="$OUTPUT_ROOT/assets/validation"
@@ -35,6 +39,7 @@ VOTING_BANK="$VOTING_BANK_DIR/part_label_bank.npz"
 CALIBRATED_BANK="$CALIBRATED_BANK_DIR/part_label_bank.npz"
 FROZEN_CONFIG="$OUTPUT_ROOT/frozen_validation_config.json"
 VALIDATION_EVAL_DIR="$OUTPUT_ROOT/evaluation/validation"
+VALIDATION_GUARD_CANDIDATE_ROOT="$OUTPUT_ROOT/evaluation/validation_guard_candidates"
 TEST_EVAL_DIR="$OUTPUT_ROOT/evaluation/test"
 
 run() {
@@ -118,6 +123,18 @@ frozen_value() {
   "$PYTHON_BIN" - "$FROZEN_CONFIG" "$1" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["selected"][sys.argv[2]])
+PY
+}
+
+frozen_list() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '%s\n' "$2"
+    return
+  fi
+  "$PYTHON_BIN" - "$FROZEN_CONFIG" "$1" <<'PY'
+import json, sys
+values = json.load(open(sys.argv[1], encoding="utf-8"))["selected"].get(sys.argv[2], [])
+print(" ".join(str(value) for value in values))
 PY
 }
 
@@ -225,6 +242,55 @@ evaluate_validation() {
   fi
 }
 
+select_validation_guard() {
+  local ckpt checkpoint_fp bank_fp threshold token candidate_dir
+  local soft_threshold support_threshold boundary_radius fallback_threshold
+  local candidate_args=() fallback_args=() fallback_parts=()
+  ckpt="$(resolve_semantic_ckpt)"
+  for threshold in $GUARD_SOFT_THRESHOLDS; do
+    token="${threshold//./p}"
+    candidate_dir="$VALIDATION_GUARD_CANDIDATE_ROOT/t${token}"
+    run "$PYTHON_BIN" tools/evaluate_semantic_editing_paper_protocol.py \
+      --protocol "$PROTOCOL" --protocol-split validation \
+      --trained-bank "$CALIBRATED_BANK" --voting-bank "$VOTING_BANK" \
+      --checkpoint "$ckpt" --asset-root "$VALIDATION_ASSETS" \
+      --explicit-binding-render-preset none --soft-threshold "$threshold" \
+      --support-threshold "$GUARD_SUPPORT_THRESHOLD" --boundary-radius "$GUARD_BOUNDARY_RADIUS" \
+      --baselines B1 B3 B5 --output-dir "$candidate_dir"
+    candidate_args+=(--candidate "$threshold:$candidate_dir")
+  done
+  checkpoint_fp="$(fingerprint "$ckpt")"
+  bank_fp="$(fingerprint "$CALIBRATED_BANK")"
+  run "$PYTHON_BIN" tools/select_guarded_semantic_validation_config.py \
+    --protocol "$PROTOCOL" "${candidate_args[@]}" \
+    --checkpoint-fingerprint "$checkpoint_fp" --bank-fingerprint "$bank_fp" \
+    --required-retention 0.5 0.6 --max-miou-gap 0.02 \
+    --support-threshold "$GUARD_SUPPORT_THRESHOLD" --boundary-radius "$GUARD_BOUNDARY_RADIUS" \
+    --b5-fallback-threshold "$GUARD_B5_FALLBACK_THRESHOLD" --output "$FROZEN_CONFIG"
+
+  soft_threshold="$(frozen_value soft_threshold 0.1)"
+  support_threshold="$(frozen_value support_threshold "$GUARD_SUPPORT_THRESHOLD")"
+  boundary_radius="$(frozen_value boundary_radius "$GUARD_BOUNDARY_RADIUS")"
+  fallback_threshold="$(frozen_value b5_fallback_threshold "$GUARD_B5_FALLBACK_THRESHOLD")"
+  read -r -a fallback_parts <<< "$(frozen_list b5_fallback_parts skin)"
+  for part in "${fallback_parts[@]}"; do
+    [[ -n "$part" ]] && fallback_args+=(--b5-fallback-part "$part")
+  done
+  run "$PYTHON_BIN" tools/evaluate_semantic_editing_paper_protocol.py \
+    --protocol "$PROTOCOL" --protocol-split validation \
+    --trained-bank "$CALIBRATED_BANK" --voting-bank "$VOTING_BANK" \
+    --checkpoint "$ckpt" --asset-root "$VALIDATION_ASSETS" \
+    --explicit-binding-render-preset none --soft-threshold "$soft_threshold" \
+    --support-threshold "$support_threshold" --boundary-radius "$boundary_radius" \
+    --b5-fallback-threshold "$fallback_threshold" "${fallback_args[@]}" \
+    --output-dir "$VALIDATION_EVAL_DIR"
+  run "$PYTHON_BIN" tools/assess_voting_posterior_candidate.py \
+    --baseline-summary "$VALIDATION_EVAL_DIR/baseline_summary.csv" \
+    --curve "$VALIDATION_EVAL_DIR/leakage_retention_curve.csv" \
+    --required-retention 0.5 0.6 --max-miou-gap 0.02 \
+    --output "$OUTPUT_ROOT/audit/validation_assessment.json"
+}
+
 evaluate_test() {
   local ckpt
   ckpt="$(resolve_semantic_ckpt)"
@@ -254,6 +320,7 @@ case "$STAGE" in
   build-banks) build_banks ;;
   calibrate-voting) calibrate_voting ;;
   evaluate-validation) evaluate_validation ;;
+  select-validation-guard) select_validation_guard ;;
   evaluate-test) evaluate_test ;;
   all)
     validate
@@ -262,7 +329,7 @@ case "$STAGE" in
     export_assets validation "$VALIDATION_EXPORT" "$VALIDATION_VIEWS_SPEC" "$VALIDATION_FRAMES_SPEC"
     build_banks
     calibrate_voting
-    evaluate_validation
+    select_validation_guard
     export_assets test "$TEST_EXPORT" "$TEST_VIEWS_SPEC" "$TEST_FRAMES_SPEC"
     evaluate_test
     ;;
