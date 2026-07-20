@@ -125,6 +125,25 @@ def test_b5_nonfallback_part_keeps_calibrated_target_and_support():
     assert metadata["b5_fallback_applied"] is False
 
 
+def test_b5_fallback_part_uses_dedicated_threshold():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_part_threshold
+
+    assert resolve_part_threshold(
+        "B5",
+        part_name="skin",
+        default_threshold=0.1,
+        b5_fallback_parts={"skin"},
+        b5_fallback_threshold=0.5,
+    ) == pytest.approx(0.5)
+    assert resolve_part_threshold(
+        "B5",
+        part_name="face",
+        default_threshold=0.1,
+        b5_fallback_parts={"skin"},
+        b5_fallback_threshold=0.5,
+    ) == pytest.approx(0.1)
+
+
 def test_voting_baseline_requires_voting_bank():
     from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
 

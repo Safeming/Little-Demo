@@ -76,6 +76,7 @@ def write_guarded_config(
     *,
     candidate: dict,
     fallback_parts: list[str],
+    fallback_threshold: float,
     protocol_name: str,
     protocol_fingerprint: str,
     checkpoint_fingerprint: str,
@@ -85,6 +86,7 @@ def write_guarded_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     selected = dict(candidate)
     selected["b5_fallback_parts"] = list(fallback_parts)
+    selected["b5_fallback_threshold"] = float(fallback_threshold)
     payload = {
         "protocol_name": str(protocol_name),
         "protocol_fingerprint": str(protocol_fingerprint),
@@ -155,6 +157,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-miou-gap", type=float, default=0.02)
     parser.add_argument("--support-threshold", type=float, default=0.1)
     parser.add_argument("--boundary-radius", type=int, default=6)
+    parser.add_argument("--b5-fallback-threshold", type=float, default=0.5)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)
 
@@ -189,6 +192,7 @@ def main() -> int:
         args.output,
         candidate=selected,
         fallback_parts=fallback_parts,
+        fallback_threshold=float(args.b5_fallback_threshold),
         protocol_name=protocol["protocol_name"],
         protocol_fingerprint=protocol_fingerprint(protocol),
         checkpoint_fingerprint=args.checkpoint_fingerprint,

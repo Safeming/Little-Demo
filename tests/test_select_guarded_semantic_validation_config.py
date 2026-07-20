@@ -85,6 +85,7 @@ def test_write_guarded_config_records_selection_and_fallback(tmp_path):
         tmp_path / "frozen.json",
         candidate=_candidate(0.1),
         fallback_parts=["skin"],
+        fallback_threshold=0.5,
         protocol_name="coreview_test",
         protocol_fingerprint="protocol",
         checkpoint_fingerprint="checkpoint",
@@ -94,4 +95,5 @@ def test_write_guarded_config_records_selection_and_fallback(tmp_path):
 
     assert payload["selected"]["soft_threshold"] == 0.1
     assert payload["selected"]["b5_fallback_parts"] == ["skin"]
+    assert payload["selected"]["b5_fallback_threshold"] == 0.5
     assert payload["checkpoint_fingerprint"] == "checkpoint"

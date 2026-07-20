@@ -136,6 +136,23 @@ def resolve_baseline_point_weights(
     return weights, support, metadata
 
 
+def resolve_part_threshold(
+    baseline: str,
+    *,
+    part_name: str,
+    default_threshold: float,
+    b5_fallback_parts: set[str] | frozenset[str] = frozenset(),
+    b5_fallback_threshold: float | None = None,
+) -> float:
+    if (
+        str(baseline) == "B5"
+        and str(part_name) in b5_fallback_parts
+        and b5_fallback_threshold is not None
+    ):
+        return float(b5_fallback_threshold)
+    return float(default_threshold)
+
+
 def resolve_parser_oracle_prediction(part_masks: dict[str, np.ndarray], part: str) -> np.ndarray:
     if part not in part_masks:
         raise ValueError(f"parser oracle is missing part mask: {part}")
@@ -513,6 +530,7 @@ def _curve_for_baseline(
     fixed_soft_threshold: float | None = None,
     soft_strength_sweep: bool = False,
     b5_fallback_parts: set[str] | frozenset[str] = frozenset(),
+    b5_fallback_threshold: float | None = None,
 ) -> list[dict]:
     _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
     settings = curve_settings_for_baseline(
@@ -539,7 +557,14 @@ def _curve_for_baseline(
                     b5_fallback_parts=b5_fallback_parts,
                 )
                 point_weights = weights * float(strength)
-                selected = (weights >= float(threshold)) & cache["projected"]
+                part_threshold = resolve_part_threshold(
+                    baseline,
+                    part_name=part,
+                    default_threshold=float(threshold),
+                    b5_fallback_parts=b5_fallback_parts,
+                    b5_fallback_threshold=b5_fallback_threshold,
+                )
+                selected = (weights >= part_threshold) & cache["projected"]
                 row = summarize_footprint_selection_from_ratios(
                     selected=selected,
                     weights=point_weights,
@@ -650,6 +675,7 @@ def _mean_boundary_f1_for_threshold(
     voting_bank: dict,
     protocol: dict,
     b5_fallback_parts: set[str] | frozenset[str] = frozenset(),
+    b5_fallback_threshold: float | None = None,
 ) -> float:
     values = []
     for cache in caches:
@@ -663,12 +689,19 @@ def _mean_boundary_f1_for_threshold(
                 b5_fallback_parts=b5_fallback_parts,
             )
             point_weights = np.where(cache["projected"], weights, 0.0)
+            part_threshold = resolve_part_threshold(
+                baseline,
+                part_name=part,
+                default_threshold=float(threshold),
+                b5_fallback_parts=b5_fallback_parts,
+                b5_fallback_threshold=b5_fallback_threshold,
+            )
             prediction = rasterize_footprint_weight_map(
                 xy=cache["xy"],
                 radii=cache["radii"],
                 weights=point_weights,
                 image_shape=cache["valid_mask"].shape,
-                threshold=float(threshold),
+                threshold=part_threshold,
             )
             values.append(
                 float(
@@ -760,8 +793,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
             raise ValueError("bank fingerprint mismatch in frozen validation config")
     selected_config = (frozen or {}).get("selected", {})
     cli_fallback_parts = set(getattr(args, "b5_fallback_part", []) or [])
-    if args.protocol_split == "test" and cli_fallback_parts:
-        raise ValueError("test evaluation must read B5 fallback parts from the frozen config")
+    cli_fallback_threshold = getattr(args, "b5_fallback_threshold", None)
+    if args.protocol_split == "test" and (cli_fallback_parts or cli_fallback_threshold is not None):
+        raise ValueError("test evaluation must read B5 fallback settings from the frozen config")
     b5_fallback_parts = (
         set(selected_config.get("b5_fallback_parts", []) or [])
         if args.protocol_split == "test"
@@ -772,6 +806,11 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         selected_config=selected_config,
         soft_threshold_override=getattr(args, "soft_threshold", None),
         boundary_radius_override=getattr(args, "boundary_radius", None),
+    )
+    b5_fallback_threshold = (
+        float(selected_config.get("b5_fallback_threshold", fixed_threshold))
+        if args.protocol_split == "test"
+        else float(cli_fallback_threshold if cli_fallback_threshold is not None else fixed_threshold)
     )
     fixed_support_threshold = resolve_support_threshold(
         protocol_split=args.protocol_split,
@@ -843,6 +882,13 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                     )
                     point_weights = np.where(cache["projected"], weights, 0.0)
                     threshold = 0.5 if baseline in ("B1", "B2") else fixed_threshold
+                    threshold = resolve_part_threshold(
+                        baseline,
+                        part_name=part,
+                        default_threshold=threshold,
+                        b5_fallback_parts=b5_fallback_parts,
+                        b5_fallback_threshold=b5_fallback_threshold,
+                    )
                     prediction = rasterize_footprint_weight_map(
                         xy=cache["xy"],
                         radii=cache["radii"],
@@ -880,6 +926,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
             protocol=protocol,
             boundary_radius=boundary_radius,
             b5_fallback_parts=b5_fallback_parts,
+            b5_fallback_threshold=b5_fallback_threshold,
         )
     }
     if "B1" in args.baselines:
@@ -891,6 +938,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
             protocol=protocol,
             boundary_radius=boundary_radius,
             b5_fallback_parts=b5_fallback_parts,
+            b5_fallback_threshold=b5_fallback_threshold,
         )
     retention_reference, hard_target = resolve_retention_reference(raw_curves)
     curves = {
@@ -910,6 +958,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 fixed_soft_threshold=fixed_threshold,
                 soft_strength_sweep=not bool(args.validation_sweep),
                 b5_fallback_parts=b5_fallback_parts,
+                b5_fallback_threshold=b5_fallback_threshold,
             )
     curve_rows = [row for rows in curves.values() for row in rows]
     matched = []
@@ -943,6 +992,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 voting_bank=voting_bank,
                 protocol=protocol,
                 b5_fallback_parts=b5_fallback_parts,
+                b5_fallback_threshold=b5_fallback_threshold,
             )
             for threshold in protocol["validation_grid"]["soft_thresholds"]
         }
@@ -956,6 +1006,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 boundary_radius=int(radius),
                 hard_target_activation=hard_target,
                 b5_fallback_parts=b5_fallback_parts,
+                b5_fallback_threshold=b5_fallback_threshold,
             )
             support_rows = _support_diagnostics_for_b5(
                 caches=caches,
@@ -1006,6 +1057,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "uses_test_parser_for_calibration": False,
         "parser_oracle_baseline": "B0",
         "b5_fallback_parts": sorted(b5_fallback_parts),
+        "b5_fallback_threshold": b5_fallback_threshold,
     }
     write_protocol_provenance(
         args.output_dir,
@@ -1046,6 +1098,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--subject", default="")
     parser.add_argument("--explicit-binding-render-preset", default="v338_temporal_selector_grow_only_guard")
     parser.add_argument("--b5-fallback-part", action="append", default=[], choices=list(PART_NAMES))
+    parser.add_argument("--b5-fallback-threshold", type=float, default=None)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--baselines", nargs="+", default=list(BASELINE_SPECS), choices=list(BASELINE_SPECS))
     parser.add_argument("--parts", nargs="+", default=list(PART_NAMES), choices=list(PART_NAMES))
