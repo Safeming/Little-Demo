@@ -87,6 +87,44 @@ def test_confidence_margin_baseline_recomputes_reliability_weight():
     assert support is None
 
 
+def test_b5_fallback_part_uses_raw_semantic_probability():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+
+    trained = _trained_bank()
+    weights, support, metadata = resolve_baseline_point_weights(
+        "B5",
+        trained_bank=trained,
+        voting_bank=None,
+        part_index=0,
+        part_name="skin",
+        b5_fallback_parts={"skin"},
+    )
+
+    assert np.allclose(weights, [0.7, 0.2])
+    assert support is None
+    assert metadata["weight_field"] == "semantic_probs_fallback"
+    assert metadata["b5_fallback_applied"] is True
+
+
+def test_b5_nonfallback_part_keeps_calibrated_target_and_support():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+
+    trained = _trained_bank()
+    weights, support, metadata = resolve_baseline_point_weights(
+        "B5",
+        trained_bank=trained,
+        voting_bank=None,
+        part_index=0,
+        part_name="face",
+        b5_fallback_parts={"skin"},
+    )
+
+    assert np.allclose(weights, [0.35, 0.10])
+    assert np.allclose(support, [0.07, 0.02])
+    assert metadata["weight_field"] == "edit_target_weights"
+    assert metadata["b5_fallback_applied"] is False
+
+
 def test_voting_baseline_requires_voting_bank():
     from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
 
