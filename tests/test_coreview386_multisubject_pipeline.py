@@ -87,6 +87,7 @@ def test_multisubject_orchestrator_uses_frozen_scheme_a():
     assert "select_semantic_editing_validation_config.py" not in text
     assert "materialize_fixed_semantic_evaluation_config.py" in text
     assert '--part-label-bank "$VOTING_BANK"' in text
+    assert text.count("--explicit-binding-render-preset none") == 5
     assert "--protocol-split calibration" in text
     assert "--protocol-split test" in text
     assert '--frozen-config "$FROZEN_CONFIG"' in text

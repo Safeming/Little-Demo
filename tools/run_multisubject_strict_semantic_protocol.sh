@@ -160,10 +160,12 @@ build_banks() {
   run "$PYTHON_BIN" tools/semantic_viewer/build_part_label_bank.py --checkpoint "$ckpt" \
     --asset-root "$CALIBRATION_ASSETS" --output "$RAW_BANK" --summary-json "$RAW_BANK_DIR/summary.json" \
     --manifest-json "$RAW_BANK_DIR/manifest.json" --dataset-root "$DATA_ROOT" --subject "$SUBJECT" \
+    --explicit-binding-render-preset none \
     --reliability-enable --export-soft-edit-weights
   run "$PYTHON_BIN" tools/semantic_viewer/build_part_label_bank.py --checkpoint "$ckpt" \
     --asset-root "$CALIBRATION_ASSETS" --output "$VOTING_BANK" --summary-json "$VOTING_BANK_DIR/summary.json" \
     --manifest-json "$VOTING_BANK_DIR/manifest.json" --dataset-root "$DATA_ROOT" --subject "$SUBJECT" \
+    --explicit-binding-render-preset none \
     --label-bank-source projected-2d-voting --reliability-enable --export-soft-edit-weights
 }
 
@@ -173,6 +175,7 @@ calibrate_voting() {
   run "$PYTHON_BIN" tools/calibrate_evidence_soft_edit_weights.py \
     --part-label-bank "$VOTING_BANK" --checkpoint "$ckpt" --asset-root "$CALIBRATION_ASSETS" \
     --output "$CALIBRATED_BANK" --summary-json "$CALIBRATED_BANK_DIR/summary.json" \
+    --explicit-binding-render-preset none \
     --mode support-aware --parts face hair upper lower shoes skin \
     --outer-penalty-power 0.2 --support-penalty-power 0.2 \
     --support-pair face:hair --support-pair hair:face --support-pair upper:skin \
@@ -210,6 +213,7 @@ evaluate_validation() {
   run "$PYTHON_BIN" tools/evaluate_semantic_editing_paper_protocol.py \
     --protocol "$PROTOCOL" --protocol-split validation --trained-bank "$CALIBRATED_BANK" \
     --voting-bank "$VOTING_BANK" --checkpoint "$ckpt" --asset-root "$VALIDATION_ASSETS" \
+    --explicit-binding-render-preset none \
     --soft-threshold "$soft_threshold" --support-threshold "$support_threshold" \
     --boundary-radius "$boundary_radius" --output-dir "$VALIDATION_EVAL_DIR"
   if [[ "$DRY_RUN" != "1" ]]; then
@@ -231,7 +235,7 @@ evaluate_test() {
   run "$PYTHON_BIN" tools/evaluate_semantic_editing_paper_protocol.py \
     --protocol "$PROTOCOL" --protocol-split test --frozen-config "$FROZEN_CONFIG" \
     --trained-bank "$CALIBRATED_BANK" --voting-bank "$VOTING_BANK" --checkpoint "$ckpt" \
-    --asset-root "$TEST_ASSETS" --output-dir "$TEST_EVAL_DIR"
+    --asset-root "$TEST_ASSETS" --explicit-binding-render-preset none --output-dir "$TEST_EVAL_DIR"
   if [[ "$DRY_RUN" != "1" ]]; then
     assess_allow_failure "$PYTHON_BIN" tools/assess_voting_posterior_candidate.py \
       --baseline-summary "$TEST_EVAL_DIR/baseline_summary.csv" \
