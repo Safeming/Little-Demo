@@ -48,7 +48,7 @@ def test_coreview386_protocol_matches_cross_subject_split():
 
 @pytest.mark.parametrize(
     ("subject_id", "train_frame_end"),
-    [("387", 570), ("392", 550)],
+    [("387", 570), ("392", 550), ("393", 570)],
 )
 def test_additional_subject_configs_follow_strict_multisubject_protocol(
     subject_id, train_frame_end
