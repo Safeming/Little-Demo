@@ -1,4 +1,18 @@
 import math
+import subprocess
+import sys
+from pathlib import Path
+
+
+def test_summarizer_cli_can_start_as_direct_script():
+    result = subprocess.run(
+        [sys.executable, "tools/summarize_semantic_real_editing_paper_suite.py", "--help"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_add_voting_target_retention_uses_matched_record_reference():
