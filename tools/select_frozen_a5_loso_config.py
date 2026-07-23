@@ -34,6 +34,22 @@ def _row_at_retention(rows: list[dict], *, method: str, retention: float) -> dic
     return matches[0]
 
 
+def _optional_row_at_retention(
+    rows: list[dict], *, method: str, retention: float
+) -> dict | None:
+    matches = [
+        row
+        for row in rows
+        if str(row.get("baseline")) == str(method)
+        and abs(float(row.get("retention", -1.0)) - float(retention)) <= 1.0e-6
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            f"expected at most one {method} row at retention {retention}, found {len(matches)}"
+        )
+    return matches[0] if matches else None
+
+
 def load_a5_candidate_report(
     report_dir: Path,
     *,
@@ -53,9 +69,13 @@ def load_a5_candidate_report(
     b1_curve = _read_csv(report_dir / "leakage_retention_curve.csv")
     a5_matched = _read_csv(report_dir / "matched_retention.csv")
     checks = []
+    coverage_complete = True
     for retention in required_retentions:
-        b1 = _row_at_retention(b1_curve, method="B1", retention=retention)
-        a5 = _row_at_retention(a5_matched, method="A5", retention=retention)
+        b1 = _optional_row_at_retention(b1_curve, method="B1", retention=retention)
+        a5 = _optional_row_at_retention(a5_matched, method="A5", retention=retention)
+        if b1 is None or a5 is None:
+            coverage_complete = False
+            continue
         checks.append(
             {
                 "retention": float(retention),
@@ -68,6 +88,7 @@ def load_a5_candidate_report(
     return {
         "donor_subject": str(donor_subject),
         "soft_threshold": float(soft_threshold),
+        "coverage_complete": coverage_complete,
         "report_dir": str(report_dir.resolve()),
         "b1_macro_miou": float(baseline_by_name["B1"]["macro_miou"]),
         "a5_macro_miou": float(baseline_by_name["A5"]["macro_miou"]),
@@ -79,6 +100,8 @@ def load_a5_candidate_report(
 
 
 def _candidate_passes(candidate: dict, *, max_miou_gap: float) -> bool:
+    if not bool(candidate.get("coverage_complete", True)):
+        return False
     gap = float(candidate["b1_macro_miou"]) - float(candidate["a5_macro_miou"])
     checks = list(candidate.get("retention_checks", []))
     return gap <= float(max_miou_gap) + 1.0e-12 and bool(checks) and all(

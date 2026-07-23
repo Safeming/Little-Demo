@@ -8,6 +8,7 @@ PYTHON_BIN="${PYTHON_BIN:-/opt/miniconda3/envs/ictrl/bin/python}"
 GPU="${GPU:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 REUSE_COMPLETED="${REUSE_COMPLETED:-1}"
+RESUME="${RESUME:-1}"
 ESTIMATED_SECONDS="${ESTIMATED_SECONDS:-2700}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/exp/acceptdata/frozen_a5_five_subject_loso_stats_20260723}"
 FOOTPRINT_ROOT="${FOOTPRINT_ROOT:-$ROOT/exp/acceptdata/frozen_a5_five_subject_main_20260723}"
@@ -107,6 +108,11 @@ candidate_complete() {
   [[ -s "$output/baseline_summary.csv" && -s "$output/leakage_retention_curve.csv" && -s "$output/matched_retention.csv" ]]
 }
 
+main_complete() {
+  local output="$1"
+  [[ -s "$output/baseline_summary.csv" && -s "$output/matched_retention.csv" && -s "$output/summary.json" ]]
+}
+
 evaluate_validation_candidate() {
   local subject="$1" threshold="$2" source output
   source="$(subject_root "$subject")"
@@ -181,7 +187,9 @@ evaluate_test_main() {
 
 main() {
   local subject threshold frozen
-  : > "$STATUS_FILE"
+  if [[ "$RESUME" != "1" || ! -e "$STATUS_FILE" ]]; then
+    : > "$STATUS_FILE"
+  fi
   status "five-subject frozen A5 LOSO/statistics queue started pid=$$ dry_run=$DRY_RUN"
   status "estimated_finish_bjt=$(estimated_finish)"
   validate_inputs
@@ -194,7 +202,21 @@ main() {
   done
   for subject in "${SUBJECTS[@]}"; do
     status "CoreView_${subject} four-donor A5 LOSO selection started"
-    frozen="$(build_loso_config "$subject" | tail -n 1)"
+    frozen="$OUTPUT_ROOT/CoreView_${subject}/loso_frozen_config.json"
+    build_loso_config "$subject"
+    if [[ "$DRY_RUN" != "1" ]]; then
+      if [[ -s "$frozen" ]]; then
+        :
+      else
+        status "CoreView_${subject} four-donor A5 LOSO selection failed: missing config"
+        return 2
+      fi
+    fi
+    if [[ "$DRY_RUN" != "1" && "$REUSE_COMPLETED" == "1" ]] && \
+      main_complete "$OUTPUT_ROOT/CoreView_${subject}/main"; then
+      status "CoreView_${subject} frozen A5 test main reused"
+      continue
+    fi
     status "CoreView_${subject} frozen A5 test main started"
     evaluate_test_main "$subject" "$frozen"
     status "CoreView_${subject} frozen A5 test main completed"

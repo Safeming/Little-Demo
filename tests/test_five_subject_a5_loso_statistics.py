@@ -128,6 +128,54 @@ def test_select_a5_loso_candidate_minimizes_leakage_after_gates():
     assert selected["donor_subjects"] == ["377", "386", "387", "394"]
 
 
+def test_incomplete_retention_coverage_marks_candidate_ineligible(tmp_path):
+    from tools.select_frozen_a5_loso_config import (
+        load_a5_candidate_report,
+        select_a5_loso_candidate,
+    )
+
+    incomplete = tmp_path / "incomplete"
+    _write_a5_candidate_report(incomplete)
+    rows = list(csv.DictReader((incomplete / "matched_retention.csv").open(newline="")))
+    _write_csv(
+        incomplete / "matched_retention.csv",
+        [row for row in rows if float(row["retention"]) == 0.5],
+    )
+    incomplete_candidate = load_a5_candidate_report(
+        incomplete,
+        donor_subject="377",
+        soft_threshold=0.5,
+        required_retentions=(0.5, 0.6),
+    )
+    assert incomplete_candidate["coverage_complete"] is False
+
+    def complete(subject, threshold, leakage):
+        return {
+            "donor_subject": subject,
+            "soft_threshold": threshold,
+            "coverage_complete": True,
+            "b1_macro_miou": 0.50,
+            "a5_macro_miou": 0.49,
+            "a5_mean_boundary_f1": 0.45,
+            "retention_checks": [
+                {"b1_actionable_leakage": 0.02, "a5_actionable_leakage": leakage}
+            ],
+        }
+
+    selected = select_a5_loso_candidate(
+        {
+            0.2: [complete(subject, 0.2, 0.01) for subject in ("377", "386", "387", "394")],
+            0.5: [
+                incomplete_candidate,
+                *[complete(subject, 0.5, 0.005) for subject in ("386", "387", "394")],
+            ],
+        },
+        expected_donor_count=4,
+    )
+
+    assert selected["soft_threshold"] == pytest.approx(0.2)
+
+
 def test_paired_statistics_use_a5_minus_b1_and_deterministic_bootstrap():
     from tools.summarize_five_subject_a5_loso_statistics import paired_statistics
 
@@ -191,5 +239,7 @@ def test_queue_contract_is_five_subject_a5_validation_loso_without_training():
     assert "frozen_a5_main_method_v1.json" in script
     assert "select_frozen_a5_loso_config.py" in script
     assert "summarize_five_subject_a5_loso_statistics.py" in script
+    assert 'frozen="$(build_loso_config' not in script
+    assert '[[ -s "$frozen" ]]' in script
     assert "train.py" not in script
     assert "semantic-train" not in script
