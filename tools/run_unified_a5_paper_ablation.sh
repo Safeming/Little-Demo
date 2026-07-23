@@ -102,6 +102,17 @@ validate_inputs() {
   done
 }
 
+materialize_loso_provenance() {
+  local subject="$1" source destination
+  source="$(loso_config "$subject")"
+  destination="$OUTPUT_ROOT/CoreView_${subject}/loso_frozen_config.json"
+  mkdir -p "$(dirname "$destination")"
+  if [[ "$DRY_RUN" != "1" && -s "$destination" ]] && cmp -s "$source" "$destination"; then
+    return
+  fi
+  run cp -- "$source" "$destination"
+}
+
 build_variant_bank() {
   local subject="$1" variant="$2" source output
   source="$(subject_root "$subject")"
@@ -168,6 +179,7 @@ main() {
   status "estimated_finish_bjt=$(estimated_finish)"
   validate_inputs
   for subject in "${SUBJECTS[@]}"; do
+    materialize_loso_provenance "$subject"
     status "CoreView_${subject} center-only bank started"
     build_variant_bank "$subject" center_only
     status "CoreView_${subject} center-only bank completed"

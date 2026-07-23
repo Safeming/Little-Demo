@@ -18,6 +18,8 @@ def test_queue_runs_unified_component_and_a5_micro_ablations_without_training():
     assert "--outer-penalty-power 0" in script
     assert script.count("--retention-reference-baseline A0") >= 3
     assert "summarize_unified_a5_paper_ablation.py" in script
+    assert "materialize_loso_provenance" in script
+    assert "cp --" in script
     assert "train.py" not in script
     assert "semantic-train" not in script
 
