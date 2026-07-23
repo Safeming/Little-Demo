@@ -47,10 +47,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--methods", nargs="+", choices=list(REAL_EDIT_METHODS), default=list(REAL_EDIT_METHODS))
     parser.add_argument("--tasks", nargs="+", choices=list(REAL_EDIT_TASKS), default=list(REAL_EDIT_TASKS))
     parser.add_argument("--edit-strength", type=float, default=1.0)
+    parser.add_argument("--edit-strengths", nargs="+", type=float, default=None)
+    parser.add_argument("--metrics-only", action="store_true")
     parser.add_argument("--texture-frequency", type=float, default=8.0)
     parser.add_argument("--dataset-root", default="")
     parser.add_argument("--explicit-binding-render-preset", default="none")
     return parser.parse_args(argv)
+
+
+def resolve_edit_strengths(args) -> list[float]:
+    values = getattr(args, "edit_strengths", None)
+    if values is None:
+        values = [getattr(args, "edit_strength", 1.0)]
+    strengths = [float(value) for value in values]
+    if not strengths or any(value <= 0.0 or value > 1.0 for value in strengths):
+        raise ValueError("edit strength values must be in (0, 1]")
+    if strengths != sorted(strengths) or len(set(strengths)) != len(strengths):
+        raise ValueError("edit strength grid must be strictly increasing and unique")
+    return strengths
 
 
 def build_experiment_matrix(*, methods, tasks, parts) -> list[dict[str, str]]:
@@ -151,13 +165,16 @@ def run_suite(args: argparse.Namespace) -> dict:
     checkpoint = args.checkpoint.resolve()
     output_dir = args.output_dir.resolve()
     frames_dir = output_dir / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    metrics_only = bool(getattr(args, "metrics_only", False))
+    if not metrics_only:
+        frames_dir.mkdir(parents=True, exist_ok=True)
     records = _select_named_records(_load_view_records(asset_root), args.views, int(args.max_views))
     config_path = args.config.resolve() if args.config else asset_root.parent.parent / ".hydra" / "config.yaml"
     config = _load_config(config_path, checkpoint, asset_root, records, args)
     normalize_dataset_subject(config, str(args.subject))
     bg_color = [1, 1, 1] if bool(config.dataset.white_background) else [0, 0, 0]
     matrix = build_experiment_matrix(methods=args.methods, tasks=args.tasks, parts=args.parts)
+    edit_strengths = resolve_edit_strengths(args)
     metric_rows: list[dict] = []
 
     with torch.no_grad():
@@ -208,7 +225,8 @@ def run_suite(args: argparse.Namespace) -> dict:
                 return_opacity=False,
             )
             base_rgb = _tensor_to_rgb_uint8(base_pkg["render"].clamp(0.0, 1.0))
-            imageio.imwrite(frames_dir / f"{view_name}_rgb.png", base_rgb)
+            if not metrics_only:
+                imageio.imwrite(frames_dir / f"{view_name}_rgb.png", base_rgb)
             base_float = np.asarray(base_rgb, dtype=np.float32) / 255.0
             base_colors = colors_precomp.detach().float().cpu().numpy()
             base_opacities = deformed.get_opacity.detach().float().cpu().numpy()
@@ -221,59 +239,65 @@ def run_suite(args: argparse.Namespace) -> dict:
                 part = item["part"]
                 weights = weights_by_method_part[(method, part)]
                 target_rgb = np.asarray(EDIT_COLORS[part], dtype=np.float32) / 255.0
-                overrides = build_edit_overrides(
-                    base_colors,
-                    base_opacities,
-                    weights,
-                    task=task,
-                    strength=float(args.edit_strength),
-                    target_rgb=target_rgb,
-                    texture_colors=texture_by_part[part],
-                )
-                colors_override = torch.from_numpy(overrides["colors"]).to(
-                    device=colors_precomp.device,
-                    dtype=colors_precomp.dtype,
-                )
-                opacity_override = torch.from_numpy(overrides["opacities"]).to(
-                    device=deformed.get_opacity.device,
-                    dtype=deformed.get_opacity.dtype,
-                )
-                edited_pkg = rasterize_gaussians(
-                    view,
-                    deformed,
-                    config.pipeline,
-                    background,
-                    colors_precomp=colors_override,
-                    opacities_precomp=opacity_override,
-                    return_opacity=False,
-                )
-                edited_rgb = _tensor_to_rgb_uint8(edited_pkg["render"].clamp(0.0, 1.0))
-                frame_path = frames_dir / task / method / f"{view_name}_{part}.png"
-                frame_path.parent.mkdir(parents=True, exist_ok=True)
-                imageio.imwrite(frame_path, edited_rgb)
-                metrics = compute_edit_delta_metrics(
-                    base_float,
-                    np.asarray(edited_rgb, dtype=np.float32) / 255.0,
-                    part_masks[part],
-                    valid_mask,
-                    boundary_radius=int(run_config["boundary_radius"]),
-                )
-                metric_rows.append(
-                    {
-                        "subject": str(args.subject),
-                        "view": view_name,
-                        "part": part,
-                        "task": task,
-                        "method": method,
-                        "edit_strength": float(args.edit_strength),
-                        "soft_threshold": float(run_config["soft_threshold"]),
-                        "selected_gaussian_count": int(np.sum(weights > 0.0)),
-                        "edit_weight_sum": float(np.sum(weights)),
-                        **metrics,
-                        "frame": str(frame_path),
-                    }
-                )
-                del edited_pkg
+                for edit_strength in edit_strengths:
+                    overrides = build_edit_overrides(
+                        base_colors,
+                        base_opacities,
+                        weights,
+                        task=task,
+                        strength=float(edit_strength),
+                        target_rgb=target_rgb,
+                        texture_colors=texture_by_part[part],
+                    )
+                    colors_override = torch.from_numpy(overrides["colors"]).to(
+                        device=colors_precomp.device,
+                        dtype=colors_precomp.dtype,
+                    )
+                    opacity_override = torch.from_numpy(overrides["opacities"]).to(
+                        device=deformed.get_opacity.device,
+                        dtype=deformed.get_opacity.dtype,
+                    )
+                    edited_pkg = rasterize_gaussians(
+                        view,
+                        deformed,
+                        config.pipeline,
+                        background,
+                        colors_precomp=colors_override,
+                        opacities_precomp=opacity_override,
+                        return_opacity=False,
+                    )
+                    edited_rgb = _tensor_to_rgb_uint8(edited_pkg["render"].clamp(0.0, 1.0))
+                    frame_path = ""
+                    if not metrics_only:
+                        strength_token = str(edit_strength).replace(".", "p")
+                        suffix = f"_s{strength_token}" if len(edit_strengths) > 1 else ""
+                        frame_output = frames_dir / task / method / f"{view_name}_{part}{suffix}.png"
+                        frame_output.parent.mkdir(parents=True, exist_ok=True)
+                        imageio.imwrite(frame_output, edited_rgb)
+                        frame_path = str(frame_output)
+                    metrics = compute_edit_delta_metrics(
+                        base_float,
+                        np.asarray(edited_rgb, dtype=np.float32) / 255.0,
+                        part_masks[part],
+                        valid_mask,
+                        boundary_radius=int(run_config["boundary_radius"]),
+                    )
+                    metric_rows.append(
+                        {
+                            "subject": str(args.subject),
+                            "view": view_name,
+                            "part": part,
+                            "task": task,
+                            "method": method,
+                            "edit_strength": float(edit_strength),
+                            "soft_threshold": float(run_config["soft_threshold"]),
+                            "selected_gaussian_count": int(np.sum(weights > 0.0)),
+                            "edit_weight_sum": float(np.sum(weights)),
+                            **metrics,
+                            "frame": frame_path,
+                        }
+                    )
+                    del edited_pkg
             del base_pkg, deformed, colors_precomp
             torch.cuda.empty_cache()
 
@@ -296,7 +320,9 @@ def run_suite(args: argparse.Namespace) -> dict:
         "method_freeze_fingerprint": run_config["method_freeze_fingerprint"],
         "soft_threshold": float(run_config["soft_threshold"]),
         "boundary_radius": int(run_config["boundary_radius"]),
-        "edit_strength": float(args.edit_strength),
+        "edit_strength": float(edit_strengths[0]) if len(edit_strengths) == 1 else None,
+        "edit_strengths": edit_strengths,
+        "metrics_only": metrics_only,
         "texture_frequency": float(args.texture_frequency),
         "methods": list(args.methods),
         "tasks": list(args.tasks),

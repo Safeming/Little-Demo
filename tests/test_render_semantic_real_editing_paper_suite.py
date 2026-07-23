@@ -99,3 +99,52 @@ def test_normalize_dataset_subject_converts_numeric_omegaconf_value_to_string():
 
     assert config.dataset.subject == "CoreView_377"
     assert isinstance(config.dataset.subject, str)
+
+
+def test_parse_args_accepts_multi_strength_metrics_only_mode():
+    from tools.render_semantic_real_editing_paper_suite import parse_args, resolve_edit_strengths
+
+    args = parse_args(
+        [
+            "--subject", "377",
+            "--raw-bank", "raw.npz",
+            "--voting-bank", "voting.npz",
+            "--a5-bank", "a5.npz",
+            "--loso-config", "loso.json",
+            "--method-freeze", "freeze.json",
+            "--checkpoint", "ckpt.pth",
+            "--asset-root", "assets",
+            "--output-dir", "out",
+            "--edit-strengths", "0.2", "0.4", "0.6", "0.8", "1.0",
+            "--metrics-only",
+        ]
+    )
+
+    assert resolve_edit_strengths(args) == [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert args.metrics_only is True
+
+
+def test_resolve_edit_strengths_preserves_single_strength_default():
+    from argparse import Namespace
+    from tools.render_semantic_real_editing_paper_suite import resolve_edit_strengths
+
+    args = Namespace(edit_strength=0.75, edit_strengths=None)
+
+    assert resolve_edit_strengths(args) == [0.75]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [0.4, 0.2],
+        [0.2, 0.2],
+        [0.0, 0.2],
+        [0.2, 1.1],
+    ],
+)
+def test_resolve_edit_strengths_rejects_invalid_grids(values):
+    from argparse import Namespace
+    from tools.render_semantic_real_editing_paper_suite import resolve_edit_strengths
+
+    with pytest.raises(ValueError, match="strength"):
+        resolve_edit_strengths(Namespace(edit_strength=1.0, edit_strengths=values))
