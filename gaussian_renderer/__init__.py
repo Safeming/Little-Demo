@@ -35,7 +35,24 @@ def _build_rasterizer(data, pipe, bg_color, pc, scaling_modifier):
     return GaussianRasterizer(raster_settings=raster_settings)
 
 
-def rasterize_gaussians(data, pc, pipe, bg_color, colors_precomp=None, scaling_modifier=1.0, return_opacity=False):
+def resolve_raster_opacity(pc, opacities_precomp=None):
+    if opacities_precomp is None:
+        return pc.get_opacity
+    if int(opacities_precomp.shape[0]) != int(pc.get_xyz.shape[0]):
+        raise ValueError("opacity override point count must match Gaussian point count")
+    return opacities_precomp
+
+
+def rasterize_gaussians(
+    data,
+    pc,
+    pipe,
+    bg_color,
+    colors_precomp=None,
+    scaling_modifier=1.0,
+    return_opacity=False,
+    opacities_precomp=None,
+):
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device='cuda') + 0
     try:
         screenspace_points.retain_grad()
@@ -46,7 +63,7 @@ def rasterize_gaussians(data, pc, pipe, bg_color, colors_precomp=None, scaling_m
 
     means3D = pc.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity
+    opacity = resolve_raster_opacity(pc, opacities_precomp)
 
     scales = None
     rotations = None
