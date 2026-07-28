@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Mapping
@@ -22,6 +23,27 @@ PART_COLORS_UINT8 = np.array(
 )
 UNKNOWN_COLOR_UINT8 = np.array([128, 128, 128], dtype=np.uint8)
 
+A7_TEMPORAL_COUNT_FIELDS = (
+    "temporal_visible_count",
+    "temporal_consecutive_visible_count",
+)
+A7_TEMPORAL_FLOAT_FIELDS = (
+    "temporal_target_ratio_mean",
+    "temporal_target_ratio_std",
+    "temporal_target_flicker",
+    "temporal_outer_ratio_mean",
+    "temporal_outer_ratio_std",
+    "temporal_outer_flicker",
+    "temporal_boundary_crossing_rate",
+    "temporal_visibility_transition_rate",
+)
+A7_PROVENANCE_FIELDS = (
+    "base_method_freeze_fingerprint",
+    "a7_contract_fingerprint",
+    "evidence_protocol_fingerprint",
+    "candidate_config_fingerprint",
+)
+
 
 def _as_array(value):
     if isinstance(value, np.ndarray):
@@ -34,6 +56,50 @@ def _require_int16_range(name: str, value: np.ndarray) -> np.ndarray:
     if value.size and (value.min() < np.iinfo(np.int16).min or value.max() > np.iinfo(np.int16).max):
         raise ValueError(f"{name} values exceed int16 range")
     return value.astype(np.int16, copy=False)
+
+
+def _one_hot_label_weights(bank: Mapping[str, np.ndarray], *, point_count: int) -> tuple[np.ndarray, str]:
+    source_labels = np.asarray(bank.get("editable_label", bank["part_label"]), dtype=np.int16).reshape(-1)
+    if source_labels.shape[0] != int(point_count):
+        raise ValueError(f"label point count {source_labels.shape[0]} does not match expected {int(point_count)}")
+    weights = np.zeros((int(point_count), len(PART_NAMES)), dtype=np.float32)
+    valid = (source_labels >= 0) & (source_labels < len(PART_NAMES))
+    if np.any(valid):
+        weights[np.nonzero(valid)[0], source_labels[valid].astype(np.int64)] = 1.0
+    source = "editable_label_one_hot_fallback" if "editable_label" in bank else "part_label_one_hot_fallback"
+    return weights, source
+
+
+def resolve_soft_edit_weights(
+    bank: Mapping[str, np.ndarray],
+    *,
+    point_count: int,
+    weight_source: str = "soft",
+) -> tuple[np.ndarray, str]:
+    source_key = str(weight_source or "soft").replace("_", "-").lower()
+    key_by_source = {
+        "soft": "soft_edit_weights",
+        "target": "edit_target_weights",
+        "support": "edit_support_weights",
+    }
+    if source_key == "auto-target":
+        source_key = "target" if "edit_target_weights" in bank else "soft"
+    if source_key == "auto-support":
+        if "edit_support_weights" not in bank:
+            return np.zeros((int(point_count), len(PART_NAMES)), dtype=np.float32), "zero_support_fallback"
+        source_key = "support"
+    if source_key not in key_by_source:
+        raise ValueError(f"unsupported soft edit weight source: {weight_source}")
+
+    key = key_by_source[source_key]
+    if key in bank:
+        weights = np.asarray(bank[key], dtype=np.float32)
+        if weights.shape != (int(point_count), len(PART_NAMES)):
+            raise ValueError(f"{key} must have shape ({int(point_count)}, {len(PART_NAMES)})")
+        return weights, key
+    if source_key == "soft":
+        return _one_hot_label_weights(bank, point_count=point_count)
+    raise ValueError(f"{key} is required for weight source {weight_source}")
 
 
 def finalize_votes(per_part_votes, visible_vote_count, conflict_count) -> dict[str, np.ndarray]:
@@ -303,6 +369,401 @@ def compute_evidence_calibrated_soft_edit_weights(
         "total_removed_weight_sum": float(np.sum(weights - updated)),
     }
     return np.clip(updated, 0.0, 1.0).astype(np.float32, copy=False), summary
+
+
+def compute_footprint_distilled_soft_edit_weights(
+    *,
+    soft_edit_weights,
+    semantic_probs,
+    footprint_target_ratio,
+    footprint_outer_ratio,
+    view_support_count,
+    conflict_ratio=None,
+    parts: tuple[str, ...] | list[str] | None = None,
+    min_support_views: int = 5,
+    target_retention_floor: float = 0.70,
+    boundary_target_threshold: float = 0.35,
+    boundary_retention_floor: float = 0.45,
+    outer_penalty_power: float = 1.0,
+    conflict_penalty_power: float = 1.0,
+) -> tuple[np.ndarray, dict]:
+    weights = np.asarray(soft_edit_weights, dtype=np.float32)
+    probs = np.asarray(semantic_probs, dtype=np.float32)
+    target = np.asarray(footprint_target_ratio, dtype=np.float32)
+    outer = np.asarray(footprint_outer_ratio, dtype=np.float32)
+    support = np.asarray(view_support_count)
+    if weights.ndim != 2 or weights.shape[1] != len(PART_NAMES):
+        raise ValueError(f"soft_edit_weights must have shape [N, {len(PART_NAMES)}]")
+    if probs.shape != weights.shape:
+        raise ValueError("semantic_probs shape must match soft_edit_weights")
+    if target.shape != weights.shape:
+        raise ValueError("footprint_target_ratio shape must match soft_edit_weights")
+    if outer.shape != weights.shape:
+        raise ValueError("footprint_outer_ratio shape must match soft_edit_weights")
+    if support.shape != weights.shape:
+        raise ValueError("view_support_count shape must match soft_edit_weights")
+    if conflict_ratio is None:
+        conflict = np.zeros_like(weights, dtype=np.float32)
+    else:
+        conflict = np.asarray(conflict_ratio, dtype=np.float32)
+        if conflict.shape != weights.shape:
+            raise ValueError("conflict_ratio shape must match soft_edit_weights")
+
+    selected_parts = list(PART_NAMES) if parts is None else [str(part) for part in parts]
+    unknown = [part for part in selected_parts if part not in PART_NAMES]
+    if unknown:
+        raise ValueError(f"unknown part(s): {unknown}")
+
+    updated = weights.copy()
+    part_stats = {}
+    enough_support = support.astype(np.int32) >= int(min_support_views)
+    target_floor = float(np.clip(target_retention_floor, 0.0, 1.0))
+    boundary_threshold = float(np.clip(boundary_target_threshold, 0.0, 1.0))
+    boundary_floor = float(np.clip(boundary_retention_floor, 0.0, 1.0))
+    outer_power = float(outer_penalty_power)
+    conflict_power = float(conflict_penalty_power)
+    for part in selected_parts:
+        idx = PART_NAMES.index(part)
+        mask = enough_support[:, idx]
+        semantic_support = np.clip(probs[:, idx], 0.0, 1.0)
+        target_support = np.clip(target[:, idx], 0.0, 1.0)
+        outer_penalty = np.clip(1.0 - outer[:, idx], 0.0, 1.0) ** outer_power
+        conflict_penalty = np.clip(1.0 - conflict[:, idx], 0.0, 1.0) ** conflict_power
+        raw_factor = np.clip(outer_penalty * conflict_penalty, 0.0, 1.0)
+        target_protected = target_support >= target_floor
+        boundary_protected = (
+            (target_support >= boundary_threshold)
+            & ~target_protected
+            & (semantic_support >= boundary_threshold)
+        )
+        factor = raw_factor.copy()
+        factor = np.where(target_protected, np.maximum(factor, target_floor), factor)
+        factor = np.where(boundary_protected, np.maximum(factor, boundary_floor), factor)
+        before = updated[:, idx].copy()
+        updated[mask, idx] = before[mask] * factor[mask]
+        changed = np.abs(updated[:, idx] - before) > 1.0e-8
+        part_stats[part] = {
+            "calibrated_count": int(np.sum(mask)),
+            "changed_count": int(np.sum(changed)),
+            "target_protected_count": int(np.sum(mask & target_protected)),
+            "boundary_protected_count": int(np.sum(mask & boundary_protected)),
+            "old_weight_sum": float(np.sum(before)),
+            "new_weight_sum": float(np.sum(updated[:, idx])),
+            "removed_weight_sum": float(np.sum(before - updated[:, idx])),
+            "min_support_views": int(min_support_views),
+            "target_retention_floor": target_floor,
+            "boundary_target_threshold": boundary_threshold,
+            "boundary_retention_floor": boundary_floor,
+            "outer_penalty_power": outer_power,
+            "conflict_penalty_power": conflict_power,
+        }
+
+    summary = {
+        "mode": "footprint_distilled_soft_edit_weights",
+        "parts": part_stats,
+        "total_removed_weight_sum": float(np.sum(weights - updated)),
+    }
+    return np.clip(updated, 0.0, 1.0).astype(np.float32, copy=False), summary
+
+
+def compute_footprint_boundary_confidence_weights(
+    *,
+    soft_edit_weights,
+    semantic_probs,
+    footprint_target_ratio,
+    footprint_outer_ratio,
+    adjacent_part_ratio,
+    view_support_count,
+    conflict_ratio=None,
+    boundary_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    parts: tuple[str, ...] | list[str] | None = None,
+    min_support_views: int = 5,
+    target_retention_floor: float = 0.70,
+    boundary_target_threshold: float = 0.35,
+    boundary_semantic_threshold: float = 0.85,
+    boundary_adjacent_threshold: float = 0.35,
+    boundary_conflict_max: float = 0.30,
+    boundary_retention_floor: float = 0.80,
+    leak_target_threshold: float = 0.20,
+    leak_semantic_threshold: float = 0.50,
+    outer_penalty_power: float = 1.0,
+    conflict_penalty_power: float = 1.0,
+    adjacent_penalty_power: float = 1.0,
+) -> tuple[np.ndarray, dict]:
+    weights = np.asarray(soft_edit_weights, dtype=np.float32)
+    probs = np.asarray(semantic_probs, dtype=np.float32)
+    target = np.asarray(footprint_target_ratio, dtype=np.float32)
+    outer = np.asarray(footprint_outer_ratio, dtype=np.float32)
+    adjacent = np.asarray(adjacent_part_ratio, dtype=np.float32)
+    support = np.asarray(view_support_count)
+    if weights.ndim != 2 or weights.shape[1] != len(PART_NAMES):
+        raise ValueError(f"soft_edit_weights must have shape [N, {len(PART_NAMES)}]")
+    if probs.shape != weights.shape:
+        raise ValueError("semantic_probs shape must match soft_edit_weights")
+    if target.shape != weights.shape:
+        raise ValueError("footprint_target_ratio shape must match soft_edit_weights")
+    if outer.shape != weights.shape:
+        raise ValueError("footprint_outer_ratio shape must match soft_edit_weights")
+    if support.shape != weights.shape:
+        raise ValueError("view_support_count shape must match soft_edit_weights")
+    expected_adjacent_shape = (weights.shape[0], len(PART_NAMES), len(PART_NAMES))
+    if adjacent.shape != expected_adjacent_shape:
+        raise ValueError(f"adjacent_part_ratio must have shape {expected_adjacent_shape}")
+    if conflict_ratio is None:
+        conflict = np.zeros_like(weights, dtype=np.float32)
+    else:
+        conflict = np.asarray(conflict_ratio, dtype=np.float32)
+        if conflict.shape != weights.shape:
+            raise ValueError("conflict_ratio shape must match soft_edit_weights")
+
+    selected_parts = list(PART_NAMES) if parts is None else [str(part) for part in parts]
+    unknown = [part for part in selected_parts if part not in PART_NAMES]
+    if unknown:
+        raise ValueError(f"unknown part(s): {unknown}")
+
+    parsed_pairs: list[tuple[str, str]] = []
+    for pair in boundary_pairs or ():
+        if len(pair) != 2:
+            raise ValueError(f"boundary pair must contain two part names: {pair}")
+        part, adjacent_part = str(pair[0]), str(pair[1])
+        if part not in PART_NAMES or adjacent_part not in PART_NAMES:
+            raise ValueError(f"unknown boundary pair: {pair}")
+        parsed_pairs.append((part, adjacent_part))
+
+    updated = weights.copy()
+    part_stats = {}
+    min_views = int(min_support_views)
+    target_floor = float(np.clip(target_retention_floor, 0.0, 1.0))
+    boundary_target_cutoff = float(np.clip(boundary_target_threshold, 0.0, 1.0))
+    boundary_semantic_cutoff = float(np.clip(boundary_semantic_threshold, 0.0, 1.0))
+    boundary_adjacent_cutoff = float(np.clip(boundary_adjacent_threshold, 0.0, 1.0))
+    boundary_conflict_cutoff = float(np.clip(boundary_conflict_max, 0.0, 1.0))
+    boundary_floor = float(np.clip(boundary_retention_floor, 0.0, 1.0))
+    leak_target_cutoff = float(np.clip(leak_target_threshold, 0.0, 1.0))
+    leak_semantic_cutoff = float(np.clip(leak_semantic_threshold, 0.0, 1.0))
+    outer_power = float(outer_penalty_power)
+    conflict_power = float(conflict_penalty_power)
+    adjacent_power = float(adjacent_penalty_power)
+    enough_support = support.astype(np.int32) >= min_views
+
+    for part in selected_parts:
+        part_idx = PART_NAMES.index(part)
+        part_pairs = [(p, adj) for p, adj in parsed_pairs if p == part]
+        pair_adjacent = np.zeros((weights.shape[0],), dtype=np.float32)
+        for _part, adjacent_part in part_pairs:
+            adjacent_idx = PART_NAMES.index(adjacent_part)
+            pair_adjacent = np.maximum(pair_adjacent, np.clip(adjacent[:, part_idx, adjacent_idx], 0.0, 1.0))
+
+        mask = enough_support[:, part_idx]
+        semantic_support = np.clip(probs[:, part_idx], 0.0, 1.0)
+        target_support = np.clip(target[:, part_idx], 0.0, 1.0)
+        outer_support = np.clip(outer[:, part_idx], 0.0, 1.0)
+        conflict_support = np.clip(conflict[:, part_idx], 0.0, 1.0)
+        outer_penalty = np.clip(1.0 - outer_support, 0.0, 1.0) ** outer_power
+        conflict_penalty = np.clip(1.0 - conflict_support, 0.0, 1.0) ** conflict_power
+        adjacent_penalty = np.clip(1.0 - pair_adjacent, 0.0, 1.0) ** adjacent_power
+        raw_factor = np.clip(outer_penalty * conflict_penalty * adjacent_penalty, 0.0, 1.0)
+
+        strong_target = target_support >= target_floor
+        boundary_confident = (
+            (target_support >= boundary_target_cutoff)
+            & (semantic_support >= boundary_semantic_cutoff)
+            & (pair_adjacent >= boundary_adjacent_cutoff)
+            & (conflict_support <= boundary_conflict_cutoff)
+        )
+        leak_candidate = (
+            (target_support < leak_target_cutoff)
+            & (semantic_support < leak_semantic_cutoff)
+            & (pair_adjacent >= boundary_adjacent_cutoff)
+        )
+        factor = raw_factor.copy()
+        factor = np.where(strong_target, np.maximum(factor, target_floor), factor)
+        factor = np.where(boundary_confident, np.maximum(factor, boundary_floor), factor)
+        factor = np.where(leak_candidate, np.minimum(factor, raw_factor), factor)
+
+        before = updated[:, part_idx].copy()
+        updated[mask, part_idx] = before[mask] * factor[mask]
+        changed = np.abs(updated[:, part_idx] - before) > 1.0e-8
+        part_stats[part] = {
+            "calibrated_count": int(np.sum(mask)),
+            "changed_count": int(np.sum(changed)),
+            "boundary_pair_count": int(len(part_pairs)),
+            "strong_target_count": int(np.sum(mask & strong_target)),
+            "boundary_protected_count": int(np.sum(mask & boundary_confident & ~strong_target)),
+            "leak_suppressed_count": int(np.sum(mask & leak_candidate)),
+            "old_weight_sum": float(np.sum(before)),
+            "new_weight_sum": float(np.sum(updated[:, part_idx])),
+            "removed_weight_sum": float(np.sum(before - updated[:, part_idx])),
+            "min_support_views": min_views,
+            "target_retention_floor": target_floor,
+            "boundary_target_threshold": boundary_target_cutoff,
+            "boundary_semantic_threshold": boundary_semantic_cutoff,
+            "boundary_adjacent_threshold": boundary_adjacent_cutoff,
+            "boundary_conflict_max": boundary_conflict_cutoff,
+            "boundary_retention_floor": boundary_floor,
+            "leak_target_threshold": leak_target_cutoff,
+            "leak_semantic_threshold": leak_semantic_cutoff,
+        }
+
+    summary = {
+        "mode": "footprint_boundary_confidence_weights",
+        "boundary_pairs": [f"{part}:{adjacent_part}" for part, adjacent_part in parsed_pairs],
+        "parts": part_stats,
+        "total_removed_weight_sum": float(np.sum(weights - updated)),
+    }
+    return np.clip(updated, 0.0, 1.0).astype(np.float32, copy=False), summary
+
+
+def compute_support_aware_edit_weights(
+    *,
+    soft_edit_weights,
+    footprint_target_ratio,
+    footprint_outer_ratio,
+    adjacent_part_ratio,
+    view_support_count,
+    support_pairs,
+    parts: tuple[str, ...] | list[str] | None = None,
+    min_support_views: int = 5,
+    target_retention_floor: float = 0.70,
+    support_threshold: float = 0.35,
+    outer_penalty_power: float = 1.0,
+    support_penalty_power: float = 1.0,
+    boundary_role_ratio=None,
+    boundary_role_names=(),
+    support_roles=(),
+    role_threshold: float = 0.20,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    weights = np.asarray(soft_edit_weights, dtype=np.float32)
+    target = np.asarray(footprint_target_ratio, dtype=np.float32)
+    outer = np.asarray(footprint_outer_ratio, dtype=np.float32)
+    adjacent = np.asarray(adjacent_part_ratio, dtype=np.float32)
+    support = np.asarray(view_support_count)
+    if weights.ndim != 2 or weights.shape[1] != len(PART_NAMES):
+        raise ValueError(f"soft_edit_weights must have shape [N, {len(PART_NAMES)}]")
+    if target.shape != weights.shape:
+        raise ValueError("footprint_target_ratio shape must match soft_edit_weights")
+    if outer.shape != weights.shape:
+        raise ValueError("footprint_outer_ratio shape must match soft_edit_weights")
+    if support.shape != weights.shape:
+        raise ValueError("view_support_count shape must match soft_edit_weights")
+    expected_adjacent_shape = (weights.shape[0], len(PART_NAMES), len(PART_NAMES))
+    if adjacent.shape != expected_adjacent_shape:
+        raise ValueError(f"adjacent_part_ratio must have shape {expected_adjacent_shape}")
+    role_ratio = None
+    role_name_to_index: dict[str, int] = {}
+    if boundary_role_ratio is not None:
+        role_ratio = np.asarray(boundary_role_ratio, dtype=np.float32)
+        if role_ratio.ndim != 3 or role_ratio.shape[0] != weights.shape[0] or role_ratio.shape[1] != len(PART_NAMES):
+            raise ValueError("boundary_role_ratio must have shape [N, C, R]")
+        role_names_list = [str(name) for name in np.asarray(boundary_role_names).tolist()]
+        role_name_to_index = {name: idx for idx, name in enumerate(role_names_list)}
+        if role_ratio.shape[2] != len(role_name_to_index):
+            raise ValueError("boundary_role_names length must match boundary_role_ratio role dimension")
+
+    selected_parts = list(PART_NAMES) if parts is None else [str(part) for part in parts]
+    unknown = [part for part in selected_parts if part not in PART_NAMES]
+    if unknown:
+        raise ValueError(f"unknown part(s): {unknown}")
+
+    parsed_pairs: list[tuple[str, str]] = []
+    for pair in support_pairs or ():
+        if len(pair) != 2:
+            raise ValueError(f"support pair must contain two part names: {pair}")
+        part, adjacent_part = str(pair[0]), str(pair[1])
+        if part not in PART_NAMES or adjacent_part not in PART_NAMES:
+            raise ValueError(f"unknown support pair: {pair}")
+        parsed_pairs.append((part, adjacent_part))
+    roles_by_pair: dict[tuple[str, str], list[str]] = {}
+    for role in support_roles or ():
+        if len(role) != 3:
+            raise ValueError(f"support role must contain part, adjacent, role name: {role}")
+        part, adjacent_part, role_name = str(role[0]), str(role[1]), str(role[2])
+        if part not in PART_NAMES or adjacent_part not in PART_NAMES:
+            raise ValueError(f"unknown support role pair: {role}")
+        if role_name_to_index and role_name not in role_name_to_index:
+            raise ValueError(f"unknown boundary role name: {role_name}")
+        roles_by_pair.setdefault((part, adjacent_part), []).append(role_name)
+
+    target_weights = weights.copy()
+    support_weights = np.zeros_like(weights, dtype=np.float32)
+    part_stats = {}
+    min_views = int(min_support_views)
+    target_floor = float(np.clip(target_retention_floor, 0.0, 1.0))
+    support_cutoff = float(np.clip(support_threshold, 0.0, 1.0))
+    role_cutoff = float(np.clip(role_threshold, 0.0, 1.0))
+    outer_power = float(outer_penalty_power)
+    support_power = float(support_penalty_power)
+    for part in selected_parts:
+        part_idx = PART_NAMES.index(part)
+        part_pairs = [(p, adj) for p, adj in parsed_pairs if p == part]
+        enough_support = support[:, part_idx].astype(np.int32) >= min_views
+        original = weights[:, part_idx]
+        factor = np.ones((weights.shape[0],), dtype=np.float32)
+        support_mask_total = np.zeros((weights.shape[0],), dtype=bool)
+        role_gated_support_total = np.zeros((weights.shape[0],), dtype=bool)
+        for _part, adjacent_part in part_pairs:
+            adjacent_idx = PART_NAMES.index(adjacent_part)
+            adjacent_ratio = np.clip(adjacent[:, part_idx, adjacent_idx], 0.0, 1.0)
+            support_candidate = adjacent_ratio >= support_cutoff
+            pair_roles = roles_by_pair.get((part, adjacent_part), [])
+            role_candidate = np.ones((weights.shape[0],), dtype=bool)
+            if pair_roles and role_ratio is not None and role_name_to_index:
+                role_candidate = np.zeros((weights.shape[0],), dtype=bool)
+                for role_name in pair_roles:
+                    role_idx = role_name_to_index[role_name]
+                    role_candidate |= np.clip(role_ratio[:, part_idx, role_idx], 0.0, 1.0) >= role_cutoff
+            low_target = np.clip(target[:, part_idx], 0.0, 1.0) < target_floor
+            pair_support_mask = enough_support & support_candidate & role_candidate & low_target
+            support_mask_total |= pair_support_mask
+            role_gated_support_total |= pair_support_mask & bool(pair_roles)
+            support_values = original * adjacent_ratio
+            support_weights[pair_support_mask, part_idx] = np.maximum(
+                support_weights[pair_support_mask, part_idx],
+                support_values[pair_support_mask],
+            )
+            pair_factor = (
+                np.clip(1.0 - outer[:, part_idx], 0.0, 1.0) ** outer_power
+            ) * (
+                np.clip(1.0 - adjacent_ratio, 0.0, 1.0) ** support_power
+            )
+            factor = np.where(pair_support_mask, np.minimum(factor, pair_factor), factor)
+
+        strong_target = enough_support & (np.clip(target[:, part_idx], 0.0, 1.0) >= target_floor)
+        factor = np.where(strong_target, np.maximum(factor, target_floor), factor)
+        updated = np.minimum(original, original * np.clip(factor, 0.0, 1.0))
+        target_weights[:, part_idx] = np.where(enough_support, updated, original)
+        changed = np.abs(target_weights[:, part_idx] - original) > 1.0e-8
+        part_stats[part] = {
+            "calibrated_count": int(np.sum(enough_support)),
+            "changed_count": int(np.sum(changed)),
+            "support_point_count": int(np.sum(support_mask_total)),
+            "role_gated_support_count": int(np.sum(role_gated_support_total)),
+            "support_pair_count": int(len(part_pairs)),
+            "old_weight_sum": float(np.sum(original)),
+            "target_weight_sum": float(np.sum(target_weights[:, part_idx])),
+            "support_weight_sum": float(np.sum(support_weights[:, part_idx])),
+            "removed_target_weight_sum": float(np.sum(original - target_weights[:, part_idx])),
+            "min_support_views": min_views,
+            "target_retention_floor": target_floor,
+            "support_threshold": support_cutoff,
+            "outer_penalty_power": outer_power,
+            "support_penalty_power": support_power,
+            "role_threshold": role_cutoff,
+        }
+
+    summary = {
+        "mode": "support_aware_edit_weights",
+        "support_pairs": [f"{part}:{adjacent}" for part, adjacent in parsed_pairs],
+        "support_roles": [f"{part}:{adjacent}:{role}" for (part, adjacent), roles in roles_by_pair.items() for role in roles],
+        "parts": part_stats,
+        "total_removed_target_weight_sum": float(np.sum(weights - target_weights)),
+        "total_support_weight_sum": float(np.sum(support_weights)),
+    }
+    return (
+        np.clip(target_weights, 0.0, 1.0).astype(np.float32, copy=False),
+        np.clip(support_weights, 0.0, 1.0).astype(np.float32, copy=False),
+        summary,
+    )
 
 
 def apply_reliable_label_mask(
@@ -592,6 +1053,105 @@ def _check_dtype(arrays: Mapping[str, np.ndarray], key: str, dtype) -> None:
         raise ValueError(f"{key} dtype must be {np.dtype(dtype)}, got {_as_array(arrays[key]).dtype}")
 
 
+def _scalar_string(arrays: Mapping[str, np.ndarray], key: str) -> str:
+    value = _as_array(arrays[key])
+    if value.shape != ():
+        raise ValueError(f"{key} must be a scalar string")
+    if value.dtype.kind not in ("U", "S"):
+        raise ValueError(f"{key} must be a scalar string")
+    return str(value)
+
+
+def _validate_sha256(value: str, *, field: str) -> None:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field} must be a lowercase SHA-256 fingerprint")
+
+
+def part_label_bank_fingerprint(arrays: Mapping[str, np.ndarray]) -> str:
+    digest = hashlib.sha256()
+    for key in sorted(str(name) for name in arrays if str(name) != "output_bank_fingerprint"):
+        array = _as_array(arrays[key])
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(json.dumps(array.shape, separators=(",", ":")).encode("ascii"))
+        digest.update(b"\0")
+        if array.dtype.kind in ("U", "S"):
+            digest.update(
+                json.dumps(
+                    array.tolist(),
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        else:
+            digest.update(np.ascontiguousarray(array).tobytes(order="C"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _validate_a7_bank_arrays(arrays: Mapping[str, np.ndarray], *, point_count: int) -> None:
+    required = (
+        "method_id",
+        "base_method",
+        "base_bank_sha256",
+        *A7_PROVENANCE_FIELDS,
+        *A7_TEMPORAL_COUNT_FIELDS,
+        *A7_TEMPORAL_FLOAT_FIELDS,
+        "temporal_reliability",
+        "soft_edit_weights",
+        "output_bank_fingerprint",
+    )
+    missing = [key for key in required if key not in arrays]
+    if missing:
+        raise ValueError(f"missing A7 part label bank keys: {missing}")
+    if _scalar_string(arrays, "method_id") != "A7":
+        raise ValueError("method_id must be A7")
+    if _scalar_string(arrays, "base_method") != "A5":
+        raise ValueError("A7 base_method must be A5")
+
+    fingerprint_fields = (
+        "base_bank_sha256",
+        *A7_PROVENANCE_FIELDS,
+        "output_bank_fingerprint",
+    )
+    for field in fingerprint_fields:
+        _validate_sha256(_scalar_string(arrays, field), field=field)
+
+    shape = (point_count, len(PART_NAMES))
+    for key in A7_TEMPORAL_COUNT_FIELDS:
+        _check_dtype(arrays, key, np.int32)
+        value = _as_array(arrays[key])
+        if value.shape != shape:
+            raise ValueError(f"{key} must have shape {shape}")
+        if np.any(value < 0):
+            raise ValueError(f"{key} must be non-negative")
+    for key in (*A7_TEMPORAL_FLOAT_FIELDS, "temporal_reliability"):
+        _check_dtype(arrays, key, np.float32)
+        value = _as_array(arrays[key])
+        if value.shape != shape:
+            raise ValueError(f"{key} must have shape {shape}")
+        if not np.all(np.isfinite(value)):
+            raise ValueError(f"{key} must be finite")
+        if np.any((value < 0.0) | (value > 1.0)):
+            raise ValueError(f"{key} must be in [0, 1]")
+
+    weights = _as_array(arrays["soft_edit_weights"])
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("soft_edit_weights must be finite")
+    if np.any((weights < 0.0) | (weights > 1.0)):
+        raise ValueError("soft_edit_weights must be in [0, 1]")
+
+    expected = _scalar_string(arrays, "output_bank_fingerprint")
+    actual = part_label_bank_fingerprint(arrays)
+    if actual != expected:
+        raise ValueError(
+            "A7 output_bank_fingerprint does not match bank contents: "
+            f"expected {expected}, got {actual}"
+        )
+
+
 def validate_part_label_bank_arrays(arrays: Mapping[str, np.ndarray]) -> None:
     required = (
         "schema_version",
@@ -656,10 +1216,19 @@ def validate_part_label_bank_arrays(arrays: Mapping[str, np.ndarray]) -> None:
         _check_dtype(arrays, "soft_edit_weights", np.float32)
         if _as_array(arrays["soft_edit_weights"]).shape != (point_count, len(PART_NAMES)):
             raise ValueError(f"soft_edit_weights must have shape ({point_count}, {len(PART_NAMES)})")
+    for key in ("edit_target_weights", "edit_support_weights"):
+        if key in arrays:
+            _check_dtype(arrays, key, np.float32)
+            if _as_array(arrays[key]).shape != (point_count, len(PART_NAMES)):
+                raise ValueError(f"{key} must have shape ({point_count}, {len(PART_NAMES)})")
     if "neighbor_fill_mask" in arrays:
         _check_dtype(arrays, "neighbor_fill_mask", np.uint8)
         if _as_array(arrays["neighbor_fill_mask"]).shape != (point_count,):
             raise ValueError(f"neighbor_fill_mask must have shape ({point_count},)")
+    if "method_id" in arrays or any(
+        key in arrays for key in (*A7_TEMPORAL_COUNT_FIELDS, *A7_TEMPORAL_FLOAT_FIELDS)
+    ):
+        _validate_a7_bank_arrays(arrays, point_count=point_count)
 
 
 def save_part_label_bank(
@@ -679,6 +1248,10 @@ def save_part_label_bank(
     reliable_mask=None,
     editable_label=None,
     soft_edit_weights=None,
+    edit_target_weights=None,
+    edit_support_weights=None,
+    support_pair_names=None,
+    support_aware_summary=None,
     neighbor_fill_mask=None,
     source_type: str = "multiview_2d_mask_votes",
 ) -> None:
@@ -709,6 +1282,14 @@ def save_part_label_bank(
         arrays["editable_label"] = np.asarray(editable_label, dtype=np.int16)
     if soft_edit_weights is not None:
         arrays["soft_edit_weights"] = np.asarray(soft_edit_weights, dtype=np.float32)
+    if edit_target_weights is not None:
+        arrays["edit_target_weights"] = np.asarray(edit_target_weights, dtype=np.float32)
+    if edit_support_weights is not None:
+        arrays["edit_support_weights"] = np.asarray(edit_support_weights, dtype=np.float32)
+    if support_pair_names is not None:
+        arrays["support_pair_names"] = np.asarray(list(support_pair_names), dtype="U32")
+    if support_aware_summary is not None:
+        arrays["support_aware_summary"] = np.array(str(support_aware_summary))
     if neighbor_fill_mask is not None:
         arrays["neighbor_fill_mask"] = np.asarray(neighbor_fill_mask, dtype=np.uint8)
     validate_part_label_bank_arrays(arrays)
@@ -722,6 +1303,79 @@ def load_part_label_bank(path, validate: bool = True) -> dict[str, np.ndarray]:
     if validate:
         validate_part_label_bank_arrays(arrays)
     return arrays
+
+
+def _file_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_a7_part_label_bank(
+    path,
+    *,
+    base_bank_path,
+    temporal_evidence: Mapping[str, np.ndarray],
+    temporal_reliability,
+    soft_edit_weights,
+    provenance: Mapping[str, str],
+) -> str:
+    output_path = Path(path)
+    base_path = Path(base_bank_path)
+    if output_path.resolve() == base_path.resolve():
+        raise ValueError("A7 output path must not overwrite the base A5 bank")
+    base_bank = load_part_label_bank(base_path)
+    if str(base_bank.get("method_id", "")) == "A7":
+        raise ValueError("A7 base bank must be an A5 bank, not another A7 bank")
+
+    missing_evidence = [
+        key
+        for key in (*A7_TEMPORAL_COUNT_FIELDS, *A7_TEMPORAL_FLOAT_FIELDS)
+        if key not in temporal_evidence
+    ]
+    if missing_evidence:
+        raise ValueError(f"missing A7 temporal evidence fields: {missing_evidence}")
+    missing_provenance = [key for key in A7_PROVENANCE_FIELDS if key not in provenance]
+    if missing_provenance:
+        raise ValueError(f"missing A7 provenance fields: {missing_provenance}")
+
+    arrays = {
+        key: np.asarray(value).copy()
+        for key, value in base_bank.items()
+        if key != "output_bank_fingerprint"
+    }
+    arrays["method_id"] = np.array("A7")
+    arrays["base_method"] = np.array("A5")
+    arrays["base_bank_sha256"] = np.array(_file_sha256(base_path))
+    for key in A7_PROVENANCE_FIELDS:
+        arrays[key] = np.array(str(provenance[key]))
+    for key in A7_TEMPORAL_COUNT_FIELDS:
+        arrays[key] = np.asarray(temporal_evidence[key], dtype=np.int32)
+    for key in A7_TEMPORAL_FLOAT_FIELDS:
+        arrays[key] = np.asarray(temporal_evidence[key], dtype=np.float32)
+    arrays["temporal_reliability"] = np.asarray(
+        temporal_reliability, dtype=np.float32
+    )
+    arrays["soft_edit_weights"] = np.asarray(soft_edit_weights, dtype=np.float32)
+    fingerprint = part_label_bank_fingerprint(arrays)
+    arrays["output_bank_fingerprint"] = np.array(fingerprint)
+    validate_part_label_bank_arrays(arrays)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, **arrays)
+    reloaded = load_part_label_bank(output_path)
+    reloaded_fingerprint = part_label_bank_fingerprint(reloaded)
+    if reloaded_fingerprint != fingerprint:
+        raise ValueError(
+            "A7 bank fingerprint changed after save/reload: "
+            f"expected {fingerprint}, got {reloaded_fingerprint}"
+        )
+    return fingerprint
 
 
 def summarize_part_label_bank(bank: Mapping[str, np.ndarray]) -> dict:
