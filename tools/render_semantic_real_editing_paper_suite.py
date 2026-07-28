@@ -17,7 +17,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.make_semantic_edit_render_preview import EDIT_COLORS, _select_named_records, _tensor_to_rgb_uint8
-from utils.frozen_semantic_method import load_frozen_semantic_method
+from utils.frozen_semantic_method import (
+    load_a7_temporal_contract,
+    load_frozen_semantic_method,
+    validate_a7_bank_against_contract,
+)
 from utils.part_label_bank import PART_NAMES, load_part_label_bank
 from utils.semantic_real_editing import (
     REAL_EDIT_METHODS,
@@ -35,6 +39,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--raw-bank", required=True, type=Path)
     parser.add_argument("--voting-bank", required=True, type=Path)
     parser.add_argument("--a5-bank", required=True, type=Path)
+    parser.add_argument("--a7-bank", type=Path, default=None)
+    parser.add_argument("--a7-contract", type=Path, default=None)
     parser.add_argument("--loso-config", required=True, type=Path)
     parser.add_argument("--method-freeze", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -44,10 +50,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--views", nargs="*", default=None)
     parser.add_argument("--max-views", type=int, default=9)
     parser.add_argument("--parts", nargs="+", choices=list(PART_NAMES), default=list(PART_NAMES))
-    parser.add_argument("--methods", nargs="+", choices=list(REAL_EDIT_METHODS), default=list(REAL_EDIT_METHODS))
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        choices=list(REAL_EDIT_METHODS),
+        default=["raw_hard", "voting", "a5"],
+    )
     parser.add_argument("--tasks", nargs="+", choices=list(REAL_EDIT_TASKS), default=list(REAL_EDIT_TASKS))
     parser.add_argument("--edit-strength", type=float, default=1.0)
     parser.add_argument("--edit-strengths", nargs="+", type=float, default=None)
+    parser.add_argument("--coverage-target-retention", type=float, default=0.5)
+    parser.add_argument("--coverage-response-fraction", type=float, default=0.8)
     parser.add_argument("--metrics-only", action="store_true")
     parser.add_argument("--texture-frequency", type=float, default=8.0)
     parser.add_argument("--dataset-root", default="")
@@ -114,9 +127,18 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_bank_points(raw_bank: dict, voting_bank: dict, a5_bank: dict) -> int:
+def _validate_bank_points(
+    raw_bank: dict,
+    voting_bank: dict,
+    a5_bank: dict,
+    *,
+    a7_bank: dict | None = None,
+) -> int:
     counts = []
-    for owner, bank in (("raw", raw_bank), ("voting", voting_bank), ("a5", a5_bank)):
+    banks = [("raw", raw_bank), ("voting", voting_bank), ("a5", a5_bank)]
+    if a7_bank is not None:
+        banks.append(("a7", a7_bank))
+    for owner, bank in banks:
         labels = np.asarray(bank.get("editable_label", bank.get("part_label", []))).reshape(-1)
         if labels.size == 0:
             raise ValueError(f"{owner} bank is missing part labels")
@@ -126,7 +148,112 @@ def _validate_bank_points(raw_bank: dict, voting_bank: dict, a5_bank: dict) -> i
     weights = np.asarray(a5_bank.get("soft_edit_weights", []))
     if weights.shape != (counts[0], len(PART_NAMES)):
         raise ValueError(f"A5 soft_edit_weights must have shape ({counts[0]}, {len(PART_NAMES)})")
+    if a7_bank is not None:
+        a7_weights = np.asarray(a7_bank.get("soft_edit_weights", []))
+        if a7_weights.shape != (counts[0], len(PART_NAMES)):
+            raise ValueError(
+                f"A7 soft_edit_weights must have shape ({counts[0]}, {len(PART_NAMES)})"
+            )
     return counts[0]
+
+
+def aggregate_real_edit_metrics(
+    rows: list[dict],
+    *,
+    target_retention: float = 0.5,
+    coverage_response_fraction: float = 0.8,
+    reference_method: str = "a5",
+) -> list[dict]:
+    grouped = {}
+    for row in rows:
+        key = (str(row["task"]), str(row["part"]))
+        grouped.setdefault(key, []).append(row)
+    outputs = []
+    for (task, part), members in sorted(grouped.items()):
+        methods = sorted({str(row["method"]) for row in members})
+        effective_reference = (
+            reference_method if reference_method in methods else methods[0]
+        )
+        reference_rows = [
+            row for row in members if str(row["method"]) == effective_reference
+        ]
+        reference_strength = max(float(row["edit_strength"]) for row in reference_rows)
+        reference_at_max = [
+            row
+            for row in reference_rows
+            if float(row["edit_strength"]) == reference_strength
+        ]
+        reference_by_view = {
+            str(row["view"]): float(row["target_delta_sum"])
+            for row in reference_at_max
+        }
+        reference_target = float(sum(reference_by_view.values()))
+        desired_target = float(target_retention) * reference_target
+        for method in methods:
+            method_rows = [row for row in members if str(row["method"]) == method]
+            strengths = sorted({float(row["edit_strength"]) for row in method_rows})
+            pooled = []
+            for strength in strengths:
+                strength_rows = [
+                    row
+                    for row in method_rows
+                    if float(row["edit_strength"]) == strength
+                ]
+                pooled.append(
+                    (
+                        strength,
+                        float(
+                            sum(float(row["target_delta_sum"]) for row in strength_rows)
+                        ),
+                        strength_rows,
+                    )
+                )
+            selected_strength, target, selected_rows = min(
+                pooled,
+                key=lambda item: (
+                    abs(float(item[1]) - desired_target),
+                    float(item[0]),
+                ),
+            )
+            outer = float(
+                sum(float(row["outer_delta_sum"]) for row in selected_rows)
+            )
+            boundary = float(
+                sum(
+                    float(row["boundary_outer_delta_sum"]) for row in selected_rows
+                )
+            )
+            coverage = []
+            for row in selected_rows:
+                reference_response = reference_by_view.get(str(row["view"]), 0.0)
+                coverage.append(
+                    reference_response > 0.0
+                    and float(row["target_delta_sum"])
+                    >= float(coverage_response_fraction) * reference_response
+                )
+            outputs.append(
+                {
+                    "method": method,
+                    "task": task,
+                    "part": part,
+                    "selected_strength": float(selected_strength),
+                    "target_retention": float(target_retention),
+                    "reference_method": effective_reference,
+                    "reference_strength": reference_strength,
+                    "reference_target_response": reference_target,
+                    "desired_target_response": desired_target,
+                    "selected_target_response": target,
+                    "reachable": max(item[1] for item in pooled) >= desired_target,
+                    "view_count": len(selected_rows),
+                    "pooled_outer_burden": outer / max(target, 1.0e-8),
+                    "pooled_boundary_burden": boundary / max(target, 1.0e-8),
+                    "coverage_response_fraction": float(
+                        coverage_response_fraction
+                    ),
+                    "coverage_rate": float(np.mean(coverage)) if coverage else 0.0,
+                }
+            )
+    return outputs
 
 
 def _write_metrics(path: Path, rows: list[dict]) -> None:
@@ -151,6 +278,10 @@ def run_suite(args: argparse.Namespace) -> dict:
         _load_view_records,
     )
 
+    if not 0.0 < float(args.coverage_target_retention) <= 1.0:
+        raise ValueError("coverage target retention must be in (0, 1]")
+    if not 0.0 < float(args.coverage_response_fraction) <= 1.0:
+        raise ValueError("coverage response fraction must be in (0, 1]")
     run_config = load_frozen_run_config(
         subject=str(args.subject),
         loso_config=args.loso_config,
@@ -159,7 +290,20 @@ def run_suite(args: argparse.Namespace) -> dict:
     raw_bank = load_part_label_bank(args.raw_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
     a5_bank = load_part_label_bank(args.a5_bank)
-    bank_point_count = _validate_bank_points(raw_bank, voting_bank, a5_bank)
+    if "a7" in args.methods and (args.a7_bank is None or args.a7_contract is None):
+        raise ValueError("A7 real editing requires --a7-bank and --a7-contract")
+    a7_bank = load_part_label_bank(args.a7_bank) if args.a7_bank is not None else None
+    a7_provenance = {}
+    if a7_bank is not None:
+        a7_contract = load_a7_temporal_contract(args.a7_contract, args.method_freeze)
+        a7_provenance = validate_a7_bank_against_contract(
+            a7_bank,
+            contract=a7_contract,
+            a5_bank_path=args.a5_bank,
+        )
+    bank_point_count = _validate_bank_points(
+        raw_bank, voting_bank, a5_bank, a7_bank=a7_bank
+    )
 
     asset_root = args.asset_root.resolve()
     checkpoint = args.checkpoint.resolve()
@@ -199,6 +343,7 @@ def run_suite(args: argparse.Namespace) -> dict:
                 raw_bank,
                 voting_bank,
                 a5_bank,
+                a7_bank=a7_bank,
                 method=method,
                 part=part,
                 threshold=float(run_config["soft_threshold"]),
@@ -314,6 +459,10 @@ def run_suite(args: argparse.Namespace) -> dict:
         "voting_bank_sha256": _file_sha256(args.voting_bank),
         "a5_bank": str(args.a5_bank.resolve()),
         "a5_bank_sha256": _file_sha256(args.a5_bank),
+        "a7_bank": str(args.a7_bank.resolve()) if args.a7_bank is not None else "",
+        "a7_contract": (
+            str(args.a7_contract.resolve()) if args.a7_contract is not None else ""
+        ),
         "loso_config": str(args.loso_config.resolve()),
         "method_freeze": str(args.method_freeze.resolve()),
         "method_freeze_id": run_config["method_freeze_id"],
@@ -329,6 +478,16 @@ def run_suite(args: argparse.Namespace) -> dict:
         "parts": list(args.parts),
         "views": [str(record["image_name"]) for record in records],
         "metric_row_count": len(metric_rows),
+        "pooled_metrics": aggregate_real_edit_metrics(
+            metric_rows,
+            target_retention=float(args.coverage_target_retention),
+            coverage_response_fraction=float(args.coverage_response_fraction),
+        ),
+        "coverage_target_retention": float(args.coverage_target_retention),
+        "coverage_response_fraction": float(args.coverage_response_fraction),
+        "canonical_selection_fixed_across_frames": True,
+        "common_support_across_methods": True,
+        **a7_provenance,
         "metrics_csv": str(metrics_path),
         **formal_provenance(),
     }

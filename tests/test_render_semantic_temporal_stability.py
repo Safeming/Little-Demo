@@ -38,6 +38,27 @@ def test_temporal_renderer_defaults_match_frozen_protocol():
     assert args.screen_threshold == 0.2
 
 
+def test_temporal_renderer_accepts_optional_static_a7_method():
+    from tools.render_semantic_temporal_stability import parse_args
+
+    args = parse_args(
+        _required_args()
+        + [
+            "--a7-bank",
+            "a7.npz",
+            "--a7-contract",
+            "a7.json",
+            "--methods",
+            "a5",
+            "a7",
+        ]
+    )
+
+    assert args.a7_bank == Path("a7.npz")
+    assert args.a7_contract == Path("a7.json")
+    assert args.methods == ["a5", "a7"]
+
+
 def test_expected_metric_row_count_matches_full_sequence():
     from tools.render_semantic_temporal_stability import expected_metric_row_count
 

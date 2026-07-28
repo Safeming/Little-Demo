@@ -1,5 +1,6 @@
 import csv
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -34,6 +35,32 @@ def test_baseline_specs_label_parser_as_online_oracle():
     assert all(BASELINE_SPECS[name]["oracle"] is False for name in ("B1", "B2", "B3", "B4", "B5"))
 
 
+def test_ablation_specs_define_incremental_a0_a6_chain():
+    from tools.evaluate_semantic_editing_paper_protocol import ABLATION_SPECS
+
+    assert list(ABLATION_SPECS) == ["A0", "A1", "A2", "A3", "A4", "A5", "A6"]
+    assert [ABLATION_SPECS[name]["name"] for name in ABLATION_SPECS] == [
+        "raw_trained_hard_label",
+        "raw_semantic_probability",
+        "raw_probability_confidence",
+        "raw_confidence_margin_reliable",
+        "multiview_voting_posterior",
+        "footprint_evidence_target",
+        "target_support_decomposition",
+    ]
+
+
+def test_method_specs_register_a7_without_changing_frozen_a0_a6_chain():
+    from tools.evaluate_semantic_editing_paper_protocol import ABLATION_SPECS, METHOD_SPECS
+
+    assert list(ABLATION_SPECS) == ["A0", "A1", "A2", "A3", "A4", "A5", "A6"]
+    assert METHOD_SPECS["A7"] == {
+        "name": "temporal_reliable_static_asset",
+        "oracle": False,
+        "persistent_asset": True,
+    }
+
+
 @pytest.mark.parametrize(
     "baseline,expected",
     [
@@ -62,6 +89,162 @@ def test_resolve_baseline_point_weights_uses_expected_bank_field(baseline, expec
         assert np.allclose(support, [0.07, 0.02])
     else:
         assert support is None
+
+
+def test_formal_baselines_route_raw_and_evidence_banks_independently():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+
+    raw = _trained_bank()
+    raw["editable_label"] = np.array([0, 1], dtype=np.int16)
+    evidence = _trained_bank()
+    evidence["editable_label"] = np.array([1, 1], dtype=np.int16)
+    evidence["edit_target_weights"] = np.array(
+        [[0.11, 0.89], [0.22, 0.78]], dtype=np.float32
+    )
+    evidence["edit_support_weights"] = np.array(
+        [[0.03, 0.07], [0.04, 0.06]], dtype=np.float32
+    )
+    voting = {
+        "editable_label": np.array([1, 1], dtype=np.int16),
+        "semantic_probs": np.array([[0.2, 0.8], [0.4, 0.6]], dtype=np.float32),
+    }
+
+    b2, support, _ = resolve_baseline_point_weights(
+        "B2",
+        raw_trained_bank=raw,
+        evidence_bank=evidence,
+        voting_bank=voting,
+        part_index=0,
+    )
+    assert np.array_equal(b2, [1.0, 0.0])
+    assert support is None
+
+    b5, support, _ = resolve_baseline_point_weights(
+        "B5",
+        raw_trained_bank=raw,
+        evidence_bank=evidence,
+        voting_bank=voting,
+        part_index=0,
+    )
+    assert np.allclose(b5, [0.11, 0.22])
+    assert np.allclose(support, [0.03, 0.04])
+
+
+@pytest.mark.parametrize(
+    "ablation,expected,support_expected",
+    [
+        ("A0", [1.0, 0.0], None),
+        ("A1", [0.7, 0.2], None),
+        ("A2", [0.49, 0.16], None),
+        ("A4", [0.2, 0.4], None),
+        ("A5", [0.11, 0.22], None),
+        ("A6", [0.11, 0.22], [0.03, 0.04]),
+    ],
+)
+def test_ablation_weights_use_expected_component_stage(ablation, expected, support_expected):
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+
+    raw = _trained_bank()
+    raw["editable_label"] = np.array([0, 1], dtype=np.int16)
+    evidence = _trained_bank()
+    evidence["edit_target_weights"] = np.array(
+        [[0.11, 0.89], [0.22, 0.78]], dtype=np.float32
+    )
+    evidence["edit_support_weights"] = np.array(
+        [[0.03, 0.07], [0.04, 0.06]], dtype=np.float32
+    )
+    voting = {
+        "editable_label": np.array([1, 1], dtype=np.int16),
+        "semantic_probs": np.array([[0.2, 0.8], [0.4, 0.6]], dtype=np.float32),
+    }
+
+    weights, support, _ = resolve_baseline_point_weights(
+        ablation,
+        raw_trained_bank=raw,
+        evidence_bank=evidence,
+        voting_bank=voting,
+        part_index=0,
+    )
+
+    assert np.allclose(weights, expected)
+    if support_expected is None:
+        assert support is None
+    else:
+        assert np.allclose(support, support_expected)
+
+
+def test_a5_uses_separate_footprint_bank_while_a6_uses_support_aware_bank():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+
+    raw = _trained_bank()
+    voting = {"semantic_probs": raw["semantic_probs"]}
+    footprint = _trained_bank()
+    footprint["soft_edit_weights"] = np.array(
+        [[0.31, 0.69], [0.42, 0.58]], dtype=np.float32
+    )
+    evidence = _trained_bank()
+    evidence["edit_target_weights"] = np.array(
+        [[0.11, 0.89], [0.22, 0.78]], dtype=np.float32
+    )
+    evidence["edit_support_weights"] = np.array(
+        [[0.03, 0.07], [0.04, 0.06]], dtype=np.float32
+    )
+
+    a5, a5_support, _ = resolve_baseline_point_weights(
+        "A5",
+        raw_trained_bank=raw,
+        footprint_bank=footprint,
+        evidence_bank=evidence,
+        voting_bank=voting,
+        part_index=0,
+    )
+    a6, a6_support, _ = resolve_baseline_point_weights(
+        "A6",
+        raw_trained_bank=raw,
+        footprint_bank=footprint,
+        evidence_bank=evidence,
+        voting_bank=voting,
+        part_index=0,
+    )
+
+    assert np.allclose(a5, [0.31, 0.42])
+    assert a5_support is None
+    assert np.allclose(a6, [0.11, 0.22])
+    assert np.allclose(a6_support, [0.03, 0.04])
+
+
+def test_ablation_a3_uses_confidence_margin_and_reliability():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_baseline_point_weights
+    from utils.part_label_bank import compute_soft_edit_weights
+
+    raw = _trained_bank()
+    expected = compute_soft_edit_weights(
+        semantic_probs=raw["semantic_probs"],
+        confidence=raw["confidence"],
+        semantic_margin=raw["semantic_margin"],
+        reliable_mask=raw["reliable_mask"],
+    )[:, 0]
+    weights, support, _ = resolve_baseline_point_weights(
+        "A3",
+        raw_trained_bank=raw,
+        evidence_bank=_trained_bank(),
+        voting_bank={"semantic_probs": raw["semantic_probs"]},
+        part_index=0,
+    )
+    assert np.allclose(weights, expected)
+    assert support is None
+
+
+def test_identical_voting_and_raw_hard_labels_are_rejected():
+    from tools.evaluate_semantic_editing_paper_protocol import validate_hard_baseline_independence
+
+    labels = np.array([0, 1, 1], dtype=np.int16)
+    with pytest.raises(ValueError, match="B1 and B2 hard-label predictions are identical"):
+        validate_hard_baseline_independence(
+            raw_trained_bank={"editable_label": labels.copy()},
+            voting_bank={"editable_label": labels.copy()},
+            requested_baselines=("B1", "B2"),
+        )
 
 
 def test_confidence_margin_baseline_recomputes_reliability_weight():
@@ -310,6 +493,7 @@ def test_parse_args_accepts_validation_metric_overrides():
         [
             "--protocol", "protocol.json",
             "--protocol-split", "validation",
+            "--raw-trained-bank", "raw.npz",
             "--trained-bank", "trained.npz",
             "--voting-bank", "voting.npz",
             "--checkpoint", "ckpt.pth",
@@ -324,6 +508,7 @@ def test_parse_args_accepts_validation_metric_overrides():
     assert args.soft_threshold == pytest.approx(0.05)
     assert args.support_threshold == pytest.approx(0.3)
     assert args.boundary_radius == 6
+    assert str(args.raw_trained_bank) == "raw.npz"
 
 
 def test_test_split_rejects_metric_overrides():
@@ -363,11 +548,27 @@ def test_matched_retention_reference_prefers_fixed_voting_baseline():
     assert activation == pytest.approx(100.0)
 
 
+def test_matched_retention_reference_accepts_explicit_ablation_reference():
+    from tools.evaluate_semantic_editing_paper_protocol import resolve_retention_reference
+
+    baseline, activation = resolve_retention_reference(
+        {
+            "A0": [{"target_activation": 20.0}, {"target_activation": 80.0}],
+            "A4": [{"target_activation": 30.0}, {"target_activation": 120.0}],
+        },
+        preferred_baseline="A0",
+    )
+
+    assert baseline == "A0"
+    assert activation == pytest.approx(80.0)
+
+
 def test_fixed_soft_curve_sweeps_edit_strength_at_frozen_threshold():
     from tools.evaluate_semantic_editing_paper_protocol import curve_settings_for_baseline
 
     protocol = {
         "matched_retention_targets": [0.3, 0.5, 0.6, 1.0],
+        "edit_strength_grid": [0.3, 0.5, 0.6, 1.0],
         "validation_grid": {"soft_thresholds": [0.5, 0.2, 0.05]},
     }
 
@@ -379,3 +580,95 @@ def test_fixed_soft_curve_sweeps_edit_strength_at_frozen_threshold():
     )
 
     assert settings == [(0.35, 0.3), (0.35, 0.5), (0.35, 0.6), (0.35, 1.0)]
+
+
+def test_fixed_soft_curve_uses_edit_strength_grid_not_reporting_targets():
+    from tools.evaluate_semantic_editing_paper_protocol import curve_settings_for_baseline
+
+    protocol = {
+        "matched_retention_targets": [0.5, 0.6],
+        "edit_strength_grid": [0.05, 0.1, 0.2, 0.4, 1.0],
+        "validation_grid": {"soft_thresholds": [0.5, 0.2, 0.05]},
+    }
+
+    assert curve_settings_for_baseline(
+        "A4",
+        protocol=protocol,
+        fixed_soft_threshold=0.1,
+        soft_strength_sweep=True,
+    ) == [(0.1, value) for value in (0.05, 0.1, 0.2, 0.4, 1.0)]
+
+
+def test_normalized_curve_reports_reference_normalized_leakage_burden():
+    from tools.evaluate_semantic_editing_paper_protocol import _normalize_curve_retention
+
+    rows = [
+        {
+            "baseline": "B5",
+            "target_activation": 50.0,
+            "outer_activation": 20.0,
+            "actionable_activation": 10.0,
+            "raw_leakage": 0.4,
+            "actionable_leakage": 0.2,
+        }
+    ]
+
+    row = _normalize_curve_retention(rows, reference_activation=100.0)[0]
+
+    assert row["retention"] == pytest.approx(0.5)
+    assert row["raw_leakage"] == pytest.approx(0.2)
+    assert row["actionable_leakage"] == pytest.approx(0.1)
+    assert row["raw_leakage_ratio"] == pytest.approx(0.4)
+    assert row["actionable_leakage_ratio"] == pytest.approx(0.2)
+
+
+def test_a0_curve_uses_hard_threshold_and_edit_strength():
+    from tools.evaluate_semantic_editing_paper_protocol import curve_settings_for_baseline
+
+    protocol = {
+        "matched_retention_targets": [0.5, 0.6, 1.0],
+        "validation_grid": {"soft_thresholds": [0.5, 0.2, 0.05]},
+    }
+
+    assert curve_settings_for_baseline("A0", protocol=protocol) == [
+        (0.5, 0.5),
+        (0.5, 0.6),
+        (0.5, 1.0),
+    ]
+
+
+def test_parser_accepts_frozen_main_method_contract(tmp_path):
+    from tools.evaluate_semantic_editing_paper_protocol import parse_args
+
+    args = parse_args(
+        [
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--protocol-split",
+            "validation",
+            "--raw-trained-bank",
+            str(tmp_path / "raw.npz"),
+            "--trained-bank",
+            str(tmp_path / "evidence.npz"),
+            "--voting-bank",
+            str(tmp_path / "voting.npz"),
+            "--footprint-bank",
+            str(tmp_path / "footprint.npz"),
+            "--method-freeze",
+            "configs/semantic/frozen_a5_main_method_v1.json",
+            "--checkpoint",
+            str(tmp_path / "ckpt.pth"),
+            "--asset-root",
+            str(tmp_path / "assets"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--baselines",
+            "A0",
+            "A5",
+            "A6",
+        ]
+    )
+
+    assert args.method_freeze == Path(
+        "configs/semantic/frozen_a5_main_method_v1.json"
+    )

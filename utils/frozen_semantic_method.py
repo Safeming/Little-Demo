@@ -130,6 +130,60 @@ def load_a7_temporal_contract(
     return payload
 
 
+def _file_sha256(path: str | Path, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _mapping_scalar_string(payload: Mapping, key: str) -> str:
+    if key not in payload:
+        raise ValueError(f"A7 bank is missing {key}")
+    value = np.asarray(payload[key])
+    if value.shape != ():
+        raise ValueError(f"A7 bank {key} must be a scalar string")
+    return str(value)
+
+
+def validate_a7_bank_against_contract(
+    bank: Mapping,
+    *,
+    contract: Mapping,
+    a5_bank_path: str | Path,
+) -> dict:
+    if _mapping_scalar_string(bank, "method_id") != "A7":
+        raise ValueError("A7 bank method_id must be A7")
+    if _mapping_scalar_string(bank, "base_method") != "A5":
+        raise ValueError("A7 bank base_method must be A5")
+    expected_base_sha = _file_sha256(a5_bank_path)
+    if _mapping_scalar_string(bank, "base_bank_sha256") != expected_base_sha:
+        raise ValueError("A7 bank base A5 bank SHA-256 mismatch")
+    if _mapping_scalar_string(bank, "base_method_freeze_fingerprint") != str(
+        contract["base_method_freeze_fingerprint"]
+    ):
+        raise ValueError("A7 bank base method freeze fingerprint mismatch")
+    if _mapping_scalar_string(bank, "a7_contract_fingerprint") != str(
+        contract["_fingerprint"]
+    ):
+        raise ValueError("A7 bank contract fingerprint mismatch")
+    return {
+        "canonical_selection_fixed_across_frames": True,
+        "base_a5_bank_sha256": expected_base_sha,
+        "base_method_freeze_fingerprint": str(
+            contract["base_method_freeze_fingerprint"]
+        ),
+        "a7_contract_fingerprint": str(contract["_fingerprint"]),
+        "a7_bank_fingerprint": _mapping_scalar_string(
+            bank, "output_bank_fingerprint"
+        ),
+    }
+
+
 def _require_matrix(bank: Mapping | None, field: str, *, owner: str) -> None:
     if bank is None:
         raise ValueError(f"{owner} requires a bank containing {field}")

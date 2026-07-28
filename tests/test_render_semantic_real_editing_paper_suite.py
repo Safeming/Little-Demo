@@ -26,6 +26,31 @@ def test_parse_args_defaults_to_frozen_paper_matrix():
     assert args.parts == ["hair", "face", "upper", "lower", "shoes", "skin"]
 
 
+def test_parse_args_accepts_optional_a7_bank_and_contract():
+    from tools.render_semantic_real_editing_paper_suite import parse_args
+
+    args = parse_args(
+        [
+            "--subject", "377",
+            "--raw-bank", "raw.npz",
+            "--voting-bank", "voting.npz",
+            "--a5-bank", "a5.npz",
+            "--a7-bank", "a7.npz",
+            "--a7-contract", "a7.json",
+            "--loso-config", "loso.json",
+            "--method-freeze", "freeze.json",
+            "--checkpoint", "ckpt.pth",
+            "--asset-root", "assets",
+            "--output-dir", "out",
+            "--methods", "a5", "a7",
+        ]
+    )
+
+    assert args.a7_bank == Path("a7.npz")
+    assert args.a7_contract == Path("a7.json")
+    assert args.methods == ["a5", "a7"]
+
+
 def test_build_experiment_matrix_contains_every_method_task_part():
     from tools.render_semantic_real_editing_paper_suite import build_experiment_matrix
 

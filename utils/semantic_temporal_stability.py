@@ -37,6 +37,14 @@ def compute_screen_selection_metrics(
     hard_union = int(np.sum(hard_prediction | target_region))
     predicted_count = int(np.sum(hard_prediction))
     target_count = int(np.sum(target_region))
+    selection_mass = float(np.sum(soft_prediction))
+    yy, xx = np.indices(predicted.shape, dtype=np.float64)
+    if selection_mass > 1.0e-8:
+        centroid_x = float(np.sum(xx * soft_prediction) / selection_mass)
+        centroid_y = float(np.sum(yy * soft_prediction) / selection_mass)
+    else:
+        centroid_x = 0.0
+        centroid_y = 0.0
     return {
         "target_pixel_count": target_count,
         "valid_pixel_count": int(np.sum(valid_region)),
@@ -47,6 +55,10 @@ def compute_screen_selection_metrics(
         "screen_hard_iou": hard_intersection / max(hard_union, 1),
         "screen_precision": hard_intersection / max(predicted_count, 1),
         "screen_recall": hard_intersection / max(target_count, 1),
+        "selection_mass": selection_mass,
+        "selection_pixel_count": predicted_count,
+        "selection_centroid_x": centroid_x,
+        "selection_centroid_y": centroid_y,
     }
 
 

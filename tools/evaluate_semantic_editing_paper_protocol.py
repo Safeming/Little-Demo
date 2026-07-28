@@ -31,6 +31,12 @@ from utils.semantic_eval_protocol import (
     validate_frozen_config,
     write_protocol_provenance,
 )
+from utils.frozen_semantic_method import (
+    load_a7_temporal_contract,
+    load_frozen_semantic_method,
+    validate_a7_bank_against_contract,
+    validate_frozen_method_assets,
+)
 from utils.semantic_paper_metrics import (
     aggregate_part_metrics,
     binary_segmentation_metrics,
@@ -52,6 +58,35 @@ BASELINE_SPECS = OrderedDict(
     )
 )
 
+ABLATION_SPECS = OrderedDict(
+    (
+        ("A0", {"name": "raw_trained_hard_label", "oracle": False, "persistent_asset": True}),
+        ("A1", {"name": "raw_semantic_probability", "oracle": False, "persistent_asset": True}),
+        ("A2", {"name": "raw_probability_confidence", "oracle": False, "persistent_asset": True}),
+        ("A3", {"name": "raw_confidence_margin_reliable", "oracle": False, "persistent_asset": True}),
+        ("A4", {"name": "multiview_voting_posterior", "oracle": False, "persistent_asset": True}),
+        ("A5", {"name": "footprint_evidence_target", "oracle": False, "persistent_asset": True}),
+        ("A6", {"name": "target_support_decomposition", "oracle": False, "persistent_asset": True}),
+    )
+)
+
+METHOD_SPECS = OrderedDict(
+    (
+        *BASELINE_SPECS.items(),
+        *ABLATION_SPECS.items(),
+        (
+            "A7",
+            {
+                "name": "temporal_reliable_static_asset",
+                "oracle": False,
+                "persistent_asset": True,
+            },
+        ),
+    )
+)
+HARD_LABEL_METHODS = frozenset(("B1", "B2", "A0"))
+DEFAULT_EDIT_STRENGTH_GRID = (0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
+
 
 def _one_hot_labels(labels, *, part_index: int) -> np.ndarray:
     values = np.asarray(labels, dtype=np.int16).reshape(-1)
@@ -70,15 +105,25 @@ def _required_matrix(bank: dict, field: str, *, part_index: int) -> np.ndarray:
 def resolve_baseline_point_weights(
     baseline: str,
     *,
-    trained_bank: dict,
+    trained_bank: dict | None = None,
+    raw_trained_bank: dict | None = None,
+    footprint_bank: dict | None = None,
+    a7_bank: dict | None = None,
+    evidence_bank: dict | None = None,
     voting_bank: dict | None,
     part_index: int,
     part_name: str | None = None,
     b5_fallback_parts: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[np.ndarray, np.ndarray | None, dict]:
     baseline = str(baseline)
-    if baseline not in BASELINE_SPECS:
+    if baseline not in METHOD_SPECS:
         raise ValueError(f"unknown baseline: {baseline}")
+    raw_bank = raw_trained_bank if raw_trained_bank is not None else trained_bank
+    calibrated_bank = evidence_bank if evidence_bank is not None else trained_bank
+    if raw_bank is None:
+        raise ValueError("raw trained bank is required")
+    if calibrated_bank is None:
+        raise ValueError("evidence bank is required")
     if baseline == "B0":
         raise ValueError("B0 parser oracle is a screen-space baseline without Gaussian point weights")
     if baseline == "B1":
@@ -90,50 +135,101 @@ def resolve_baseline_point_weights(
         weights = _one_hot_labels(labels, part_index=part_index)
         support = None
         weight_field = "voting_editable_label"
-    elif baseline == "B2":
-        labels = trained_bank.get("editable_label", trained_bank.get("part_label"))
+    elif baseline in ("B2", "A0"):
+        labels = raw_bank.get("editable_label", raw_bank.get("part_label"))
         if labels is None:
             raise ValueError("B2 trained bank requires editable_label or part_label")
         weights = _one_hot_labels(labels, part_index=part_index)
         support = None
         weight_field = "editable_label"
-    elif baseline == "B3":
-        weights = _required_matrix(trained_bank, "semantic_probs", part_index=part_index)
+    elif baseline in ("B3", "A1"):
+        weights = _required_matrix(raw_bank, "semantic_probs", part_index=part_index)
         support = None
         weight_field = "semantic_probs"
-    elif baseline == "B4":
-        if "semantic_probs" not in trained_bank or "confidence" not in trained_bank:
+    elif baseline == "A2":
+        probs = np.asarray(raw_bank.get("semantic_probs"), dtype=np.float32)
+        confidence = np.asarray(raw_bank.get("confidence"), dtype=np.float32).reshape(-1)
+        if probs.ndim != 2 or confidence.shape[0] != probs.shape[0]:
+            raise ValueError("A2 requires semantic_probs and point-wise confidence")
+        weights = (probs[:, int(part_index)] * confidence).astype(np.float32, copy=False)
+        support = None
+        weight_field = "semantic_probs_x_confidence"
+    elif baseline in ("B4", "A3"):
+        if "semantic_probs" not in raw_bank or "confidence" not in raw_bank:
             raise ValueError("B4 requires semantic_probs and confidence")
-        probs = np.asarray(trained_bank["semantic_probs"], dtype=np.float32)
+        probs = np.asarray(raw_bank["semantic_probs"], dtype=np.float32)
         margin = np.asarray(
-            trained_bank.get("semantic_margin", compute_semantic_margin(probs)),
+            raw_bank.get("semantic_margin", compute_semantic_margin(probs)),
             dtype=np.float32,
         )
-        reliable = trained_bank.get("reliable_mask", np.ones((probs.shape[0],), dtype=np.uint8))
+        reliable = raw_bank.get("reliable_mask", np.ones((probs.shape[0],), dtype=np.uint8))
         matrix = compute_soft_edit_weights(
             semantic_probs=probs,
-            confidence=trained_bank["confidence"],
+            confidence=raw_bank["confidence"],
             semantic_margin=margin,
             reliable_mask=reliable,
         )
         weights = matrix[:, int(part_index)].astype(np.float32, copy=False)
         support = None
         weight_field = "confidence_margin_recomputed"
+    elif baseline == "A4":
+        if voting_bank is None:
+            raise ValueError("A4 requires a projected multi-view voting bank")
+        weights = _required_matrix(voting_bank, "semantic_probs", part_index=part_index)
+        support = None
+        weight_field = "voting_semantic_probs"
     elif baseline == "B5" and str(part_name or "") in b5_fallback_parts:
-        weights = _required_matrix(trained_bank, "semantic_probs", part_index=part_index)
+        weights = _required_matrix(calibrated_bank, "semantic_probs", part_index=part_index)
         support = None
         weight_field = "semantic_probs_fallback"
+    elif baseline == "A5":
+        if footprint_bank is None:
+            weights = _required_matrix(calibrated_bank, "edit_target_weights", part_index=part_index)
+            weight_field = "edit_target_weights"
+        else:
+            weights = _required_matrix(footprint_bank, "soft_edit_weights", part_index=part_index)
+            weight_field = "footprint_soft_edit_weights"
+        support = None
+    elif baseline == "A7":
+        if a7_bank is None:
+            raise ValueError("A7 requires a temporal-reliable static bank")
+        weights = _required_matrix(a7_bank, "soft_edit_weights", part_index=part_index)
+        support = None
+        weight_field = "a7_soft_edit_weights"
     else:
-        weights = _required_matrix(trained_bank, "edit_target_weights", part_index=part_index)
-        support = _required_matrix(trained_bank, "edit_support_weights", part_index=part_index)
+        weights = _required_matrix(calibrated_bank, "edit_target_weights", part_index=part_index)
+        support = _required_matrix(calibrated_bank, "edit_support_weights", part_index=part_index)
         weight_field = "edit_target_weights"
     metadata = {
         "baseline": baseline,
-        **BASELINE_SPECS[baseline],
+        **METHOD_SPECS[baseline],
         "weight_field": weight_field,
         "b5_fallback_applied": baseline == "B5" and weight_field == "semantic_probs_fallback",
     }
     return weights, support, metadata
+
+
+def validate_hard_baseline_independence(
+    *,
+    raw_trained_bank: dict,
+    voting_bank: dict,
+    requested_baselines,
+) -> None:
+    requested = {str(value) for value in requested_baselines}
+    if not {"B1", "B2"}.issubset(requested):
+        return
+    raw_labels = raw_trained_bank.get("editable_label", raw_trained_bank.get("part_label"))
+    voting_labels = voting_bank.get("editable_label", voting_bank.get("part_label"))
+    if raw_labels is None or voting_labels is None:
+        raise ValueError("B1/B2 independence check requires hard labels in both banks")
+    raw_values = np.asarray(raw_labels).reshape(-1)
+    voting_values = np.asarray(voting_labels).reshape(-1)
+    if raw_values.shape != voting_values.shape:
+        raise ValueError("B1/B2 hard-label banks have different point counts")
+    if np.array_equal(raw_values, voting_values):
+        raise ValueError(
+            "B1 and B2 hard-label predictions are identical; use an independent raw trained bank"
+        )
 
 
 def resolve_part_threshold(
@@ -343,10 +439,17 @@ def _write_paper_figures(output_dir: Path, result: dict) -> None:
         "B3": "#D97706",
         "B4": "#0F766E",
         "B5": "#DC2626",
+        "A0": "#111827",
+        "A1": "#B45309",
+        "A2": "#CA8A04",
+        "A3": "#0F766E",
+        "A4": "#2563EB",
+        "A5": "#7C3AED",
+        "A6": "#DC2626",
     }
     curve_rows = list(result.get("curve", []))
     fig, ax = plt.subplots(figsize=(5.6, 4.0))
-    for baseline in BASELINE_SPECS:
+    for baseline in METHOD_SPECS:
         rows = sorted(
             (row for row in curve_rows if row.get("baseline") == baseline),
             key=lambda row: float(row["retention"]),
@@ -360,7 +463,7 @@ def _write_paper_figures(output_dir: Path, result: dict) -> None:
             linewidth=1.8,
             markersize=4,
             label=baseline,
-            color=colors[baseline],
+            color=colors.get(baseline, "#374151"),
         )
     ax.set_xlabel("Target activation retention vs. hard label")
     ax.set_ylabel("Actionable footprint leakage")
@@ -374,7 +477,7 @@ def _write_paper_figures(output_dir: Path, result: dict) -> None:
 
     part_rows = list(result.get("per_part", []))
     parts = [part for part in PART_NAMES if any(row.get("part") == part for row in part_rows)]
-    baselines = [baseline for baseline in BASELINE_SPECS if any(row.get("baseline") == baseline for row in part_rows)]
+    baselines = [baseline for baseline in METHOD_SPECS if any(row.get("baseline") == baseline for row in part_rows)]
     fig, ax = plt.subplots(figsize=(7.2, 4.0))
     x = np.arange(len(parts), dtype=np.float32)
     width = 0.78 / max(len(baselines), 1)
@@ -386,7 +489,7 @@ def _write_paper_figures(output_dir: Path, result: dict) -> None:
             [by_part.get(part, 0.0) for part in parts],
             width=width,
             label=baseline,
-            color=colors[baseline],
+            color=colors.get(baseline, "#374151"),
         )
     ax.set_xticks(x, parts)
     ax.set_ylim(0.0, 1.0)
@@ -414,6 +517,7 @@ def write_baseline_reports(output_dir: Path | str, result: dict) -> None:
         ("leakage_retention_curve.csv", "curve"),
         ("matched_retention.csv", "matched_retention"),
         ("support_diagnostics.csv", "support_diagnostics"),
+        ("spatial_guard_metrics.csv", "spatial_guard_metrics"),
         ("boundary_radius_sensitivity.csv", "boundary_radius_sensitivity"),
         ("validation_candidates.csv", "validation_candidates"),
     )
@@ -465,7 +569,7 @@ def _aggregate_metric_rows(per_view: list[dict]) -> tuple[list[dict], list[dict]
         summaries.append(
             {
                 "baseline": baseline,
-                **BASELINE_SPECS[baseline],
+                **METHOD_SPECS[baseline],
                 **aggregate,
                 "mean_boundary_f1": float(np.mean([float(row["boundary_f1"]) for row in rows])) if rows else 0.0,
                 "mean_boundary_iou": float(np.mean([float(row["boundary_iou"]) for row in rows])) if rows else 0.0,
@@ -473,6 +577,46 @@ def _aggregate_metric_rows(per_view: list[dict]) -> tuple[list[dict], list[dict]
             }
         )
     return per_part, summaries
+
+
+def aggregate_spatial_guard_rows(
+    rows: list[dict], *, coverage_recall_threshold: float = 0.8
+) -> list[dict]:
+    grouped = {}
+    for row in rows:
+        grouped.setdefault((str(row["baseline"]), str(row["part"])), []).append(row)
+    outputs = []
+    for (baseline, part), members in sorted(grouped.items()):
+        target = float(
+            sum(float(row["target_activation"]) for row in members)
+        )
+        outer = float(sum(float(row["outer_activation"]) for row in members))
+        boundary = float(
+            sum(float(row["boundary_activation"]) for row in members)
+        )
+        selection = float(
+            sum(float(row["selection_activation"]) for row in members)
+        )
+        outputs.append(
+            {
+                "baseline": baseline,
+                "part": part,
+                "view_count": len(members),
+                "pooled_outer_burden": _safe_ratio(outer, target),
+                "pooled_boundary_burden": _safe_ratio(boundary, target),
+                "pooled_selection_burden": _safe_ratio(selection, target),
+                "coverage_recall_threshold": float(coverage_recall_threshold),
+                "coverage_rate": float(
+                    np.mean(
+                        [
+                            float(row["recall"]) >= float(coverage_recall_threshold)
+                            for row in members
+                        ]
+                    )
+                ),
+            }
+        )
+    return outputs
 
 
 def _allowed_adjacent_masks(protocol: dict, part: str, part_masks: dict) -> dict[str, np.ndarray]:
@@ -505,15 +649,19 @@ def curve_settings_for_baseline(
     fixed_soft_threshold: float | None = None,
     soft_strength_sweep: bool = False,
 ) -> list[tuple[float, float]]:
-    strengths = [
+    reporting_targets = [
         float(strength)
         for strength in protocol.get("matched_retention_targets", [0.3, 0.5, 0.7, 1.0])
     ]
-    if baseline in ("B1", "B2"):
-        return [(0.5, strength) for strength in strengths]
+    if baseline in HARD_LABEL_METHODS:
+        return [(0.5, strength) for strength in reporting_targets]
     if soft_strength_sweep:
         if fixed_soft_threshold is None:
             raise ValueError("fixed soft threshold is required for a soft edit-strength sweep")
+        strengths = [
+            float(strength)
+            for strength in protocol.get("edit_strength_grid", DEFAULT_EDIT_STRENGTH_GRID)
+        ]
         return [(float(fixed_soft_threshold), strength) for strength in strengths]
     return [(float(threshold), 1.0) for threshold in protocol["validation_grid"]["soft_thresholds"]]
 
@@ -523,6 +671,9 @@ def _curve_for_baseline(
     *,
     caches: list[dict],
     trained_bank: dict,
+    raw_trained_bank: dict | None = None,
+    footprint_bank: dict | None = None,
+    a7_bank: dict | None = None,
     voting_bank: dict,
     protocol: dict,
     boundary_radius: int,
@@ -551,6 +702,10 @@ def _curve_for_baseline(
                 weights, _support, _metadata = resolve_baseline_point_weights(
                     baseline,
                     trained_bank=trained_bank,
+                    raw_trained_bank=raw_trained_bank,
+                    footprint_bank=footprint_bank,
+                    a7_bank=a7_bank,
+                    evidence_bank=trained_bank,
                     voting_bank=voting_bank,
                     part_index=part_index,
                     part_name=part,
@@ -581,6 +736,8 @@ def _curve_for_baseline(
                 "edit_strength": strength,
                 "boundary_radius": int(boundary_radius),
                 "target_activation": target_activation,
+                "outer_activation": outer_activation,
+                "actionable_activation": actionable_activation,
                 "raw_leakage": _safe_ratio(outer_activation, target_activation),
                 "actionable_leakage": _safe_ratio(actionable_activation, target_activation),
                 "selected_count": selected_count,
@@ -594,8 +751,20 @@ def _curve_for_baseline(
     return sorted(rows, key=lambda row: (float(row["retention"]), float(row["threshold"])))
 
 
-def resolve_retention_reference(raw_curves: dict[str, list[dict]]) -> tuple[str, float]:
-    reference_baseline = "B1" if "B1" in raw_curves else "B2"
+def resolve_retention_reference(
+    raw_curves: dict[str, list[dict]],
+    preferred_baseline: str | None = None,
+) -> tuple[str, float]:
+    if preferred_baseline is not None:
+        reference_baseline = str(preferred_baseline)
+    elif "B1" in raw_curves:
+        reference_baseline = "B1"
+    elif "B2" in raw_curves:
+        reference_baseline = "B2"
+    elif "A0" in raw_curves:
+        reference_baseline = "A0"
+    else:
+        raise ValueError("no hard-label retention reference baseline is available")
     rows = raw_curves.get(reference_baseline, [])
     if not rows:
         raise ValueError(f"retention reference baseline {reference_baseline} has no curve rows")
@@ -610,6 +779,12 @@ def _normalize_curve_retention(rows: list[dict], reference_activation: float) ->
         {
             **row,
             "retention": _safe_ratio(float(row["target_activation"]), float(reference_activation)),
+            "raw_leakage_ratio": float(row["raw_leakage"]),
+            "actionable_leakage_ratio": float(row["actionable_leakage"]),
+            "raw_leakage": _safe_ratio(float(row["outer_activation"]), float(reference_activation)),
+            "actionable_leakage": _safe_ratio(
+                float(row["actionable_activation"]), float(reference_activation)
+            ),
         }
         for row in rows
     ]
@@ -672,6 +847,9 @@ def _mean_boundary_f1_for_threshold(
     threshold: float,
     caches: list[dict],
     trained_bank: dict,
+    raw_trained_bank: dict | None = None,
+    footprint_bank: dict | None = None,
+    a7_bank: dict | None = None,
     voting_bank: dict,
     protocol: dict,
     b5_fallback_parts: set[str] | frozenset[str] = frozenset(),
@@ -683,6 +861,10 @@ def _mean_boundary_f1_for_threshold(
             weights, _support, _metadata = resolve_baseline_point_weights(
                 baseline,
                 trained_bank=trained_bank,
+                raw_trained_bank=raw_trained_bank,
+                footprint_bank=footprint_bank,
+                a7_bank=a7_bank,
+                evidence_bank=trained_bank,
                 voting_bank=voting_bank,
                 part_index=PART_NAMES.index(part),
                 part_name=part,
@@ -818,7 +1000,47 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         support_threshold_override=getattr(args, "support_threshold", None),
     )
     trained_bank = load_part_label_bank(args.trained_bank)
+    raw_trained_bank = load_part_label_bank(args.raw_trained_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
+    footprint_bank = load_part_label_bank(args.footprint_bank) if args.footprint_bank else None
+    if "A7" in args.baselines and (
+        args.a7_bank is None
+        or args.a7_contract is None
+        or args.footprint_bank is None
+    ):
+        raise ValueError(
+            "A7 evaluation requires --footprint-bank, --a7-bank, and --a7-contract"
+        )
+    a7_bank = load_part_label_bank(args.a7_bank) if args.a7_bank else None
+    method_freeze = (
+        load_frozen_semantic_method(args.method_freeze)
+        if getattr(args, "method_freeze", None) is not None
+        else None
+    )
+    if method_freeze is not None:
+        validate_frozen_method_assets(
+            method_freeze,
+            requested_methods=args.baselines,
+            footprint_bank=footprint_bank,
+            evidence_bank=trained_bank,
+        )
+    if "A5" in args.baselines and footprint_bank is None:
+        raise ValueError("A5 requires --footprint-bank from footprint-only calibration")
+    a7_provenance = {}
+    if a7_bank is not None:
+        if args.method_freeze is None:
+            raise ValueError("A7 evaluation requires --method-freeze")
+        a7_contract = load_a7_temporal_contract(args.a7_contract, args.method_freeze)
+        a7_provenance = validate_a7_bank_against_contract(
+            a7_bank,
+            contract=a7_contract,
+            a5_bank_path=args.footprint_bank,
+        )
+    validate_hard_baseline_independence(
+        raw_trained_bank=raw_trained_bank,
+        voting_bank=voting_bank,
+        requested_baselines=args.baselines,
+    )
     config_path = args.config.resolve() if args.config else asset_root.parent.parent / ".hydra" / "config.yaml"
     config = _load_config(config_path, checkpoint, asset_root, records, args)
     caches = []
@@ -828,7 +1050,13 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         scene.eval()
         loaded_iteration = int(scene.load_checkpoint(str(checkpoint)))
         point_count = int(scene.gaussians.get_xyz.shape[0])
-        for bank_name, bank in (("trained", trained_bank), ("voting", voting_bank)):
+        for bank_name, bank in (
+            ("evidence", trained_bank),
+            ("raw_trained", raw_trained_bank),
+            ("voting", voting_bank),
+            *(((("footprint", footprint_bank),) if footprint_bank is not None else ())),
+            *(((("a7", a7_bank),) if a7_bank is not None else ())),
+        ):
             labels = np.asarray(bank.get("part_label", []))
             if labels.shape[0] != point_count:
                 raise ValueError(f"{bank_name} bank point count {labels.shape[0]} does not match scene {point_count}")
@@ -862,26 +1090,32 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 }
             )
 
+    _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
     per_view = []
+    spatial_guard_source = []
     for cache in caches:
         for part in protocol["parts"]:
             target = np.asarray(cache["part_masks"][part], dtype=np.float32)
             valid = np.asarray(cache["valid_mask"], dtype=np.float32)
             for baseline in args.baselines:
-                metadata = BASELINE_SPECS[baseline]
+                metadata = METHOD_SPECS[baseline]
                 if baseline == "B0":
                     prediction = resolve_parser_oracle_prediction(cache["part_masks"], part)
                 else:
                     weights, _support, metadata = resolve_baseline_point_weights(
                         baseline,
                         trained_bank=trained_bank,
+                        raw_trained_bank=raw_trained_bank,
+                        footprint_bank=footprint_bank,
+                        a7_bank=a7_bank,
+                        evidence_bank=trained_bank,
                         voting_bank=voting_bank,
                         part_index=PART_NAMES.index(part),
                         part_name=part,
                         b5_fallback_parts=b5_fallback_parts,
                     )
                     point_weights = np.where(cache["projected"], weights, 0.0)
-                    threshold = 0.5 if baseline in ("B1", "B2") else fixed_threshold
+                    threshold = 0.5 if baseline in HARD_LABEL_METHODS else fixed_threshold
                     threshold = resolve_part_threshold(
                         baseline,
                         part_name=part,
@@ -904,6 +1138,29 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                     tolerance=int(protocol.get("boundary_metric_tolerance", 2)),
                     valid_mask=valid >= 0.5,
                 )
+                if baseline != "B0":
+                    footprint = summarize_footprint_selection_from_ratios(
+                        selected=selected,
+                        weights=weights,
+                        ratios=cache["footprint_ratio_cache"][int(boundary_radius)][
+                            part
+                        ],
+                    )
+                    spatial_guard_source.append(
+                        {
+                            "baseline": baseline,
+                            "view": cache["view"],
+                            "part": part,
+                            "target_activation": footprint["target_activation"],
+                            "outer_activation": footprint["outer_activation"],
+                            "boundary_activation": footprint["boundary_activation"],
+                            "selection_activation": (
+                                footprint["target_activation"]
+                                + footprint["outer_activation"]
+                            ),
+                            "recall": binary_stats["recall"],
+                        }
+                    )
                 per_view.append(
                     {
                         "baseline": baseline,
@@ -916,50 +1173,49 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                     }
                 )
     per_part, baseline_summary = _aggregate_metric_rows(per_view)
+    coverage_recall_threshold = float(
+        protocol.get("coverage_recall_threshold", 0.8)
+    )
+    spatial_guard_metrics = aggregate_spatial_guard_rows(
+        spatial_guard_source,
+        coverage_recall_threshold=coverage_recall_threshold,
+    )
 
-    raw_curves = {
-        "B2": _curve_for_baseline(
-            "B2",
+    requested_curve_methods = [value for value in args.baselines if value != "B0"]
+    preferred_reference = getattr(args, "retention_reference_baseline", None)
+    if preferred_reference is None:
+        preferred_reference = "A0" if "A0" in requested_curve_methods else (
+            "B1" if "B1" in requested_curve_methods else "B2"
+        )
+    if preferred_reference not in requested_curve_methods:
+        requested_curve_methods.insert(0, preferred_reference)
+    raw_curves = {}
+    for baseline in requested_curve_methods:
+        raw_curves[baseline] = _curve_for_baseline(
+            baseline,
             caches=caches,
             trained_bank=trained_bank,
+            raw_trained_bank=raw_trained_bank,
+            footprint_bank=footprint_bank,
+            a7_bank=a7_bank,
             voting_bank=voting_bank,
             protocol=protocol,
             boundary_radius=boundary_radius,
+            fixed_soft_threshold=fixed_threshold,
+            soft_strength_sweep=(
+                baseline not in HARD_LABEL_METHODS and not bool(args.validation_sweep)
+            ),
             b5_fallback_parts=b5_fallback_parts,
             b5_fallback_threshold=b5_fallback_threshold,
         )
-    }
-    if "B1" in args.baselines:
-        raw_curves["B1"] = _curve_for_baseline(
-            "B1",
-            caches=caches,
-            trained_bank=trained_bank,
-            voting_bank=voting_bank,
-            protocol=protocol,
-            boundary_radius=boundary_radius,
-            b5_fallback_parts=b5_fallback_parts,
-            b5_fallback_threshold=b5_fallback_threshold,
-        )
-    retention_reference, hard_target = resolve_retention_reference(raw_curves)
+    retention_reference, hard_target = resolve_retention_reference(
+        raw_curves,
+        preferred_baseline=preferred_reference,
+    )
     curves = {
         baseline: _normalize_curve_retention(rows, hard_target)
         for baseline, rows in raw_curves.items()
     }
-    for baseline in ("B3", "B4", "B5"):
-        if baseline in args.baselines:
-            curves[baseline] = _curve_for_baseline(
-                baseline,
-                caches=caches,
-                trained_bank=trained_bank,
-                voting_bank=voting_bank,
-                protocol=protocol,
-                boundary_radius=boundary_radius,
-                hard_target_activation=hard_target,
-                fixed_soft_threshold=fixed_threshold,
-                soft_strength_sweep=not bool(args.validation_sweep),
-                b5_fallback_parts=b5_fallback_parts,
-                b5_fallback_threshold=b5_fallback_threshold,
-            )
     curve_rows = [row for rows in curves.values() for row in rows]
     matched = []
     for baseline, rows in curves.items():
@@ -989,6 +1245,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 threshold=float(threshold),
                 caches=caches,
                 trained_bank=trained_bank,
+                raw_trained_bank=raw_trained_bank,
+                footprint_bank=footprint_bank,
+                a7_bank=a7_bank,
                 voting_bank=voting_bank,
                 protocol=protocol,
                 b5_fallback_parts=b5_fallback_parts,
@@ -1001,6 +1260,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                 "B5",
                 caches=caches,
                 trained_bank=trained_bank,
+                raw_trained_bank=raw_trained_bank,
+                footprint_bank=footprint_bank,
+                a7_bank=a7_bank,
                 voting_bank=voting_bank,
                 protocol=protocol,
                 boundary_radius=int(radius),
@@ -1044,6 +1306,14 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "record_fingerprint": record_fingerprint(records),
         "checkpoint_fingerprint": checkpoint_fp,
         "bank_fingerprint": bank_fp,
+        "raw_trained_bank_fingerprint": file_fingerprint(args.raw_trained_bank),
+        "voting_bank_fingerprint": file_fingerprint(args.voting_bank),
+        "footprint_bank_fingerprint": (
+            file_fingerprint(args.footprint_bank) if args.footprint_bank is not None else ""
+        ),
+        "a7_bank_fingerprint": (
+            str(a7_bank["output_bank_fingerprint"]) if a7_bank is not None else ""
+        ),
         "baseline_count": len(args.baselines),
         "processed_views": len(records),
         "fixed_soft_threshold": fixed_threshold,
@@ -1054,10 +1324,22 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "soft_curve_mode": (
             "threshold_sweep" if bool(args.validation_sweep) else "frozen_threshold_edit_strength_sweep"
         ),
+        "curve_leakage_normalization": "reference_target_activation",
         "uses_test_parser_for_calibration": False,
         "parser_oracle_baseline": "B0",
         "b5_fallback_parts": sorted(b5_fallback_parts),
         "b5_fallback_threshold": b5_fallback_threshold,
+        "method_freeze_id": str(method_freeze.get("freeze_id", "")) if method_freeze else "",
+        "method_freeze_fingerprint": (
+            str(method_freeze.get("_fingerprint", "")) if method_freeze else ""
+        ),
+        "primary_method": str(method_freeze.get("primary_method", "")) if method_freeze else "",
+        "extension_methods": list(method_freeze.get("extension_methods", [])) if method_freeze else [],
+        "coverage_recall_threshold": coverage_recall_threshold,
+        "spatial_guard_metrics": spatial_guard_metrics,
+        "canonical_selection_fixed_across_frames": True,
+        "common_support_across_methods": True,
+        **a7_provenance,
     }
     write_protocol_provenance(
         args.output_dir,
@@ -1074,6 +1356,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "per_view": per_view,
         "curve": curve_rows,
         "matched_retention": matched,
+        "spatial_guard_metrics": spatial_guard_metrics,
         "support_diagnostics": support_diagnostics,
         "boundary_radius_sensitivity": radius_rows,
         "validation_candidates": validation_candidates,
@@ -1089,8 +1372,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--support-threshold", type=float, default=None)
     parser.add_argument("--boundary-radius", type=int, default=None)
     parser.add_argument("--validation-sweep", action="store_true")
+    parser.add_argument("--raw-trained-bank", required=True, type=Path)
     parser.add_argument("--trained-bank", required=True, type=Path)
     parser.add_argument("--voting-bank", required=True, type=Path)
+    parser.add_argument("--footprint-bank", type=Path, default=None)
+    parser.add_argument("--a7-bank", type=Path, default=None)
+    parser.add_argument("--a7-contract", type=Path, default=None)
+    parser.add_argument("--method-freeze", type=Path, default=None)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--asset-root", required=True, type=Path)
     parser.add_argument("--config", type=Path, default=None)
@@ -1100,7 +1388,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--b5-fallback-part", action="append", default=[], choices=list(PART_NAMES))
     parser.add_argument("--b5-fallback-threshold", type=float, default=None)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--baselines", nargs="+", default=list(BASELINE_SPECS), choices=list(BASELINE_SPECS))
+    parser.add_argument("--baselines", nargs="+", default=list(BASELINE_SPECS), choices=list(METHOD_SPECS))
+    parser.add_argument(
+        "--retention-reference-baseline",
+        choices=[value for value in METHOD_SPECS if value != "B0"],
+        default=None,
+    )
     parser.add_argument("--parts", nargs="+", default=list(PART_NAMES), choices=list(PART_NAMES))
     return parser.parse_args(argv)
 

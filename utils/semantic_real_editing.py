@@ -8,7 +8,7 @@ from tools.analyze_projected_soft_edit_leakage import make_boundary_band
 from utils.part_label_bank import PART_NAMES
 
 
-REAL_EDIT_METHODS = ("raw_hard", "voting", "a5")
+REAL_EDIT_METHODS = ("raw_hard", "voting", "a5", "a7")
 REAL_EDIT_TASKS = ("recolor", "removal", "texture")
 
 
@@ -25,6 +25,7 @@ def resolve_method_weights(
     voting_bank: Mapping,
     a5_bank: Mapping,
     *,
+    a7_bank: Mapping | None = None,
     method: str,
     part: str,
     threshold: float,
@@ -39,10 +40,12 @@ def resolve_method_weights(
         labels = _hard_labels(raw_bank if method_name == "raw_hard" else voting_bank)
         return (labels == part_index).astype(np.float32)
 
-    if "soft_edit_weights" not in a5_bank:
-        raise ValueError("A5 bank must contain soft_edit_weights")
-    weights = np.asarray(a5_bank["soft_edit_weights"], dtype=np.float32)
-    point_count = _hard_labels(a5_bank).shape[0]
+    soft_bank = a5_bank if method_name == "a5" else a7_bank
+    owner = "A5" if method_name == "a5" else "A7"
+    if soft_bank is None or "soft_edit_weights" not in soft_bank:
+        raise ValueError(f"{owner} bank must contain soft_edit_weights")
+    weights = np.asarray(soft_bank["soft_edit_weights"], dtype=np.float32)
+    point_count = _hard_labels(soft_bank).shape[0]
     if weights.shape != (point_count, len(PART_NAMES)):
         raise ValueError(f"soft_edit_weights must have shape ({point_count}, {len(PART_NAMES)})")
     values = weights[:, part_index]
