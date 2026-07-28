@@ -418,6 +418,25 @@ def summarize_footprint_selection_from_ratios(selected, weights, ratios: dict[st
     }
 
 
+def summarize_fixed_spatial_guard(
+    *,
+    weights: np.ndarray,
+    projected: np.ndarray,
+    threshold: float,
+    ratios: dict[str, np.ndarray],
+) -> dict:
+    weights_array = np.asarray(weights, dtype=np.float32).reshape(-1)
+    projected_array = np.asarray(projected, dtype=bool).reshape(-1)
+    if weights_array.shape != projected_array.shape:
+        raise ValueError("weights and projected mask must have matching point counts")
+    selected = (weights_array >= float(threshold)) & projected_array
+    return summarize_footprint_selection_from_ratios(
+        selected=selected,
+        weights=weights_array,
+        ratios=ratios,
+    )
+
+
 def _write_csv(path: Path, rows: list[dict]) -> None:
     keys = sorted({key for row in rows for key in row})
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -1139,9 +1158,10 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                     valid_mask=valid >= 0.5,
                 )
                 if baseline != "B0":
-                    footprint = summarize_footprint_selection_from_ratios(
-                        selected=selected,
+                    footprint = summarize_fixed_spatial_guard(
                         weights=weights,
+                        projected=cache["projected"],
+                        threshold=threshold,
                         ratios=cache["footprint_ratio_cache"][int(boundary_radius)][
                             part
                         ],

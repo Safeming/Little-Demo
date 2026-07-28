@@ -242,3 +242,28 @@ def test_spatial_guard_aggregation_reports_required_burdens_and_coverage():
     assert aggregate["pooled_boundary_burden"] == pytest.approx(0.75 / 6.0)
     assert aggregate["pooled_selection_burden"] == pytest.approx(8.0 / 6.0)
     assert aggregate["coverage_rate"] == pytest.approx(0.5)
+
+
+def test_fixed_spatial_guard_uses_the_same_thresholded_projected_selection():
+    from tools.evaluate_semantic_editing_paper_protocol import (
+        summarize_fixed_spatial_guard,
+    )
+
+    ratios = {
+        "observed": np.array([True, True, True]),
+        "target_ratio": np.array([1.0, 0.5, 0.0], dtype=np.float32),
+        "outer_ratio": np.array([0.0, 0.5, 1.0], dtype=np.float32),
+        "boundary_ratio": np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        "allowed_adjacent_ratio": np.zeros(3, dtype=np.float32),
+        "actionable_outer_ratio": np.array([0.0, 0.5, 1.0], dtype=np.float32),
+    }
+    summary = summarize_fixed_spatial_guard(
+        weights=np.array([0.8, 0.6, 0.9], dtype=np.float32),
+        projected=np.array([True, True, False]),
+        threshold=0.7,
+        ratios=ratios,
+    )
+
+    assert summary["selected_count"] == 1
+    assert summary["target_activation"] == pytest.approx(0.8)
+    assert summary["outer_activation"] == pytest.approx(0.0)
