@@ -186,3 +186,298 @@ def finalize_temporal_footprint_evidence(state) -> dict[str, np.ndarray]:
             state["visibility_transition_count"], state["visibility_pair_count"]
         ).astype(np.float32),
     }
+
+
+def _validate_metric_matrix(value, *, name: str, shape=None) -> np.ndarray:
+    array = np.asarray(value)
+    if array.ndim != 2:
+        raise ValueError(f"{name} must have shape [N, C]")
+    if shape is not None and array.shape != shape:
+        raise ValueError(f"{name} shape must match {shape}")
+    array64 = array.astype(np.float64, copy=False)
+    if not np.all(np.isfinite(array64)):
+        raise ValueError(f"{name} must be finite")
+    return array64
+
+
+def compute_temporal_reliability(
+    *,
+    consecutive_visible_count,
+    temporal_outer_flicker,
+    temporal_boundary_crossing_rate,
+    temporal_target_flicker,
+    lambda_outer: float,
+    lambda_boundary: float,
+    lambda_target: float,
+    min_pair_support: int,
+) -> tuple[np.ndarray, dict]:
+    support_array = np.asarray(consecutive_visible_count)
+    if support_array.ndim != 2 or not np.issubdtype(support_array.dtype, np.integer):
+        raise ValueError("consecutive_visible_count must be an integer [N, C] array")
+    if np.any(support_array < 0):
+        raise ValueError("consecutive_visible_count must be non-negative")
+    if not isinstance(min_pair_support, int) or min_pair_support <= 0:
+        raise ValueError("min_pair_support must be a positive integer")
+
+    shape = support_array.shape
+    outer = _validate_metric_matrix(
+        temporal_outer_flicker, name="temporal_outer_flicker", shape=shape
+    )
+    boundary = _validate_metric_matrix(
+        temporal_boundary_crossing_rate,
+        name="temporal_boundary_crossing_rate",
+        shape=shape,
+    )
+    target = _validate_metric_matrix(
+        temporal_target_flicker, name="temporal_target_flicker", shape=shape
+    )
+    for name, array in (
+        ("temporal_outer_flicker", outer),
+        ("temporal_boundary_crossing_rate", boundary),
+        ("temporal_target_flicker", target),
+    ):
+        if np.any(array < 0):
+            raise ValueError(f"{name} must be non-negative")
+    lambdas = {
+        "lambda_outer": float(lambda_outer),
+        "lambda_boundary": float(lambda_boundary),
+        "lambda_target": float(lambda_target),
+    }
+    if any(not np.isfinite(value) or value < 0 for value in lambdas.values()):
+        raise ValueError("temporal reliability lambdas must be finite and non-negative")
+
+    supported = support_array >= min_pair_support
+    exponent = -(
+        lambdas["lambda_outer"] * outer
+        + lambdas["lambda_boundary"] * boundary
+        + lambdas["lambda_target"] * target
+    )
+    reliability64 = supported.astype(np.float64) * np.exp(exponent)
+    reliability = np.clip(reliability64, 0.0, 1.0).astype(np.float32)
+    supported_count = int(np.count_nonzero(supported))
+    total_count = int(supported.size)
+    summary = {
+        **lambdas,
+        "min_pair_support": int(min_pair_support),
+        "supported_entry_count": supported_count,
+        "total_entry_count": total_count,
+        "support_coverage": float(supported_count / total_count) if total_count else 0.0,
+        "mean_reliability": float(np.mean(reliability, dtype=np.float64))
+        if total_count
+        else 0.0,
+    }
+    return reliability, summary
+
+
+def _validate_weight_inputs(
+    *,
+    a5_weights,
+    semantic_probs,
+    temporal_target_ratio_mean,
+    temporal_outer_ratio_mean,
+    temporal_reliability,
+    consecutive_visible_count,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    a5 = _validate_metric_matrix(a5_weights, name="a5_weights")
+    shape = a5.shape
+    posterior = _validate_metric_matrix(
+        semantic_probs, name="semantic_probs", shape=shape
+    )
+    target = _validate_metric_matrix(
+        temporal_target_ratio_mean,
+        name="temporal_target_ratio_mean",
+        shape=shape,
+    )
+    outer = _validate_metric_matrix(
+        temporal_outer_ratio_mean,
+        name="temporal_outer_ratio_mean",
+        shape=shape,
+    )
+    reliability = _validate_metric_matrix(
+        temporal_reliability, name="temporal_reliability", shape=shape
+    )
+    support = np.asarray(consecutive_visible_count)
+    if support.shape != shape or not np.issubdtype(support.dtype, np.integer):
+        raise ValueError(
+            "consecutive_visible_count must be an integer array matching a5_weights"
+        )
+    if np.any(support < 0):
+        raise ValueError("consecutive_visible_count must be non-negative")
+    for name, array in (
+        ("a5_weights", a5),
+        ("semantic_probs", posterior),
+        ("temporal_target_ratio_mean", target),
+        ("temporal_outer_ratio_mean", outer),
+        ("temporal_reliability", reliability),
+    ):
+        if np.any((array < 0.0) | (array > 1.0)):
+            raise ValueError(f"{name} must be in [0, 1]")
+    return a5, posterior, target, outer, reliability, support.astype(np.int64)
+
+
+def _part_summary(
+    *,
+    part_index: int,
+    processed: bool,
+    a5_target_mass: float,
+    damped_target_mass: float,
+    target_floor: float,
+    restored_target_mass: float,
+    remaining_deficit: float,
+    redistributed_indices: list[int],
+    cap_saturated_count: int,
+    candidate_indices: list[int],
+    weight_l1_from_a5: float,
+) -> dict:
+    return {
+        "part_index": int(part_index),
+        "processed": bool(processed),
+        "a5_target_mass": float(a5_target_mass),
+        "damped_target_mass": float(damped_target_mass),
+        "target_floor": float(target_floor),
+        "restored_target_mass": float(restored_target_mass),
+        "remaining_deficit": float(remaining_deficit),
+        "redistributed_gaussian_count": len(redistributed_indices),
+        "redistributed_gaussian_indices": redistributed_indices,
+        "cap_saturated_count": int(cap_saturated_count),
+        "stable_candidate_count": len(candidate_indices),
+        "candidate_gaussian_indices": candidate_indices,
+        "weight_l1_from_a5": float(weight_l1_from_a5),
+    }
+
+
+def calibrate_a7_soft_edit_weights(
+    *,
+    a5_weights,
+    semantic_probs,
+    temporal_target_ratio_mean,
+    temporal_outer_ratio_mean,
+    temporal_reliability,
+    consecutive_visible_count,
+    rho: float,
+    min_pair_support: int,
+    max_weight_scale_from_posterior: float,
+) -> tuple[np.ndarray, dict]:
+    """Dampen A5 weights and deterministically restore target mass per part."""
+    a5, posterior, target, outer, reliability, support = _validate_weight_inputs(
+        a5_weights=a5_weights,
+        semantic_probs=semantic_probs,
+        temporal_target_ratio_mean=temporal_target_ratio_mean,
+        temporal_outer_ratio_mean=temporal_outer_ratio_mean,
+        temporal_reliability=temporal_reliability,
+        consecutive_visible_count=consecutive_visible_count,
+    )
+    rho_value = float(rho)
+    scale = float(max_weight_scale_from_posterior)
+    if not np.isfinite(rho_value) or not 0.0 <= rho_value <= 1.0:
+        raise ValueError("rho must be finite and in [0, 1]")
+    if not isinstance(min_pair_support, int) or min_pair_support <= 0:
+        raise ValueError("min_pair_support must be a positive integer")
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("max_weight_scale_from_posterior must be finite and positive")
+
+    output = a5.copy()
+    per_part = []
+    for part_index in range(a5.shape[1]):
+        a5_part = a5[:, part_index]
+        posterior_part = posterior[:, part_index]
+        target_part = target[:, part_index]
+        outer_part = outer[:, part_index]
+        reliability_part = reliability[:, part_index]
+        support_part = support[:, part_index]
+        has_evidence = bool(
+            np.any(target_part > 0.0)
+            or np.any(outer_part > 0.0)
+            or np.any(support_part > 0)
+        )
+        a5_target_mass = float(np.sum(a5_part * target_part, dtype=np.float64))
+        if not has_evidence:
+            per_part.append(
+                _part_summary(
+                    part_index=part_index,
+                    processed=False,
+                    a5_target_mass=a5_target_mass,
+                    damped_target_mass=a5_target_mass,
+                    target_floor=rho_value * a5_target_mass,
+                    restored_target_mass=a5_target_mass,
+                    remaining_deficit=0.0,
+                    redistributed_indices=[],
+                    cap_saturated_count=0,
+                    candidate_indices=[],
+                    weight_l1_from_a5=0.0,
+                )
+            )
+            continue
+
+        ceiling = np.minimum(1.0, posterior_part * scale)
+        calibrated_part = np.minimum(a5_part * reliability_part, ceiling)
+        damped_target_mass = float(
+            np.sum(calibrated_part * target_part, dtype=np.float64)
+        )
+        target_floor = rho_value * a5_target_mass
+        deficit = max(0.0, target_floor - damped_target_mass)
+        eligible = np.flatnonzero(
+            (support_part >= min_pair_support) & (target_part > outer_part)
+        )
+        candidate_indices = sorted(
+            (int(index) for index in eligible),
+            key=lambda index: (
+                -posterior_part[index],
+                -target_part[index],
+                -reliability_part[index],
+                -support_part[index],
+                index,
+            ),
+        )
+        redistributed_indices = []
+        saturated_indices = []
+        for index in candidate_indices:
+            if deficit <= 0.0:
+                break
+            capacity = max(0.0, ceiling[index] - calibrated_part[index])
+            if capacity <= 0.0 or target_part[index] <= 0.0:
+                continue
+            increment = min(capacity, deficit / target_part[index])
+            if increment <= 0.0:
+                continue
+            calibrated_part[index] += increment
+            deficit = max(0.0, deficit - increment * target_part[index])
+            redistributed_indices.append(index)
+            if calibrated_part[index] >= ceiling[index] - 1e-12:
+                saturated_indices.append(index)
+
+        output[:, part_index] = calibrated_part
+        output_part32 = calibrated_part.astype(np.float32)
+        restored_target_mass = float(
+            np.sum(output_part32.astype(np.float64) * target_part, dtype=np.float64)
+        )
+        remaining_deficit = max(0.0, target_floor - restored_target_mass)
+        per_part.append(
+            _part_summary(
+                part_index=part_index,
+                processed=True,
+                a5_target_mass=a5_target_mass,
+                damped_target_mass=damped_target_mass,
+                target_floor=target_floor,
+                restored_target_mass=restored_target_mass,
+                remaining_deficit=remaining_deficit,
+                redistributed_indices=redistributed_indices,
+                cap_saturated_count=len(saturated_indices),
+                candidate_indices=candidate_indices,
+                weight_l1_from_a5=float(
+                    np.sum(np.abs(output_part32.astype(np.float64) - a5_part))
+                ),
+            )
+        )
+
+    output32 = np.clip(output, 0.0, 1.0).astype(np.float32)
+    summary = {
+        "rho": rho_value,
+        "min_pair_support": int(min_pair_support),
+        "max_weight_scale_from_posterior": scale,
+        "per_part": per_part,
+        "weight_l1_from_a5": float(
+            np.sum(np.abs(output32.astype(np.float64) - a5), dtype=np.float64)
+        ),
+    }
+    return output32, summary
