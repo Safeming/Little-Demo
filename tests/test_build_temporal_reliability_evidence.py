@@ -112,6 +112,19 @@ def test_boundary_state_encoding_marks_interior_boundary_outer_and_invisible():
     np.testing.assert_array_equal(state, np.array([1, 2, 3, 0], dtype=np.int8))
 
 
+def test_boundary_state_encoding_uses_signed_dominance_margin():
+    from tools.build_temporal_reliability_evidence import encode_boundary_state
+
+    state = encode_boundary_state(
+        visible=np.array([True, True, True, True, False]),
+        target_ratio=np.array([1.0, 0.8, 0.55, 0.2, 0.0], dtype=np.float32),
+        outer_ratio=np.array([0.0, 0.2, 0.45, 0.8, 0.0], dtype=np.float32),
+        dominance_margin=0.2,
+    )
+
+    np.testing.assert_array_equal(state, np.array([1, 1, 2, 3, 0], dtype=np.int8))
+
+
 def test_combine_camera_evidence_uses_support_weighted_statistics():
     from tools.build_temporal_reliability_evidence import combine_camera_evidence
 

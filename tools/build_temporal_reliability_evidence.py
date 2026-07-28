@@ -137,6 +137,7 @@ def encode_boundary_state(
     visible: np.ndarray,
     target_ratio: np.ndarray,
     outer_ratio: np.ndarray,
+    dominance_margin: float | None = None,
 ) -> np.ndarray:
     visible_array = np.asarray(visible, dtype=np.bool_)
     target = np.asarray(target_ratio, dtype=np.float32)
@@ -144,6 +145,15 @@ def encode_boundary_state(
     if visible_array.shape != target.shape or target.shape != outer.shape:
         raise ValueError("boundary state inputs must have matching shapes")
     state = np.zeros(visible_array.shape, dtype=np.int8)
+    if dominance_margin is not None:
+        margin = float(dominance_margin)
+        if not np.isfinite(margin) or not 0.0 <= margin <= 1.0:
+            raise ValueError("dominance_margin must be finite and in [0, 1]")
+        dominance = target - outer
+        state[visible_array & (dominance > margin)] = 1
+        state[visible_array & (np.abs(dominance) <= margin)] = 2
+        state[visible_array & (dominance < -margin)] = 3
+        return state
     mixed = visible_array & (target > 0.0) & (outer > 0.0)
     state[mixed] = 2
     state[visible_array & ~mixed & (target >= outer)] = 1
@@ -596,6 +606,7 @@ def run_evidence_build(args, protocol: dict, contract: dict, manifest: dict) -> 
                     visible=record["observed"],
                     target_ratio=record["target_ratio"],
                     outer_ratio=record["outer_ratio"],
+                    dominance_margin=contract.get("boundary_dominance_margin"),
                 )
             state = states.setdefault(camera, {})
             accumulate_temporal_footprint_frame(

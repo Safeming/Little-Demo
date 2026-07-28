@@ -383,6 +383,32 @@ def test_water_filling_reports_capacity_shortfall_without_exceeding_ceiling():
     assert part["cap_saturated_count"] == 2
 
 
+def test_water_filling_guards_existing_carriers_and_ranks_reliability_first():
+    from utils.temporal_reliability_calibration import calibrate_a7_soft_edit_weights
+
+    calibrated, summary = calibrate_a7_soft_edit_weights(
+        a5_weights=np.array([[0.8], [0.8], [0.0], [0.8]], dtype=np.float32),
+        semantic_probs=np.array([[0.6], [0.9], [1.0], [0.7]], dtype=np.float32),
+        temporal_target_ratio_mean=np.full((4, 1), 0.8, dtype=np.float32),
+        temporal_outer_ratio_mean=np.full((4, 1), 0.2, dtype=np.float32),
+        temporal_reliability=np.array([[0.9], [0.5], [1.0], [0.0]], dtype=np.float32),
+        consecutive_visible_count=np.array([[100], [100], [100], [10]], dtype=np.int32),
+        rho=0.95,
+        min_pair_support=8,
+        max_weight_scale_from_posterior=1.0,
+        minimum_carrier_support_ratio=0.5,
+        minimum_carrier_existing_weight=0.2,
+        carrier_ranking="reliability_support_target_posterior",
+    )
+    part = summary["per_part"][0]
+
+    assert part["carrier_min_pair_support"] == 50
+    assert part["candidate_gaussian_indices"] == [0, 1]
+    assert calibrated[2, 0] == 0.0
+    assert 2 not in part["redistributed_gaussian_indices"]
+    assert 3 not in part["candidate_gaussian_indices"]
+
+
 @pytest.mark.parametrize("seed", range(20))
 def test_water_filling_randomized_invariants_are_deterministic(seed):
     from utils.temporal_reliability_calibration import calibrate_a7_soft_edit_weights

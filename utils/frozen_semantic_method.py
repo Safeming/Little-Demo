@@ -96,7 +96,12 @@ def validate_a7_temporal_contract(
         if "c21" in [str(value) for value in payload.get(field, [])]:
             raise ValueError(f"A7 contract must not use c21 in {field}")
 
-    for field, expected in _A7_REQUIRED_VALUES.items():
+    freeze_id = str(payload.get("freeze_id", ""))
+    if freeze_id not in {"a7_temporal_reliable_v1", "a7_temporal_reliable_v1_1"}:
+        raise ValueError("unsupported A7 contract freeze_id")
+    required_values = dict(_A7_REQUIRED_VALUES)
+    required_values["freeze_id"] = freeze_id
+    for field, expected in required_values.items():
         if payload.get(field) != expected:
             raise ValueError(f"A7 contract {field} must be {expected!r}")
 
@@ -112,6 +117,16 @@ def validate_a7_temporal_contract(
         raise ValueError(
             "A7 contract minimum_evidence_support_coverage must be in [0, 1]"
         )
+    if freeze_id == "a7_temporal_reliable_v1_1":
+        expected_policy = {
+            "boundary_dominance_margin": 0.2,
+            "minimum_carrier_support_ratio": 0.5,
+            "minimum_carrier_existing_weight": 0.2,
+            "carrier_ranking": "reliability_support_target_posterior",
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v1.1 contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(

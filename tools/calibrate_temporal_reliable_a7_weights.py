@@ -91,6 +91,9 @@ def evaluate_candidate(
     parameters: dict,
     max_weight_scale_from_posterior: float,
     minimum_evidence_support_coverage: float,
+    minimum_carrier_support_ratio: float = 0.0,
+    minimum_carrier_existing_weight: float = 0.0,
+    carrier_ranking: str = "posterior_target_reliability_support",
 ) -> dict:
     reliability, reliability_summary = compute_temporal_reliability(
         consecutive_visible_count=evidence["temporal_consecutive_visible_count"],
@@ -114,6 +117,9 @@ def evaluate_candidate(
         rho=float(parameters["rho"]),
         min_pair_support=int(parameters["min_pair_support"]),
         max_weight_scale_from_posterior=float(max_weight_scale_from_posterior),
+        minimum_carrier_support_ratio=float(minimum_carrier_support_ratio),
+        minimum_carrier_existing_weight=float(minimum_carrier_existing_weight),
+        carrier_ranking=str(carrier_ranking),
     )
 
     support = evidence["temporal_consecutive_visible_count"] >= int(
@@ -300,6 +306,17 @@ def main(argv: list[str] | None = None) -> int:
             ),
             minimum_evidence_support_coverage=float(
                 contract["minimum_evidence_support_coverage"]
+            ),
+            minimum_carrier_support_ratio=float(
+                contract.get("minimum_carrier_support_ratio", 0.0)
+            ),
+            minimum_carrier_existing_weight=float(
+                contract.get("minimum_carrier_existing_weight", 0.0)
+            ),
+            carrier_ranking=str(
+                contract.get(
+                    "carrier_ranking", "posterior_target_reliability_support"
+                )
             ),
         )
         candidate_dir = output_dir / identifier

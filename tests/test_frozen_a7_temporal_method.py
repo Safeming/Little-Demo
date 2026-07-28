@@ -7,6 +7,9 @@ import pytest
 
 A5_FREEZE_PATH = Path("configs/semantic/frozen_a5_main_method_v1.json")
 A7_CONTRACT_PATH = Path("configs/semantic/frozen_a7_temporal_reliable_v1.json")
+A7_V11_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_temporal_reliable_v1_1.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -115,3 +118,15 @@ def test_a7_validator_cli_reports_both_fingerprints_and_static_method():
     assert report["runtime_state"] is False
     assert len(report["base_method_freeze_fingerprint"]) == 64
     assert len(report["a7_contract_fingerprint"]) == 64
+
+
+def test_frozen_a7_v11_contract_freezes_guarded_carrier_policy():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V11_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_temporal_reliable_v1_1"
+    assert contract["boundary_dominance_margin"] == pytest.approx(0.2)
+    assert contract["minimum_carrier_support_ratio"] == pytest.approx(0.5)
+    assert contract["minimum_carrier_existing_weight"] == pytest.approx(0.2)
+    assert contract["carrier_ranking"] == "reliability_support_target_posterior"

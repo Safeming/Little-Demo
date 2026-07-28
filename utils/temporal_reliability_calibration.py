@@ -327,6 +327,7 @@ def _part_summary(
     redistributed_indices: list[int],
     cap_saturated_count: int,
     candidate_indices: list[int],
+    carrier_min_pair_support: int,
     weight_l1_from_a5: float,
 ) -> dict:
     return {
@@ -342,6 +343,7 @@ def _part_summary(
         "cap_saturated_count": int(cap_saturated_count),
         "stable_candidate_count": len(candidate_indices),
         "candidate_gaussian_indices": candidate_indices,
+        "carrier_min_pair_support": int(carrier_min_pair_support),
         "weight_l1_from_a5": float(weight_l1_from_a5),
     }
 
@@ -357,6 +359,9 @@ def calibrate_a7_soft_edit_weights(
     rho: float,
     min_pair_support: int,
     max_weight_scale_from_posterior: float,
+    minimum_carrier_support_ratio: float = 0.0,
+    minimum_carrier_existing_weight: float = 0.0,
+    carrier_ranking: str = "posterior_target_reliability_support",
 ) -> tuple[np.ndarray, dict]:
     """Dampen A5 weights and deterministically restore target mass per part."""
     a5, posterior, target, outer, reliability, support = _validate_weight_inputs(
@@ -375,6 +380,19 @@ def calibrate_a7_soft_edit_weights(
         raise ValueError("min_pair_support must be a positive integer")
     if not np.isfinite(scale) or scale <= 0.0:
         raise ValueError("max_weight_scale_from_posterior must be finite and positive")
+    carrier_support_ratio = float(minimum_carrier_support_ratio)
+    carrier_existing_weight = float(minimum_carrier_existing_weight)
+    if not np.isfinite(carrier_support_ratio) or not 0.0 <= carrier_support_ratio <= 1.0:
+        raise ValueError("minimum_carrier_support_ratio must be in [0, 1]")
+    if not np.isfinite(carrier_existing_weight) or not 0.0 <= carrier_existing_weight <= 1.0:
+        raise ValueError("minimum_carrier_existing_weight must be in [0, 1]")
+    ranking = str(carrier_ranking)
+    supported_rankings = {
+        "posterior_target_reliability_support",
+        "reliability_support_target_posterior",
+    }
+    if ranking not in supported_rankings:
+        raise ValueError(f"unsupported carrier_ranking: {ranking}")
 
     output = a5.copy()
     per_part = []
@@ -404,6 +422,7 @@ def calibrate_a7_soft_edit_weights(
                     redistributed_indices=[],
                     cap_saturated_count=0,
                     candidate_indices=[],
+                    carrier_min_pair_support=min_pair_support,
                     weight_l1_from_a5=0.0,
                 )
             )
@@ -416,18 +435,35 @@ def calibrate_a7_soft_edit_weights(
         )
         target_floor = rho_value * a5_target_mass
         deficit = max(0.0, target_floor - damped_target_mass)
-        eligible = np.flatnonzero(
-            (support_part >= min_pair_support) & (target_part > outer_part)
+        maximum_support = int(np.max(support_part)) if support_part.size else 0
+        carrier_min_pair_support = max(
+            min_pair_support,
+            int(np.ceil(maximum_support * carrier_support_ratio)),
         )
-        candidate_indices = sorted(
-            (int(index) for index in eligible),
-            key=lambda index: (
+        eligible = np.flatnonzero(
+            (support_part >= carrier_min_pair_support)
+            & (target_part > outer_part)
+            & (a5_part >= carrier_existing_weight)
+        )
+        if ranking == "reliability_support_target_posterior":
+            rank_key = lambda index: (
+                -reliability_part[index],
+                -support_part[index],
+                -target_part[index],
+                -posterior_part[index],
+                index,
+            )
+        else:
+            rank_key = lambda index: (
                 -posterior_part[index],
                 -target_part[index],
                 -reliability_part[index],
                 -support_part[index],
                 index,
-            ),
+            )
+        candidate_indices = sorted(
+            (int(index) for index in eligible),
+            key=rank_key,
         )
         redistributed_indices = []
         saturated_indices = []
@@ -464,6 +500,7 @@ def calibrate_a7_soft_edit_weights(
                 redistributed_indices=redistributed_indices,
                 cap_saturated_count=len(saturated_indices),
                 candidate_indices=candidate_indices,
+                carrier_min_pair_support=carrier_min_pair_support,
                 weight_l1_from_a5=float(
                     np.sum(np.abs(output_part32.astype(np.float64) - a5_part))
                 ),
@@ -475,6 +512,9 @@ def calibrate_a7_soft_edit_weights(
         "rho": rho_value,
         "min_pair_support": int(min_pair_support),
         "max_weight_scale_from_posterior": scale,
+        "minimum_carrier_support_ratio": carrier_support_ratio,
+        "minimum_carrier_existing_weight": carrier_existing_weight,
+        "carrier_ranking": ranking,
         "per_part": per_part,
         "weight_l1_from_a5": float(
             np.sum(np.abs(output32.astype(np.float64) - a5), dtype=np.float64)
