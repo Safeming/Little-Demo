@@ -25,6 +25,7 @@ EXPECTED_PROTOCOL = {
     "retrospective_test_cameras": ["c21"],
     "frozen_test_cameras": ["c22", "c23"],
     "parts": ["hair", "face", "upper", "lower", "shoes", "skin"],
+    "max_weight_scale_from_posterior": 1.0,
 }
 
 

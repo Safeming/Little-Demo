@@ -20,5 +20,6 @@
   "frozen_test_cameras": ["c22", "c23"],
   "parts": ["hair", "face", "upper", "lower", "shoes", "skin"],
   "min_pair_support": 8,
-  "minimum_evidence_support_coverage": 0.8
+  "minimum_evidence_support_coverage": 0.8,
+  "max_weight_scale_from_posterior": 1.0
 }
