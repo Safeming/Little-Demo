@@ -10,6 +10,9 @@ A7_CONTRACT_PATH = Path("configs/semantic/frozen_a7_temporal_reliable_v1.json")
 A7_V11_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_temporal_reliable_v1_1.json"
 )
+A7_V2_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_renderer_aligned_v2_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -130,3 +133,17 @@ def test_frozen_a7_v11_contract_freezes_guarded_carrier_policy():
     assert contract["minimum_carrier_support_ratio"] == pytest.approx(0.5)
     assert contract["minimum_carrier_existing_weight"] == pytest.approx(0.2)
     assert contract["carrier_ranking"] == "reliability_support_target_posterior"
+
+
+def test_frozen_a7_v2_contract_freezes_renderer_and_part_policy():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V2_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_renderer_aligned_v2_canary_377"
+    assert contract["subject"] == "377"
+    assert contract["evidence_mode"] == "renderer_aligned"
+    assert contract["renderer_attribution"] == "colors_gradient"
+    assert contract["frozen_parts"] == ["face", "upper", "shoes", "skin"]
+    assert contract["selection_threshold"] == pytest.approx(0.2)
+    assert contract["preserve_a5_selection_topology"] is True

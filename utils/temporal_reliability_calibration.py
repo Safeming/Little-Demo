@@ -328,6 +328,8 @@ def _part_summary(
     cap_saturated_count: int,
     candidate_indices: list[int],
     carrier_min_pair_support: int,
+    frozen: bool,
+    selection_crossing_count: int,
     weight_l1_from_a5: float,
 ) -> dict:
     return {
@@ -344,6 +346,8 @@ def _part_summary(
         "stable_candidate_count": len(candidate_indices),
         "candidate_gaussian_indices": candidate_indices,
         "carrier_min_pair_support": int(carrier_min_pair_support),
+        "frozen": bool(frozen),
+        "selection_crossing_count": int(selection_crossing_count),
         "weight_l1_from_a5": float(weight_l1_from_a5),
     }
 
@@ -362,6 +366,9 @@ def calibrate_a7_soft_edit_weights(
     minimum_carrier_support_ratio: float = 0.0,
     minimum_carrier_existing_weight: float = 0.0,
     carrier_ranking: str = "posterior_target_reliability_support",
+    frozen_part_indices: tuple[int, ...] | list[int] = (),
+    selection_threshold: float = 0.0,
+    preserve_selection_topology: bool = False,
 ) -> tuple[np.ndarray, dict]:
     """Dampen A5 weights and deterministically restore target mass per part."""
     a5, posterior, target, outer, reliability, support = _validate_weight_inputs(
@@ -393,6 +400,13 @@ def calibrate_a7_soft_edit_weights(
     }
     if ranking not in supported_rankings:
         raise ValueError(f"unsupported carrier_ranking: {ranking}")
+    frozen_parts = {int(index) for index in frozen_part_indices}
+    if any(index < 0 or index >= a5.shape[1] for index in frozen_parts):
+        raise ValueError("frozen_part_indices contains an invalid part index")
+    threshold = float(selection_threshold)
+    if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise ValueError("selection_threshold must be in [0, 1]")
+    preserve_topology = bool(preserve_selection_topology)
 
     output = a5.copy()
     per_part = []
@@ -403,12 +417,33 @@ def calibrate_a7_soft_edit_weights(
         outer_part = outer[:, part_index]
         reliability_part = reliability[:, part_index]
         support_part = support[:, part_index]
+        selected_a5 = a5_part >= threshold if threshold > 0.0 else a5_part > 0.0
         has_evidence = bool(
             np.any(target_part > 0.0)
             or np.any(outer_part > 0.0)
             or np.any(support_part > 0)
         )
         a5_target_mass = float(np.sum(a5_part * target_part, dtype=np.float64))
+        if part_index in frozen_parts:
+            per_part.append(
+                _part_summary(
+                    part_index=part_index,
+                    processed=False,
+                    a5_target_mass=a5_target_mass,
+                    damped_target_mass=a5_target_mass,
+                    target_floor=rho_value * a5_target_mass,
+                    restored_target_mass=a5_target_mass,
+                    remaining_deficit=0.0,
+                    redistributed_indices=[],
+                    cap_saturated_count=0,
+                    candidate_indices=[],
+                    carrier_min_pair_support=min_pair_support,
+                    frozen=True,
+                    selection_crossing_count=0,
+                    weight_l1_from_a5=0.0,
+                )
+            )
+            continue
         if not has_evidence:
             per_part.append(
                 _part_summary(
@@ -423,6 +458,8 @@ def calibrate_a7_soft_edit_weights(
                     cap_saturated_count=0,
                     candidate_indices=[],
                     carrier_min_pair_support=min_pair_support,
+                    frozen=False,
+                    selection_crossing_count=0,
                     weight_l1_from_a5=0.0,
                 )
             )
@@ -430,6 +467,16 @@ def calibrate_a7_soft_edit_weights(
 
         ceiling = np.minimum(1.0, posterior_part * scale)
         calibrated_part = np.minimum(a5_part * reliability_part, ceiling)
+        if preserve_topology:
+            if np.any(selected_a5 & (ceiling < threshold)):
+                raise ValueError("posterior ceiling cannot preserve A5 selection topology")
+            calibrated_part[selected_a5] = np.maximum(
+                calibrated_part[selected_a5], threshold
+            )
+            calibrated_part[~selected_a5] = np.minimum(
+                calibrated_part[~selected_a5],
+                np.nextafter(threshold, -np.inf),
+            )
         damped_target_mass = float(
             np.sum(calibrated_part * target_part, dtype=np.float64)
         )
@@ -444,6 +491,7 @@ def calibrate_a7_soft_edit_weights(
             (support_part >= carrier_min_pair_support)
             & (target_part > outer_part)
             & (a5_part >= carrier_existing_weight)
+            & (selected_a5 if preserve_topology else True)
         )
         if ranking == "reliability_support_target_posterior":
             rank_key = lambda index: (
@@ -484,6 +532,9 @@ def calibrate_a7_soft_edit_weights(
 
         output[:, part_index] = calibrated_part
         output_part32 = calibrated_part.astype(np.float32)
+        selection_crossing_count = int(
+            np.count_nonzero((output_part32 >= threshold) != selected_a5)
+        ) if preserve_topology else 0
         restored_target_mass = float(
             np.sum(output_part32.astype(np.float64) * target_part, dtype=np.float64)
         )
@@ -501,6 +552,8 @@ def calibrate_a7_soft_edit_weights(
                 cap_saturated_count=len(saturated_indices),
                 candidate_indices=candidate_indices,
                 carrier_min_pair_support=carrier_min_pair_support,
+                frozen=False,
+                selection_crossing_count=selection_crossing_count,
                 weight_l1_from_a5=float(
                     np.sum(np.abs(output_part32.astype(np.float64) - a5_part))
                 ),
@@ -515,6 +568,9 @@ def calibrate_a7_soft_edit_weights(
         "minimum_carrier_support_ratio": carrier_support_ratio,
         "minimum_carrier_existing_weight": carrier_existing_weight,
         "carrier_ranking": ranking,
+        "frozen_part_indices": sorted(frozen_parts),
+        "selection_threshold": threshold,
+        "preserve_selection_topology": preserve_topology,
         "per_part": per_part,
         "weight_l1_from_a5": float(
             np.sum(np.abs(output32.astype(np.float64) - a5), dtype=np.float64)

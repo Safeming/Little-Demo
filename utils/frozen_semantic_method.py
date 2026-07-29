@@ -97,7 +97,11 @@ def validate_a7_temporal_contract(
             raise ValueError(f"A7 contract must not use c21 in {field}")
 
     freeze_id = str(payload.get("freeze_id", ""))
-    if freeze_id not in {"a7_temporal_reliable_v1", "a7_temporal_reliable_v1_1"}:
+    if freeze_id not in {
+        "a7_temporal_reliable_v1",
+        "a7_temporal_reliable_v1_1",
+        "a7_renderer_aligned_v2_canary_377",
+    }:
         raise ValueError("unsupported A7 contract freeze_id")
     required_values = dict(_A7_REQUIRED_VALUES)
     required_values["freeze_id"] = freeze_id
@@ -127,6 +131,24 @@ def validate_a7_temporal_contract(
         for field, expected in expected_policy.items():
             if payload.get(field) != expected:
                 raise ValueError(f"A7 v1.1 contract {field} must be {expected!r}")
+    if freeze_id == "a7_renderer_aligned_v2_canary_377":
+        expected_policy = {
+            "subject": "377",
+            "evidence_mode": "renderer_aligned",
+            "renderer_attribution": "colors_gradient",
+            "coverage_freeze_threshold": 0.8,
+            "frozen_parts": ["face", "upper", "shoes", "skin"],
+            "selection_threshold": 0.2,
+            "preserve_a5_selection_topology": True,
+            "renderer_contribution_epsilon": 1.0e-8,
+            "renderer_boundary_radius": 6,
+            "minimum_carrier_support_ratio": 0.5,
+            "minimum_carrier_existing_weight": 0.2,
+            "carrier_ranking": "reliability_support_target_posterior",
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v2 contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(

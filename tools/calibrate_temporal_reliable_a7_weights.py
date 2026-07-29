@@ -94,14 +94,31 @@ def evaluate_candidate(
     minimum_carrier_support_ratio: float = 0.0,
     minimum_carrier_existing_weight: float = 0.0,
     carrier_ranking: str = "posterior_target_reliability_support",
+    evidence_mode: str = "footprint",
+    frozen_part_indices: tuple[int, ...] | list[int] = (),
+    selection_threshold: float = 0.0,
+    preserve_selection_topology: bool = False,
 ) -> dict:
+    mode = str(evidence_mode)
+    if mode == "renderer_aligned":
+        target_key = "renderer_target_contribution_weight"
+        outer_key = "renderer_outer_contribution_weight"
+        target_flicker_key = "renderer_target_contribution_flicker"
+        outer_flicker_key = "renderer_outer_contribution_flicker"
+        boundary_key = "renderer_boundary_contribution_flicker"
+    elif mode == "footprint":
+        target_key = "temporal_target_ratio_mean"
+        outer_key = "temporal_outer_ratio_mean"
+        target_flicker_key = "temporal_target_flicker"
+        outer_flicker_key = "temporal_outer_flicker"
+        boundary_key = "temporal_boundary_crossing_rate"
+    else:
+        raise ValueError(f"unsupported evidence_mode: {mode}")
     reliability, reliability_summary = compute_temporal_reliability(
         consecutive_visible_count=evidence["temporal_consecutive_visible_count"],
-        temporal_outer_flicker=evidence["temporal_outer_flicker"],
-        temporal_boundary_crossing_rate=evidence[
-            "temporal_boundary_crossing_rate"
-        ],
-        temporal_target_flicker=evidence["temporal_target_flicker"],
+        temporal_outer_flicker=evidence[outer_flicker_key],
+        temporal_boundary_crossing_rate=evidence[boundary_key],
+        temporal_target_flicker=evidence[target_flicker_key],
         lambda_outer=float(parameters["lambda_outer"]),
         lambda_boundary=float(parameters["lambda_boundary"]),
         lambda_target=float(parameters["lambda_target"]),
@@ -110,8 +127,8 @@ def evaluate_candidate(
     weights, calibration_summary = calibrate_a7_soft_edit_weights(
         a5_weights=a5_weights,
         semantic_probs=semantic_probs,
-        temporal_target_ratio_mean=evidence["temporal_target_ratio_mean"],
-        temporal_outer_ratio_mean=evidence["temporal_outer_ratio_mean"],
+        temporal_target_ratio_mean=evidence[target_key],
+        temporal_outer_ratio_mean=evidence[outer_key],
         temporal_reliability=reliability,
         consecutive_visible_count=evidence["temporal_consecutive_visible_count"],
         rho=float(parameters["rho"]),
@@ -120,17 +137,18 @@ def evaluate_candidate(
         minimum_carrier_support_ratio=float(minimum_carrier_support_ratio),
         minimum_carrier_existing_weight=float(minimum_carrier_existing_weight),
         carrier_ranking=str(carrier_ranking),
+        frozen_part_indices=frozen_part_indices,
+        selection_threshold=float(selection_threshold),
+        preserve_selection_topology=bool(preserve_selection_topology),
     )
 
     support = evidence["temporal_consecutive_visible_count"] >= int(
         parameters["min_pair_support"]
     )
-    target = np.asarray(evidence["temporal_target_ratio_mean"], dtype=np.float64)
-    outer = np.asarray(evidence["temporal_outer_ratio_mean"], dtype=np.float64)
-    boundary = np.asarray(
-        evidence["temporal_boundary_crossing_rate"], dtype=np.float64
-    )
-    outer_flicker = np.asarray(evidence["temporal_outer_flicker"], dtype=np.float64)
+    target = np.asarray(evidence[target_key], dtype=np.float64)
+    outer = np.asarray(evidence[outer_key], dtype=np.float64)
+    boundary = np.asarray(evidence[boundary_key], dtype=np.float64)
+    outer_flicker = np.asarray(evidence[outer_flicker_key], dtype=np.float64)
     a5 = np.asarray(a5_weights, dtype=np.float64)
     calibrated = np.asarray(weights, dtype=np.float64)
 
@@ -143,6 +161,9 @@ def evaluate_candidate(
         )
         coverage = _safe_ratio(supported_weight, a5_weight_sum)
         calibration = calibration_summary["per_part"][part_index]
+        if int(calibration.get("selection_crossing_count", 0)) > 0:
+            invalid_reasons.append("selection_topology_crossing")
+            invalid_reasons.append(f"selection_topology_crossing:{part_name}")
         deficit_limit = 0.02 * float(calibration["a5_target_mass"])
         deficit_excess = float(calibration["remaining_deficit"]) > deficit_limit + 1e-8
         if a5_weight_sum > 0.0 and coverage < float(
@@ -221,6 +242,7 @@ def evaluate_candidate(
         "per_part": per_part,
         "reliability_summary": reliability_summary,
         "calibration_summary": calibration_summary,
+        "evidence_mode": mode,
     }
 
 
@@ -317,6 +339,15 @@ def main(argv: list[str] | None = None) -> int:
                 contract.get(
                     "carrier_ranking", "posterior_target_reliability_support"
                 )
+            ),
+            evidence_mode=str(contract.get("evidence_mode", "footprint")),
+            frozen_part_indices=tuple(
+                PART_NAMES.index(part)
+                for part in contract.get("frozen_parts", [])
+            ),
+            selection_threshold=float(contract.get("selection_threshold", 0.0)),
+            preserve_selection_topology=bool(
+                contract.get("preserve_a5_selection_topology", False)
             ),
         )
         candidate_dir = output_dir / identifier

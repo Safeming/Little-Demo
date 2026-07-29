@@ -165,3 +165,45 @@ def test_proxy_marks_low_support_candidate_invalid():
 
     assert result["valid"] is False
     assert "evidence_support_coverage" in result["invalid_reasons"]
+
+
+def test_renderer_aligned_candidate_uses_renderer_fields_and_preserves_policy():
+    from tools.calibrate_temporal_reliable_a7_weights import evaluate_candidate
+
+    shape = (3, len(PART_NAMES))
+    a5 = np.full(shape, 0.6, dtype=np.float32)
+    evidence = {
+        "temporal_consecutive_visible_count": np.full(shape, 100, dtype=np.int32),
+        "temporal_target_ratio_mean": np.full(shape, 0.1, dtype=np.float32),
+        "temporal_outer_ratio_mean": np.full(shape, 0.9, dtype=np.float32),
+        "temporal_outer_flicker": np.full(shape, 0.9, dtype=np.float32),
+        "temporal_boundary_crossing_rate": np.full(shape, 0.9, dtype=np.float32),
+        "temporal_target_flicker": np.full(shape, 0.9, dtype=np.float32),
+        "renderer_target_contribution_weight": np.full(shape, 0.8, dtype=np.float32),
+        "renderer_outer_contribution_weight": np.full(shape, 0.2, dtype=np.float32),
+        "renderer_target_contribution_flicker": np.full(shape, 0.1, dtype=np.float32),
+        "renderer_outer_contribution_flicker": np.full(shape, 0.1, dtype=np.float32),
+        "renderer_boundary_contribution_flicker": np.full(shape, 0.1, dtype=np.float32),
+    }
+    result = evaluate_candidate(
+        a5_weights=a5,
+        semantic_probs=np.full(shape, 0.9, dtype=np.float32),
+        evidence=evidence,
+        parameters={
+            "lambda_outer": 0.25,
+            "lambda_boundary": 0.25,
+            "lambda_target": 0.0,
+            "rho": 0.9,
+            "min_pair_support": 8,
+        },
+        max_weight_scale_from_posterior=1.0,
+        minimum_evidence_support_coverage=0.8,
+        evidence_mode="renderer_aligned",
+        frozen_part_indices=(5,),
+        selection_threshold=0.2,
+        preserve_selection_topology=True,
+    )
+
+    assert result["evidence_mode"] == "renderer_aligned"
+    np.testing.assert_array_equal(result["weights"][:, 5], a5[:, 5])
+    assert all(row["selection_crossing_count"] == 0 for row in result["calibration_summary"]["per_part"])

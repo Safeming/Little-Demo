@@ -409,6 +409,42 @@ def test_water_filling_guards_existing_carriers_and_ranks_reliability_first():
     assert 3 not in part["candidate_gaussian_indices"]
 
 
+def test_water_filling_preserves_frozen_parts_bitwise():
+    from utils.temporal_reliability_calibration import calibrate_a7_soft_edit_weights
+
+    inputs = _water_filling_inputs()
+    calibrated, summary = calibrate_a7_soft_edit_weights(
+        **inputs,
+        frozen_part_indices=(0,),
+    )
+
+    np.testing.assert_array_equal(calibrated[:, 0], inputs["a5_weights"][:, 0])
+    assert summary["per_part"][0]["frozen"] is True
+
+
+def test_water_filling_preserves_a5_selection_topology():
+    from utils.temporal_reliability_calibration import calibrate_a7_soft_edit_weights
+
+    a5 = np.array([[0.21], [0.8], [0.1]], dtype=np.float32)
+    calibrated, summary = calibrate_a7_soft_edit_weights(
+        a5_weights=a5,
+        semantic_probs=np.array([[0.5], [1.0], [1.0]], dtype=np.float32),
+        temporal_target_ratio_mean=np.full((3, 1), 0.8, dtype=np.float32),
+        temporal_outer_ratio_mean=np.full((3, 1), 0.2, dtype=np.float32),
+        temporal_reliability=np.array([[0.1], [0.5], [1.0]], dtype=np.float32),
+        consecutive_visible_count=np.full((3, 1), 100, dtype=np.int32),
+        rho=0.9,
+        min_pair_support=8,
+        max_weight_scale_from_posterior=1.0,
+        minimum_carrier_existing_weight=0.2,
+        selection_threshold=0.2,
+        preserve_selection_topology=True,
+    )
+
+    np.testing.assert_array_equal(calibrated[:, 0] >= 0.2, a5[:, 0] >= 0.2)
+    assert summary["per_part"][0]["selection_crossing_count"] == 0
+
+
 @pytest.mark.parametrize("seed", range(20))
 def test_water_filling_randomized_invariants_are_deterministic(seed):
     from utils.temporal_reliability_calibration import calibrate_a7_soft_edit_weights
