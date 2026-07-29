@@ -26,8 +26,10 @@ from utils.frozen_semantic_method import load_a7_temporal_contract
 from utils.part_label_bank import PART_NAMES, load_part_label_bank
 from utils.renderer_aligned_temporal_evidence import (
     accumulate_renderer_contribution_frame,
+    append_renderer_contribution_sequence,
     extract_renderer_region_contributions,
     finalize_renderer_contribution_evidence,
+    finalize_renderer_contribution_sequence,
 )
 
 
@@ -68,7 +70,7 @@ def _save_evidence(
     arrays = {key: np.asarray(value) for key, value in evidence.items()}
     arrays.update(
         {
-            "schema_version": np.array(2, dtype=np.int32),
+            "schema_version": np.array(3, dtype=np.int32),
             "point_count": np.array(evidence["temporal_visible_count"].shape[0], dtype=np.int64),
             "part_names": np.asarray(PART_NAMES, dtype="U16"),
             "cameras": np.asarray(contract["evidence_cameras"], dtype="U3"),
@@ -77,7 +79,7 @@ def _save_evidence(
             "frame_stride": np.array(contract["evidence_frame_stride"], dtype=np.int64),
             "formal_protocol": np.array(1, dtype=np.uint8),
             "sample_count": np.array(sample_count, dtype=np.int64),
-            "evidence_mode": np.array("renderer_aligned"),
+            "evidence_mode": np.array(contract["evidence_mode"]),
             "renderer_attribution": np.array("colors_gradient"),
             "a7_contract_fingerprint": np.array(contract["_fingerprint"]),
             "base_method_freeze_fingerprint": np.array(
@@ -157,6 +159,7 @@ def run(args: argparse.Namespace, contract: dict) -> dict:
     ]
     background = torch.zeros(3, dtype=torch.float32, device="cuda")
     state: dict = {}
+    sequence_state: dict = {}
     with torch.no_grad():
         gaussians = GaussianModel(config.model.gaussian)
         scene = Scene(config, gaussians, str(args.output.resolve().parent))
@@ -234,12 +237,23 @@ def run(args: argparse.Namespace, contract: dict) -> dict:
             boundary_contribution=boundary_values,
             visibility_epsilon=float(contract["renderer_contribution_epsilon"]),
         )
+        append_renderer_contribution_sequence(
+            sequence_state,
+            camera_index=list(contract["evidence_cameras"]).index(camera),
+            frame_index=frame,
+            target_contribution=target_values,
+            outer_contribution=outer_values,
+            boundary_contribution=boundary_values,
+        )
         print(f"[A7 renderer evidence] {sample_index + 1}/{len(expected)} {image_name}", flush=True)
         del render_pkg, attribution_colors, deformed, base_colors
         if (sample_index + 1) % 10 == 0:
             torch.cuda.empty_cache()
 
-    evidence = finalize_renderer_contribution_evidence(state)
+    evidence = {
+        **finalize_renderer_contribution_evidence(state),
+        **finalize_renderer_contribution_sequence(sequence_state),
+    }
     fingerprint = _save_evidence(
         args.output,
         evidence=evidence,

@@ -67,3 +67,35 @@ def test_renderer_contribution_accumulator_exports_raw_and_compatibility_fields(
     assert np.all(result["temporal_outer_ratio_mean"] >= 0.0)
     assert np.all(result["temporal_outer_ratio_mean"] <= 1.0)
     assert np.all(np.isfinite(result["renderer_boundary_contribution_flicker"]))
+
+
+def test_renderer_contribution_sequence_exports_float16_samples_and_metadata():
+    from utils.renderer_aligned_temporal_evidence import (
+        append_renderer_contribution_sequence,
+        finalize_renderer_contribution_sequence,
+    )
+
+    state = {}
+    for camera_index, frame_index, scale in ((0, 0, 1.0), (0, 5, 2.0), (1, 0, 3.0)):
+        values = np.full((2, 1), scale, dtype=np.float32)
+        append_renderer_contribution_sequence(
+            state,
+            camera_index=camera_index,
+            frame_index=frame_index,
+            target_contribution=values,
+            outer_contribution=values * 2.0,
+            boundary_contribution=values * 3.0,
+        )
+
+    result = finalize_renderer_contribution_sequence(state)
+
+    assert result["renderer_target_contribution_sequence"].shape == (3, 2, 1)
+    assert result["renderer_target_contribution_sequence"].dtype == np.float16
+    assert result["renderer_outer_contribution_sequence"].dtype == np.float16
+    assert result["renderer_boundary_contribution_sequence"].dtype == np.float16
+    assert result["renderer_sequence_camera_index"].tolist() == [0, 0, 1]
+    assert result["renderer_sequence_frame_index"].tolist() == [0, 5, 0]
+    np.testing.assert_allclose(
+        result["renderer_boundary_contribution_sequence"][:, 0, 0],
+        np.array([3.0, 6.0, 9.0], dtype=np.float16),
+    )

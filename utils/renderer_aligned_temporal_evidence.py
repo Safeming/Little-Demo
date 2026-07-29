@@ -9,6 +9,61 @@ import torch
 SIGNALS = ("target", "outer", "boundary")
 
 
+def append_renderer_contribution_sequence(
+    state,
+    *,
+    camera_index: int,
+    frame_index: int,
+    target_contribution,
+    outer_contribution,
+    boundary_contribution,
+) -> None:
+    if not isinstance(state, MutableMapping):
+        raise ValueError("state must be a mutable mapping")
+    if isinstance(camera_index, bool) or not isinstance(camera_index, (int, np.integer)):
+        raise ValueError("camera_index must be an integer")
+    if isinstance(frame_index, bool) or not isinstance(frame_index, (int, np.integer)):
+        raise ValueError("frame_index must be an integer")
+    arrays = {
+        "target": np.asarray(target_contribution, dtype=np.float32),
+        "outer": np.asarray(outer_contribution, dtype=np.float32),
+        "boundary": np.asarray(boundary_contribution, dtype=np.float32),
+    }
+    shape = arrays["target"].shape
+    if len(shape) != 2 or any(value.shape != shape for value in arrays.values()):
+        raise ValueError("renderer sequence contributions must have matching shape [N, C]")
+    if any(not np.all(np.isfinite(value)) or np.any(value < 0.0) for value in arrays.values()):
+        raise ValueError("renderer sequence contributions must be finite and non-negative")
+    if not state:
+        state["shape"] = shape
+        state["camera_indices"] = []
+        state["frame_indices"] = []
+        for signal in SIGNALS:
+            state[signal] = []
+    if tuple(state.get("shape", ())) != shape:
+        raise ValueError("renderer sequence sample shape changed")
+    state["camera_indices"].append(int(camera_index))
+    state["frame_indices"].append(int(frame_index))
+    for signal, value in arrays.items():
+        state[signal].append(value.astype(np.float16))
+
+
+def finalize_renderer_contribution_sequence(state) -> dict[str, np.ndarray]:
+    if not isinstance(state, MutableMapping) or not state.get("camera_indices"):
+        raise ValueError("cannot finalize an empty renderer contribution sequence")
+    return {
+        "renderer_target_contribution_sequence": np.stack(state["target"], axis=0),
+        "renderer_outer_contribution_sequence": np.stack(state["outer"], axis=0),
+        "renderer_boundary_contribution_sequence": np.stack(state["boundary"], axis=0),
+        "renderer_sequence_camera_index": np.asarray(
+            state["camera_indices"], dtype=np.int16
+        ),
+        "renderer_sequence_frame_index": np.asarray(
+            state["frame_indices"], dtype=np.int32
+        ),
+    }
+
+
 def extract_renderer_region_contributions(
     *,
     rendered: torch.Tensor,
