@@ -105,3 +105,12 @@ def test_bounded_retention_marks_unreachable_target_floor_invalid():
     assert summary["valid"] is False
     assert summary["per_part"][0]["remaining_deficit"] > 0.0
     assert "target_floor_unreachable:0" in summary["invalid_reasons"]
+
+
+def test_target_floor_deficit_uses_scale_aware_float_tolerance():
+    from utils.bounded_temporal_calibration import (
+        target_floor_deficit_is_significant,
+    )
+
+    assert target_floor_deficit_is_significant(5.9e-6, 340.0) is False
+    assert target_floor_deficit_is_significant(1.0e-3, 340.0) is True

@@ -104,3 +104,29 @@ def test_renderer_objective_cli_generates_exact_two_deterministic_candidates(tmp
         assert (output / row["candidate_id"] / "part_label_bank.npz").is_file()
         assert row["calibration_summary"]["maximum_weight_above_a5"] == 0.0
         assert "aggregate_ratios" in row["renderer_sequence_objective"]
+
+
+def test_evidence_screen_tolerates_float_boundary_but_records_real_target_miss():
+    from tools.calibrate_renderer_objective_a7_weights import _evidence_screen
+
+    objective = {
+        "per_part_ratios": {
+            "0": {
+                "target_mean_response": 0.94999998,
+                "outer_mean_response": 0.95,
+                "outer_adjacent_absolute_change": 0.95,
+                "boundary_adjacent_absolute_change": 0.95,
+            },
+            "3": {
+                "target_mean_response": 0.9494,
+                "outer_mean_response": 0.95,
+                "outer_adjacent_absolute_change": 0.95,
+                "boundary_adjacent_absolute_change": 0.95,
+            },
+        }
+    }
+
+    result = _evidence_screen(objective, [0, 3])
+
+    assert result["checks"]["0"]["target_response_ge_0_95"] is True
+    assert result["checks"]["3"]["target_response_ge_0_95"] is False

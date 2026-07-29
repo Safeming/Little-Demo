@@ -102,7 +102,7 @@ def _evidence_screen(objective: dict, processed_parts: list[int]) -> dict:
     for part_index in processed_parts:
         ratios = objective["per_part_ratios"][str(part_index)]
         part_checks = {
-            "target_response_ge_0_95": ratios["target_mean_response"] >= 0.95,
+            "target_response_ge_0_95": ratios["target_mean_response"] >= 0.95 - 1.0e-6,
             "outer_mean_le_1": ratios["outer_mean_response"] <= 1.0,
             "outer_adjacent_le_1": ratios["outer_adjacent_absolute_change"] <= 1.0,
             "boundary_adjacent_le_1": ratios[

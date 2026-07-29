@@ -3,6 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 
+def target_floor_deficit_is_significant(
+    remaining_deficit: float, a5_target_mass: float
+) -> bool:
+    tolerance = max(1.0e-6, 1.0e-6 * abs(float(a5_target_mass)))
+    return float(remaining_deficit) > tolerance
+
+
 def _matrix(value, *, name: str, shape=None, integer: bool = False) -> np.ndarray:
     array = np.asarray(value)
     if array.ndim != 2 or (shape is not None and array.shape != shape):
@@ -151,7 +158,7 @@ def calibrate_bounded_a7_weights(
             np.sum(output32.astype(np.float64) * target_part, dtype=np.float64)
         )
         remaining = max(0.0, target_floor - restored_target_mass)
-        if remaining > 1.0e-6:
+        if target_floor_deficit_is_significant(remaining, a5_target_mass):
             invalid_reasons.append(f"target_floor_unreachable:{part_index}")
         if crossings:
             invalid_reasons.append(f"selection_topology_crossing:{part_index}")
