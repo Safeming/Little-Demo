@@ -16,6 +16,9 @@ A7_V2_CONTRACT_PATH = Path(
 A7_V3_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_renderer_objective_v3_canary_377.json"
 )
+A7_V4_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_sparse_robust_v4_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -182,3 +185,27 @@ def test_frozen_a7_v3_contract_freezes_rendered_objective_policies():
     ]
     assert "c21" not in contract["evidence_cameras"]
     assert "c21" not in contract["validation_cameras"]
+
+
+def test_frozen_a7_v4_contract_freezes_sparse_robust_capacity_policy():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V4_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_sparse_robust_v4_canary_377"
+    assert contract["source_evidence_sha256"] == (
+        "17142db0063bb63b84b8f0a777e9ca9ec21c1d4084608aa791f79e8e595ab965"
+    )
+    assert contract["source_evidence_contract_fingerprint"] == (
+        "816c975183a868c97ab156d866d1411d03df1265e9ad98f885cf50f3d637e508"
+    )
+    assert contract["processed_parts"] == ["hair", "lower"]
+    assert contract["frozen_parts"] == ["face", "upper", "shoes", "skin"]
+    assert contract["coordinate_reduction_fractions"] == [0.05, 0.1]
+    assert contract["maximum_changed_fraction"] == pytest.approx(0.2)
+    assert contract["minimum_camera_target_ratio"] == pytest.approx(0.98)
+    assert contract["loco_all_folds_required"] is True
+    assert contract["minimum_active_temporal_gain"] == pytest.approx(0.005)
+    assert contract["maximum_part_soft_iou_drop"] == pytest.approx(0.01)
+    assert contract["preserve_a5_selection_topology"] is True
+    assert contract["maximum_weight_above_a5"] == pytest.approx(0.0)
