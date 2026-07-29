@@ -13,6 +13,9 @@ A7_V11_CONTRACT_PATH = Path(
 A7_V2_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_renderer_aligned_v2_canary_377.json"
 )
+A7_V3_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_renderer_objective_v3_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -147,3 +150,35 @@ def test_frozen_a7_v2_contract_freezes_renderer_and_part_policy():
     assert contract["frozen_parts"] == ["face", "upper", "shoes", "skin"]
     assert contract["selection_threshold"] == pytest.approx(0.2)
     assert contract["preserve_a5_selection_topology"] is True
+
+
+def test_frozen_a7_v3_contract_freezes_rendered_objective_policies():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V3_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_renderer_objective_v3_canary_377"
+    assert contract["subject"] == "377"
+    assert contract["evidence_mode"] == "renderer_aligned_sequence"
+    assert contract["frozen_parts"] == ["face", "upper", "shoes", "skin"]
+    assert contract["selection_threshold"] == pytest.approx(0.2)
+    assert contract["preserve_a5_selection_topology"] is True
+    assert contract["maximum_weight_above_a5"] == pytest.approx(0.0)
+    assert contract["candidate_policies"] == [
+        {
+            "name": "bounded_damping_005",
+            "minimum_weight_ratio_from_a5": 0.95,
+            "rho": 0.95,
+            "restore_target_mass": False,
+            "maximum_part_weight_l1_from_a5": 12.0,
+        },
+        {
+            "name": "bounded_retention_010",
+            "minimum_weight_ratio_from_a5": 0.9,
+            "rho": 0.95,
+            "restore_target_mass": True,
+            "maximum_part_weight_l1_from_a5": 12.0,
+        },
+    ]
+    assert "c21" not in contract["evidence_cameras"]
+    assert "c21" not in contract["validation_cameras"]

@@ -101,6 +101,7 @@ def validate_a7_temporal_contract(
         "a7_temporal_reliable_v1",
         "a7_temporal_reliable_v1_1",
         "a7_renderer_aligned_v2_canary_377",
+        "a7_renderer_objective_v3_canary_377",
     }:
         raise ValueError("unsupported A7 contract freeze_id")
     required_values = dict(_A7_REQUIRED_VALUES)
@@ -149,6 +150,44 @@ def validate_a7_temporal_contract(
         for field, expected in expected_policy.items():
             if payload.get(field) != expected:
                 raise ValueError(f"A7 v2 contract {field} must be {expected!r}")
+    if freeze_id == "a7_renderer_objective_v3_canary_377":
+        expected_policy = {
+            "subject": "377",
+            "evidence_mode": "renderer_aligned_sequence",
+            "renderer_attribution": "colors_gradient",
+            "coverage_freeze_threshold": 0.8,
+            "frozen_parts": ["face", "upper", "shoes", "skin"],
+            "selection_threshold": 0.2,
+            "preserve_a5_selection_topology": True,
+            "renderer_contribution_epsilon": 1.0e-8,
+            "renderer_boundary_radius": 6,
+            "minimum_carrier_support_ratio": 0.5,
+            "minimum_carrier_existing_weight": 0.2,
+            "carrier_ranking": "reliability_support_target_posterior",
+            "lambda_outer": 1.0,
+            "lambda_boundary": 0.5,
+            "lambda_target": 0.25,
+            "maximum_weight_above_a5": 0.0,
+            "candidate_policies": [
+                {
+                    "name": "bounded_damping_005",
+                    "minimum_weight_ratio_from_a5": 0.95,
+                    "rho": 0.95,
+                    "restore_target_mass": False,
+                    "maximum_part_weight_l1_from_a5": 12.0,
+                },
+                {
+                    "name": "bounded_retention_010",
+                    "minimum_weight_ratio_from_a5": 0.9,
+                    "rho": 0.95,
+                    "restore_target_mass": True,
+                    "maximum_part_weight_l1_from_a5": 12.0,
+                },
+            ],
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v3 contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(
