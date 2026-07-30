@@ -57,5 +57,5 @@
 - [x] Run formal eight-camera capacity and require 8/8 folds plus the frozen construction gates.
 - [x] Run the complete focused A7 regression, shell syntax, Python compilation, JSON validation, and `git diff --check`.
 - [x] Review the scoped diff for test leakage and marker correctness.
-- [ ] Commit only v5.3 files and launch the runner with `setsid` on the free GPU.
-- [ ] Confirm evidence/capacity progress before reporting the run status.
+- [x] Commit only v5.3 files and launch the runner with `setsid` on the free GPU.
+- [x] Confirm evidence/capacity progress before reporting the run status.
