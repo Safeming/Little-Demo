@@ -22,7 +22,8 @@ from utils.frozen_semantic_method import load_a7_temporal_contract
 from utils.part_label_bank import PART_NAMES, load_part_label_bank, save_a7_part_label_bank
 
 
-CANDIDATE_ID = "dual_evidence_constrained_v5"
+V5_CANDIDATE_ID = "dual_evidence_constrained_v5"
+V5_1_CANDIDATE_ID = "dual_evidence_constrained_v5_1"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,13 +49,22 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _load_evidence(path: Path, *, contract: dict, allow_canary: bool) -> tuple[dict, str]:
     evidence_sha256 = _file_sha256(path)
+    if (
+        not allow_canary
+        and contract.get("source_evidence_sha256")
+        and evidence_sha256 != contract["source_evidence_sha256"]
+    ):
+        raise ValueError("source evidence SHA-256 mismatch")
     with np.load(path, allow_pickle=False) as data:
         evidence = {key: data[key] for key in data.files}
     if str(evidence.get("output_fingerprint", "")) != _payload_fingerprint(evidence):
         raise ValueError("evidence output_fingerprint mismatch")
     if not bool(int(np.asarray(evidence.get("formal_protocol", 0)))) and not allow_canary:
         raise ValueError("non-formal evidence requires --allow-canary-inputs")
-    if str(evidence.get("a7_contract_fingerprint", "")) != contract["_fingerprint"]:
+    expected_evidence_contract = contract.get(
+        "source_evidence_contract_fingerprint", contract["_fingerprint"]
+    )
+    if str(evidence.get("a7_contract_fingerprint", "")) != expected_evidence_contract:
         raise ValueError("evidence A7 contract fingerprint mismatch")
     required = {
         "point_count",
@@ -143,11 +153,11 @@ def _load_evidence(path: Path, *, contract: dict, allow_canary: bool) -> tuple[d
     return evidence, evidence_sha256
 
 
-def _candidate_fingerprint(contract: dict, capacity: dict) -> str:
+def _candidate_fingerprint(contract: dict, capacity: dict, candidate_id: str) -> str:
     encoded = json.dumps(
         {
             "contract": contract["_fingerprint"],
-            "candidate_id": CANDIDATE_ID,
+            "candidate_id": candidate_id,
             "optimization": capacity["final"]["optimization"],
         },
         ensure_ascii=True,
@@ -160,8 +170,13 @@ def _candidate_fingerprint(contract: dict, capacity: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     contract = load_a7_temporal_contract(args.a7_contract, args.method_freeze)
-    if contract["freeze_id"] != "a7_dual_evidence_v5_canary_377":
-        raise ValueError("constrained calibration requires the A7 v5 contract")
+    candidate_ids = {
+        "a7_dual_evidence_v5_canary_377": V5_CANDIDATE_ID,
+        "a7_dual_evidence_v5_1_canary_377": V5_1_CANDIDATE_ID,
+    }
+    if contract["freeze_id"] not in candidate_ids:
+        raise ValueError("constrained calibration requires an A7 v5 contract")
+    candidate_id = candidate_ids[contract["freeze_id"]]
     if (
         not args.allow_canary_inputs
         and _file_sha256(args.v4_bank) != contract["source_v4_bank_sha256"]
@@ -179,6 +194,22 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("v4 bank weights must match A5")
     if int(np.asarray(evidence["point_count"])) != a5.shape[0]:
         raise ValueError("evidence point_count does not match A5 bank")
+    legacy_visibility_ratio = float(
+        contract.get(
+            "maximum_visibility_response_ratio",
+            contract.get("maximum_audit_visibility_response_ratio", 1.0),
+        )
+    )
+    training_visibility_ratio = float(
+        contract.get(
+            "maximum_training_visibility_response_ratio", legacy_visibility_ratio
+        )
+    )
+    audit_visibility_ratio = float(
+        contract.get(
+            "maximum_audit_visibility_response_ratio", legacy_visibility_ratio
+        )
+    )
 
     capacity = run_constrained_v5_capacity(
         a5_weights=a5,
@@ -211,9 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         maximum_camera_soft_iou_drop=float(
             contract["maximum_evidence_soft_iou_drop"]
         ),
-        maximum_camera_visibility_response_ratio=float(
-            contract["maximum_visibility_response_ratio"]
-        ),
+        maximum_camera_visibility_response_ratio=legacy_visibility_ratio,
         objective_mean_weight=float(contract["objective_mean_weight"]),
         objective_absolute_adjacent_weight=float(
             contract["objective_absolute_adjacent_weight"]
@@ -222,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         source_v4_minimum_camera_target_ratio=float(
             contract["source_v4_minimum_camera_target_ratio"]
         ),
+        maximum_training_visibility_response_ratio=training_visibility_ratio,
+        maximum_audit_visibility_response_ratio=audit_visibility_ratio,
     )
     weights = np.asarray(capacity.pop("weights"), dtype=np.float32)
     selected_a5 = a5 >= float(contract["selection_threshold"])
@@ -234,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     frozen_exact = bool(np.array_equal(weights[:, frozen_indices], a5[:, frozen_indices]))
     valid = bool(
         capacity["all_folds_passed"]
+        and capacity["final"]["construction_evaluation"]["passed"]
         and capacity["final"]["evaluation"]["passed"]
         and crossing_count == 0
         and maximum_above <= 1.0e-7
@@ -242,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     invalid_reasons = []
     if not capacity["all_folds_passed"]:
         invalid_reasons.append("loco_fold_failure")
+    if not capacity["final"]["construction_evaluation"]["passed"]:
+        invalid_reasons.append("final_construction_gate_failure")
     if not capacity["final"]["evaluation"]["passed"]:
         invalid_reasons.append("final_evidence_gate_failure")
     if crossing_count:
@@ -251,9 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     if not frozen_exact:
         invalid_reasons.append("frozen_part_changed")
 
-    candidate_fingerprint = _candidate_fingerprint(contract, capacity)
+    candidate_fingerprint = _candidate_fingerprint(contract, capacity, candidate_id)
     output_dir = args.output_dir.resolve()
-    candidate_dir = output_dir / CANDIDATE_ID
+    candidate_dir = output_dir / candidate_id
     bank_path = candidate_dir / "part_label_bank.npz"
     reliability = (
         np.asarray(evidence["temporal_consecutive_visible_count"])
@@ -275,11 +309,11 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     summary = {
-        "candidate_id": CANDIDATE_ID,
+        "candidate_id": candidate_id,
         "candidate_config_fingerprint": candidate_fingerprint,
         "valid": valid,
         "invalid_reasons": invalid_reasons,
-        "bank": str(Path(CANDIDATE_ID) / "part_label_bank.npz"),
+        "bank": str(Path(candidate_id) / "part_label_bank.npz"),
         "output_bank_fingerprint": bank_fingerprint,
         "selection_crossing_count": crossing_count,
         "maximum_weight_above_a5": maximum_above,
@@ -297,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         "a7_contract_fingerprint": contract["_fingerprint"],
         "candidate_count": 1,
         "valid_candidate_count": int(valid),
-        "validation_shortlist": [CANDIDATE_ID] if valid else [],
+        "validation_shortlist": [candidate_id] if valid else [],
         "candidates": [summary],
     }
     _write_json(output_dir / "candidate_index.json", index)

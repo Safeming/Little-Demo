@@ -22,6 +22,9 @@ A7_V4_CONTRACT_PATH = Path(
 A7_V5_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_dual_evidence_v5_canary_377.json"
 )
+A7_V5_1_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_dual_evidence_v5_1_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -236,3 +239,23 @@ def test_frozen_a7_v5_contract_freezes_dual_evidence_repair_policy():
     assert contract["maximum_part_soft_iou_drop"] == pytest.approx(0.01)
     assert contract["preserve_a5_selection_topology"] is True
     assert contract["maximum_weight_above_a5"] == pytest.approx(0.0)
+
+
+def test_frozen_a7_v5_1_contract_separates_visibility_margin_and_audit_gate():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V5_1_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_dual_evidence_v5_1_canary_377"
+    assert contract["source_evidence_sha256"] == (
+        "3e04bd3c49dfa32c6dd74ca3313669536df85083e5c3dccd9b198acc5a10a141"
+    )
+    assert contract["source_evidence_contract_fingerprint"] == (
+        "88d3dbde71e79b3d06dddf5ad6b129cfb9a1a791d7ec4acfc88787c13bdbc63d"
+    )
+    assert contract["maximum_training_visibility_response_ratio"] == pytest.approx(
+        0.9995
+    )
+    assert contract["maximum_audit_visibility_response_ratio"] == pytest.approx(1.0)
+    assert contract["coordinate_reduction_fractions"] == [0.05, 0.1]
+    assert contract["maximum_hair_changed_count"] == 3

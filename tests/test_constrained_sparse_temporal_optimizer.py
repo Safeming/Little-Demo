@@ -50,6 +50,37 @@ def test_hair_compensation_opens_only_for_temporal_shortfall():
     ) is False
 
 
+def test_visibility_limits_require_construction_margin_not_weaker_than_audit():
+    from utils.constrained_sparse_temporal_optimizer import resolve_visibility_limits
+
+    assert resolve_visibility_limits(
+        maximum_training_visibility_response_ratio=0.9995,
+        maximum_audit_visibility_response_ratio=1.0,
+    ) == (0.9995, 1.0)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="training visibility"):
+        resolve_visibility_limits(
+            maximum_training_visibility_response_ratio=1.0,
+            maximum_audit_visibility_response_ratio=0.9995,
+        )
+
+
+def test_capacity_requires_both_construction_and_audit_evaluations():
+    from utils.constrained_sparse_temporal_optimizer import capacity_candidate_passes
+
+    assert capacity_candidate_passes(
+        {"passed": True}, {"passed": True}
+    ) is True
+    assert capacity_candidate_passes(
+        {"passed": False}, {"passed": True}
+    ) is False
+    assert capacity_candidate_passes(
+        {"passed": True}, {"passed": False}
+    ) is False
+
+
 def test_constraint_evaluation_reports_soft_iou_drop_per_camera():
     from utils.constrained_sparse_temporal_optimizer import (
         evaluate_constrained_part_weights,

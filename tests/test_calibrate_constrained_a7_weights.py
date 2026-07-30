@@ -39,7 +39,7 @@ def _save_dual_evidence(path: Path, contract_fingerprint: str, point_count: int)
     boundary = np.ones(sequence_shape, dtype=np.float16)
     unstable = np.tile(np.array([0.0, 2.0], dtype=np.float16), samples // 2)
     lower_index = PART_NAMES.index("lower")
-    target[:, 0, lower_index] = 0.1
+    target[:, 0, lower_index] = unstable + 0.1
     outer[:, 0, lower_index] = unstable
     boundary[:, 0, lower_index] = unstable
     selection_target = np.full(sequence_shape, 0.01, dtype=np.float16)
@@ -162,3 +162,46 @@ def test_constrained_v5_loader_rejects_non_dual_attribution(tmp_path):
 
     with pytest.raises(ValueError, match="renderer_attribution"):
         _load_evidence(evidence, contract=contract, allow_canary=True)
+
+
+def test_constrained_v5_1_cli_reuses_v5_evidence_with_separate_visibility_gates(
+    tmp_path,
+):
+    from tools.calibrate_constrained_a7_weights import main
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    freeze = Path("configs/semantic/frozen_a5_main_method_v1.json")
+    v5_contract = load_a7_temporal_contract(
+        "configs/semantic/frozen_a7_dual_evidence_v5_canary_377.json", freeze
+    )
+    v5_1_contract_path = Path(
+        "configs/semantic/frozen_a7_dual_evidence_v5_1_canary_377.json"
+    )
+    weights = np.full((5, len(PART_NAMES)), 0.6, dtype=np.float32)
+    v4_weights = weights.copy()
+    v4_weights[0, PART_NAMES.index("lower")] *= 0.9
+    a5 = tmp_path / "a5.npz"
+    v4 = tmp_path / "v4.npz"
+    evidence = tmp_path / "evidence.npz"
+    output = tmp_path / "candidates"
+    _save_bank(a5, weights)
+    _save_bank(v4, v4_weights)
+    _save_dual_evidence(evidence, v5_contract["_fingerprint"], len(weights))
+
+    assert main(
+        [
+            "--a5-bank", str(a5),
+            "--v4-bank", str(v4),
+            "--evidence", str(evidence),
+            "--method-freeze", str(freeze),
+            "--a7-contract", str(v5_1_contract_path),
+            "--output-dir", str(output),
+            "--allow-canary-inputs",
+        ]
+    ) == 0
+
+    index = json.loads((output / "candidate_index.json").read_text())
+    assert index["validation_shortlist"] == ["dual_evidence_constrained_v5_1"]
+    capacity = index["candidates"][0]["capacity_summary"]
+    assert capacity["maximum_training_visibility_response_ratio"] == 0.9995
+    assert capacity["maximum_audit_visibility_response_ratio"] == 1.0

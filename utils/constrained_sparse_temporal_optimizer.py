@@ -64,6 +64,36 @@ def should_open_hair_compensation(active_evaluation: dict, maximum_count: int) -
     )
 
 
+def resolve_visibility_limits(
+    *,
+    maximum_training_visibility_response_ratio: float,
+    maximum_audit_visibility_response_ratio: float,
+) -> tuple[float, float]:
+    training = float(maximum_training_visibility_response_ratio)
+    audit = float(maximum_audit_visibility_response_ratio)
+    if training > audit:
+        raise ValueError("training visibility ratio must not exceed the audit ratio")
+    return training, audit
+
+
+def capacity_candidate_passes(
+    construction_evaluation: dict, audit_evaluation: dict
+) -> bool:
+    return bool(
+        construction_evaluation.get("passed") and audit_evaluation.get("passed")
+    )
+
+
+def _changed_part_indices(a5_weights, candidate_weights, part_indices) -> tuple[int, ...]:
+    a5 = np.asarray(a5_weights)
+    candidate = np.asarray(candidate_weights)
+    return tuple(
+        int(index)
+        for index in part_indices
+        if np.any(np.abs(candidate[:, int(index)] - a5[:, int(index)]) > 1.0e-8)
+    )
+
+
 def evaluate_constrained_part_signals(
     *,
     base_signals,
@@ -351,11 +381,17 @@ def _evaluate_active_candidate(
     camera_index,
     camera_ids,
     part_indices,
+    constraint_part_indices=None,
     minimum_camera_target_ratio: float,
     maximum_camera_soft_iou_drop: float,
     maximum_camera_visibility_response_ratio: float,
     minimum_active_temporal_gain: float,
 ) -> dict:
+    constrained_parts = (
+        tuple(int(index) for index in part_indices)
+        if constraint_part_indices is None
+        else tuple(int(index) for index in constraint_part_indices)
+    )
     per_part = {}
     for part_index in part_indices:
         metrics = evaluate_constrained_part_weights(
@@ -386,7 +422,7 @@ def _evaluate_active_candidate(
         <= float(maximum_camera_soft_iou_drop) + 1.0e-7
         and float(np.max(per_part[str(index)]["visibility_response_ratio"]))
         <= float(maximum_camera_visibility_response_ratio) + 1.0e-7
-        for index in part_indices
+        for index in constrained_parts
     )
     temporal_ok = (
         float(np.mean(aggregate_outer))
@@ -408,6 +444,7 @@ def _evaluate_active_candidate(
             float(value) for value in aggregate_boundary
         ],
         "constraints_passed": bool(constraints_ok),
+        "constraint_part_indices": [int(index) for index in constrained_parts],
         "temporal_passed": bool(temporal_ok),
         "passed": bool(constraints_ok and temporal_ok),
     }
@@ -481,6 +518,9 @@ def _optimize_v5_candidate(
         camera_index=camera_index,
         camera_ids=optimization_camera_ids,
         part_indices=(hair_index, lower_index),
+        constraint_part_indices=_changed_part_indices(
+            a5_weights, weights, (hair_index, lower_index)
+        ),
         minimum_camera_target_ratio=minimum_camera_target_ratio,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
         maximum_camera_visibility_response_ratio=maximum_camera_visibility_response_ratio,
@@ -549,11 +589,25 @@ def run_constrained_v5_capacity(
     objective_absolute_adjacent_weight: float,
     minimum_active_temporal_gain: float,
     source_v4_minimum_camera_target_ratio: float = 0.98,
+    maximum_training_visibility_response_ratio: float | None = None,
+    maximum_audit_visibility_response_ratio: float | None = None,
 ) -> dict:
     a5 = np.asarray(a5_weights, dtype=np.float32)
     v4 = np.asarray(v4_weights, dtype=np.float32)
     cameras = np.asarray(camera_index).reshape(-1)
     unique_cameras = tuple(int(value) for value in np.unique(cameras))
+    training_visibility, audit_visibility = resolve_visibility_limits(
+        maximum_training_visibility_response_ratio=(
+            maximum_camera_visibility_response_ratio
+            if maximum_training_visibility_response_ratio is None
+            else maximum_training_visibility_response_ratio
+        ),
+        maximum_audit_visibility_response_ratio=(
+            maximum_camera_visibility_response_ratio
+            if maximum_audit_visibility_response_ratio is None
+            else maximum_audit_visibility_response_ratio
+        ),
+    )
     kwargs = {
         "a5_weights": a5,
         "v4_weights": v4,
@@ -569,7 +623,7 @@ def run_constrained_v5_capacity(
         "maximum_hair_changed_count": int(maximum_hair_changed_count),
         "minimum_camera_target_ratio": float(minimum_camera_target_ratio),
         "maximum_camera_soft_iou_drop": float(maximum_camera_soft_iou_drop),
-        "maximum_camera_visibility_response_ratio": float(maximum_camera_visibility_response_ratio),
+        "maximum_camera_visibility_response_ratio": training_visibility,
         "objective_mean_weight": float(objective_mean_weight),
         "objective_absolute_adjacent_weight": float(objective_absolute_adjacent_weight),
         "minimum_active_temporal_gain": float(minimum_active_temporal_gain),
@@ -619,6 +673,22 @@ def run_constrained_v5_capacity(
         fold_weights, optimization = _optimize_v5_candidate(
             optimization_camera_ids=train, **fold_kwargs
         )
+        construction = _evaluate_active_candidate(
+            a5_weights=a5,
+            candidate_weights=fold_weights,
+            sequences=sequences,
+            target_pixel_count=target_pixel_count,
+            camera_index=cameras,
+            camera_ids=train,
+            part_indices=(hair_index, lower_index),
+            constraint_part_indices=_changed_part_indices(
+                a5, fold_weights, (hair_index, lower_index)
+            ),
+            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+            maximum_camera_visibility_response_ratio=training_visibility,
+            minimum_active_temporal_gain=minimum_active_temporal_gain,
+        )
         held = _evaluate_active_candidate(
             a5_weights=a5,
             candidate_weights=fold_weights,
@@ -629,7 +699,7 @@ def run_constrained_v5_capacity(
             part_indices=(hair_index, lower_index),
             minimum_camera_target_ratio=minimum_camera_target_ratio,
             maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
-            maximum_camera_visibility_response_ratio=maximum_camera_visibility_response_ratio,
+            maximum_camera_visibility_response_ratio=audit_visibility,
             minimum_active_temporal_gain=minimum_active_temporal_gain,
         )
         folds.append(
@@ -638,8 +708,9 @@ def run_constrained_v5_capacity(
                 "training_cameras": list(train),
                 "fold_v4_lower_seed_changed_indices": fold_seed["changed_indices"],
                 "optimization": optimization,
+                "construction": construction,
                 "held_out": held,
-                "passed": bool(held["passed"]),
+                "passed": capacity_candidate_passes(construction, held),
             }
         )
 
@@ -660,6 +731,22 @@ def run_constrained_v5_capacity(
     final_weights, final_optimization = _optimize_v5_candidate(
         optimization_camera_ids=unique_cameras, **final_kwargs
     )
+    final_construction = _evaluate_active_candidate(
+        a5_weights=a5,
+        candidate_weights=final_weights,
+        sequences=sequences,
+        target_pixel_count=target_pixel_count,
+        camera_index=cameras,
+        camera_ids=unique_cameras,
+        part_indices=(hair_index, lower_index),
+        constraint_part_indices=_changed_part_indices(
+            a5, final_weights, (hair_index, lower_index)
+        ),
+        minimum_camera_target_ratio=minimum_camera_target_ratio,
+        maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+        maximum_camera_visibility_response_ratio=training_visibility,
+        minimum_active_temporal_gain=minimum_active_temporal_gain,
+    )
     final_evaluation = _evaluate_active_candidate(
         a5_weights=a5,
         candidate_weights=final_weights,
@@ -670,16 +757,19 @@ def run_constrained_v5_capacity(
         part_indices=(hair_index, lower_index),
         minimum_camera_target_ratio=minimum_camera_target_ratio,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
-        maximum_camera_visibility_response_ratio=maximum_camera_visibility_response_ratio,
+        maximum_camera_visibility_response_ratio=audit_visibility,
         minimum_active_temporal_gain=minimum_active_temporal_gain,
     )
     return {
         "weights": final_weights,
         "camera_ids": list(unique_cameras),
+        "maximum_training_visibility_response_ratio": training_visibility,
+        "maximum_audit_visibility_response_ratio": audit_visibility,
         "folds": folds,
         "all_folds_passed": all(fold["passed"] for fold in folds),
         "final": {
             "optimization": final_optimization,
+            "construction_evaluation": final_construction,
             "evaluation": final_evaluation,
         },
     }
