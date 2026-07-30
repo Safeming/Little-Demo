@@ -52,6 +52,7 @@ def load_validated_candidate(index_path: Path, contract: dict) -> tuple[dict, st
         "a7_dual_evidence_v5_1_canary_377": "dual_evidence_constrained_v5_1",
         "a7_dual_evidence_v5_2_canary_377": "dual_evidence_constrained_v5_2",
         "a7_dual_evidence_v5_3_canary_377": "dual_evidence_constrained_v5_3",
+        "a7_dual_evidence_v5_4_canary_377": "dual_evidence_camera_time_v5_4",
     }
     expected_candidate = expected_candidates.get(contract.get("freeze_id"))
     if expected_candidate is None:
@@ -64,6 +65,30 @@ def load_validated_candidate(index_path: Path, contract: dict) -> tuple[dict, st
         raise ValueError("frozen constrained candidate is not valid")
     candidate = candidates[0]
     capacity = candidate.get("capacity_summary", {})
+    if contract.get("freeze_id") == "a7_dual_evidence_v5_4_canary_377":
+        folds = capacity.get("folds", [])
+        expected_pairs = {
+            (camera, block)
+            for camera in range(len(contract.get("evidence_cameras", [])))
+            for block in range(int(contract["temporal_block_count"]))
+        }
+        actual_pairs = {
+            (int(fold.get("held_out_camera", -1)), int(fold.get("held_out_block", -1)))
+            for fold in folds
+        }
+        if (
+            int(capacity.get("fold_count", -1)) != int(contract["stability_fold_count"])
+            or actual_pairs != expected_pairs
+            or not capacity.get("all_folds_passed")
+            or not capacity.get("final", {}).get("passed")
+        ):
+            raise ValueError("candidate camera-time stability capacity did not pass")
+        consensus = capacity.get("consensus", {})
+        if int(consensus.get("minimum_fold_count", -1)) != int(
+            contract["minimum_stability_selection_count"]
+        ):
+            raise ValueError("candidate stability consensus threshold mismatch")
+        return candidate, str(candidate["output_bank_fingerprint"])
     expected_cameras = list(range(len(contract.get("evidence_cameras", []))))
     folds = capacity.get("folds", [])
     fold_cameras = sorted(int(fold.get("held_out_camera", -1)) for fold in folds)

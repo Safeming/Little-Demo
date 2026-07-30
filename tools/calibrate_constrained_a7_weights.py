@@ -17,7 +17,10 @@ from tools.build_temporal_reliability_evidence import (
     _file_sha256,
     _payload_fingerprint,
 )
-from utils.constrained_sparse_temporal_optimizer import run_constrained_v5_capacity
+from utils.constrained_sparse_temporal_optimizer import (
+    run_camera_time_stability_capacity,
+    run_constrained_v5_capacity,
+)
 from utils.frozen_semantic_method import load_a7_temporal_contract
 from utils.part_label_bank import PART_NAMES, load_part_label_bank, save_a7_part_label_bank
 
@@ -26,6 +29,7 @@ V5_CANDIDATE_ID = "dual_evidence_constrained_v5"
 V5_1_CANDIDATE_ID = "dual_evidence_constrained_v5_1"
 V5_2_CANDIDATE_ID = "dual_evidence_constrained_v5_2"
 V5_3_CANDIDATE_ID = "dual_evidence_constrained_v5_3"
+V5_4_CANDIDATE_ID = "dual_evidence_camera_time_v5_4"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -156,11 +160,16 @@ def _load_evidence(path: Path, *, contract: dict, allow_canary: bool) -> tuple[d
 
 
 def _candidate_fingerprint(contract: dict, capacity: dict, candidate_id: str) -> str:
+    construction = (
+        capacity["consensus"]
+        if "consensus" in capacity
+        else capacity["final"]["optimization"]
+    )
     encoded = json.dumps(
         {
             "contract": contract["_fingerprint"],
             "candidate_id": candidate_id,
-            "optimization": capacity["final"]["optimization"],
+            "construction": construction,
         },
         ensure_ascii=True,
         sort_keys=True,
@@ -177,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         "a7_dual_evidence_v5_1_canary_377": V5_1_CANDIDATE_ID,
         "a7_dual_evidence_v5_2_canary_377": V5_2_CANDIDATE_ID,
         "a7_dual_evidence_v5_3_canary_377": V5_3_CANDIDATE_ID,
+        "a7_dual_evidence_v5_4_canary_377": V5_4_CANDIDATE_ID,
     }
     if contract["freeze_id"] not in candidate_ids:
         raise ValueError("constrained calibration requires an A7 v5 contract")
@@ -227,10 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    capacity = run_constrained_v5_capacity(
-        a5_weights=a5,
-        v4_weights=v4,
-        sequences={
+    sequences = {
             "target": evidence["renderer_target_contribution_sequence"],
             "outer": evidence["renderer_outer_contribution_sequence"],
             "boundary": evidence["renderer_boundary_contribution_sequence"],
@@ -243,41 +250,84 @@ def main(argv: list[str] | None = None) -> int:
             "selection_boundary": evidence[
                 "renderer_selection_boundary_contribution_sequence"
             ],
-        },
-        target_pixel_count=evidence["renderer_sequence_target_pixel_count"],
-        camera_index=evidence["renderer_sequence_camera_index"],
-        consecutive_visible_count=evidence["temporal_consecutive_visible_count"],
-        hair_index=PART_NAMES.index("hair"),
-        lower_index=PART_NAMES.index("lower"),
-        selection_threshold=float(contract["selection_threshold"]),
-        min_pair_support=int(contract["min_pair_support"]),
-        reduction_fractions=tuple(contract["coordinate_reduction_fractions"]),
-        maximum_changed_fraction=float(contract["maximum_changed_fraction"]),
-        maximum_hair_changed_count=int(contract["maximum_hair_changed_count"]),
-        minimum_camera_target_ratio=float(contract["minimum_camera_target_ratio"]),
-        maximum_camera_soft_iou_drop=float(
-            contract["maximum_evidence_soft_iou_drop"]
-        ),
-        maximum_camera_visibility_response_ratio=legacy_visibility_ratio,
-        objective_mean_weight=float(contract["objective_mean_weight"]),
-        objective_absolute_adjacent_weight=float(
-            contract["objective_absolute_adjacent_weight"]
-        ),
-        minimum_active_temporal_gain=float(contract["minimum_active_temporal_gain"]),
-        source_v4_minimum_camera_target_ratio=float(
-            contract["source_v4_minimum_camera_target_ratio"]
-        ),
-        maximum_training_visibility_response_ratio=training_visibility_ratio,
-        maximum_audit_visibility_response_ratio=audit_visibility_ratio,
-        minimum_training_target_response_ratio=training_target_ratio,
-        minimum_audit_target_response_ratio=audit_target_ratio,
-        minimum_held_out_temporal_gain=float(
-            contract.get(
-                "minimum_loco_held_out_temporal_gain",
-                contract["minimum_active_temporal_gain"],
+    }
+    is_v5_4 = contract["freeze_id"] == "a7_dual_evidence_v5_4_canary_377"
+    if is_v5_4:
+        lower_index = PART_NAMES.index("lower")
+        eligible = (
+            (a5[:, lower_index] >= float(contract["selection_threshold"]))
+            & (
+                np.asarray(evidence["temporal_consecutive_visible_count"])[
+                    :, lower_index
+                ]
+                >= int(contract["min_pair_support"])
             )
-        ),
-    )
+        )
+        maximum_changed_count = int(
+            np.floor(float(contract["maximum_changed_fraction"]) * np.count_nonzero(eligible))
+        )
+        capacity = run_camera_time_stability_capacity(
+            a5_weights=a5,
+            v4_weights=v4,
+            sequences=sequences,
+            target_pixel_count=evidence["renderer_sequence_target_pixel_count"],
+            camera_index=evidence["renderer_sequence_camera_index"],
+            frame_index=evidence["renderer_sequence_frame_index"],
+            hair_index=PART_NAMES.index("hair"),
+            lower_index=lower_index,
+            selection_threshold=float(contract["selection_threshold"]),
+            min_pair_support=int(contract["min_pair_support"]),
+            reduction_fractions=tuple(contract["coordinate_reduction_fractions"]),
+            maximum_changed_fraction=float(contract["maximum_changed_fraction"]),
+            minimum_camera_target_ratio=training_target_ratio,
+            maximum_camera_soft_iou_drop=float(contract["maximum_evidence_soft_iou_drop"]),
+            maximum_camera_visibility_response_ratio=training_visibility_ratio,
+            objective_mean_weight=float(contract["objective_mean_weight"]),
+            objective_absolute_adjacent_weight=float(contract["objective_absolute_adjacent_weight"]),
+            temporal_block_count=int(contract["temporal_block_count"]),
+            minimum_stability_fold_count=int(contract["minimum_stability_selection_count"]),
+            minimum_positive_block_fraction=float(contract["minimum_positive_block_fraction"]),
+            minimum_block_gain_quantile=float(contract["minimum_block_gain_quantile"]),
+            maximum_worst_block_regression=float(contract["maximum_worst_block_regression"]),
+            block_gain_quantile=float(contract["block_gain_quantile"]),
+            block_cvar_fraction=float(contract["block_cvar_fraction"]),
+            minimum_aggregate_temporal_gain=float(contract["minimum_active_temporal_gain"]),
+            minimum_lower_temporal_gain=float(contract["minimum_lower_temporal_gain"]),
+            maximum_changed_count=maximum_changed_count,
+            source_v4_minimum_camera_target_ratio=float(
+                contract["source_v4_minimum_camera_target_ratio"]
+            ),
+        )
+    else:
+        capacity = run_constrained_v5_capacity(
+            a5_weights=a5,
+            v4_weights=v4,
+            sequences=sequences,
+            target_pixel_count=evidence["renderer_sequence_target_pixel_count"],
+            camera_index=evidence["renderer_sequence_camera_index"],
+            consecutive_visible_count=evidence["temporal_consecutive_visible_count"],
+            hair_index=PART_NAMES.index("hair"),
+            lower_index=PART_NAMES.index("lower"),
+            selection_threshold=float(contract["selection_threshold"]),
+            min_pair_support=int(contract["min_pair_support"]),
+            reduction_fractions=tuple(contract["coordinate_reduction_fractions"]),
+            maximum_changed_fraction=float(contract["maximum_changed_fraction"]),
+            maximum_hair_changed_count=int(contract["maximum_hair_changed_count"]),
+            minimum_camera_target_ratio=float(contract["minimum_camera_target_ratio"]),
+            maximum_camera_soft_iou_drop=float(contract["maximum_evidence_soft_iou_drop"]),
+            maximum_camera_visibility_response_ratio=legacy_visibility_ratio,
+            objective_mean_weight=float(contract["objective_mean_weight"]),
+            objective_absolute_adjacent_weight=float(contract["objective_absolute_adjacent_weight"]),
+            minimum_active_temporal_gain=float(contract["minimum_active_temporal_gain"]),
+            source_v4_minimum_camera_target_ratio=float(contract["source_v4_minimum_camera_target_ratio"]),
+            maximum_training_visibility_response_ratio=training_visibility_ratio,
+            maximum_audit_visibility_response_ratio=audit_visibility_ratio,
+            minimum_training_target_response_ratio=training_target_ratio,
+            minimum_audit_target_response_ratio=audit_target_ratio,
+            minimum_held_out_temporal_gain=float(
+                contract.get("minimum_loco_held_out_temporal_gain", contract["minimum_active_temporal_gain"])
+            ),
+        )
     weights = np.asarray(capacity.pop("weights"), dtype=np.float32)
     selected_a5 = a5 >= float(contract["selection_threshold"])
     selected_v5 = weights >= float(contract["selection_threshold"])
@@ -287,21 +337,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     frozen_indices = [PART_NAMES.index(part) for part in contract["frozen_parts"]]
     frozen_exact = bool(np.array_equal(weights[:, frozen_indices], a5[:, frozen_indices]))
+    capacity_valid = (
+        bool(capacity["valid"])
+        if is_v5_4
+        else bool(
+            capacity["all_folds_passed"]
+            and capacity["final"]["construction_evaluation"]["passed"]
+            and capacity["final"]["evaluation"]["passed"]
+        )
+    )
     valid = bool(
-        capacity["all_folds_passed"]
-        and capacity["final"]["construction_evaluation"]["passed"]
-        and capacity["final"]["evaluation"]["passed"]
+        capacity_valid
         and crossing_count == 0
         and maximum_above <= 1.0e-7
         and frozen_exact
     )
     invalid_reasons = []
-    if not capacity["all_folds_passed"]:
-        invalid_reasons.append("loco_fold_failure")
-    if not capacity["final"]["construction_evaluation"]["passed"]:
-        invalid_reasons.append("final_construction_gate_failure")
-    if not capacity["final"]["evaluation"]["passed"]:
-        invalid_reasons.append("final_evidence_gate_failure")
+    if not capacity_valid:
+        invalid_reasons.append(
+            "camera_time_stability_gate_failure" if is_v5_4 else "loco_fold_failure"
+        )
+    if not is_v5_4:
+        if not capacity["final"]["construction_evaluation"]["passed"]:
+            invalid_reasons.append("final_construction_gate_failure")
+        if not capacity["final"]["evaluation"]["passed"]:
+            invalid_reasons.append("final_evidence_gate_failure")
     if crossing_count:
         invalid_reasons.append("selection_topology_crossing")
     if maximum_above > 1.0e-7:

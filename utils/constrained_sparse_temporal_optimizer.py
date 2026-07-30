@@ -31,6 +31,169 @@ def _safe_ratio(numerator, denominator) -> np.ndarray:
     return result
 
 
+def assign_temporal_blocks(camera_index, *, block_count: int) -> np.ndarray:
+    cameras = np.asarray(camera_index).reshape(-1)
+    count = int(block_count)
+    if count <= 0:
+        raise ValueError("block_count must be positive")
+    blocks = np.full(cameras.shape, -1, dtype=np.int16)
+    for camera in np.unique(cameras):
+        positions = np.flatnonzero(cameras == camera)
+        if positions.size < count:
+            raise ValueError("each camera must have at least block_count samples")
+        for block, members in enumerate(np.array_split(positions, count)):
+            blocks[members] = int(block)
+    return blocks
+
+
+def _normalized_adjacent(values) -> float:
+    signal = np.asarray(values, dtype=np.float64).reshape(-1)
+    if signal.size <= 1:
+        return 0.0
+    mean = abs(float(np.mean(signal)))
+    adjacent = float(np.mean(np.abs(np.diff(signal))))
+    return adjacent / max(mean, 1.0e-12)
+
+
+def evaluate_temporal_block_robustness(
+    *,
+    base_signals,
+    candidate_signals,
+    camera_index,
+    block_index,
+    camera_ids,
+    block_ids,
+    gain_quantile: float,
+) -> dict:
+    cameras = np.asarray(camera_index).reshape(-1)
+    blocks = np.asarray(block_index).reshape(-1)
+    if cameras.shape != blocks.shape:
+        raise ValueError("camera_index and block_index must match")
+    gains = {signal: [] for signal in ("outer", "boundary")}
+    for camera in camera_ids:
+        for block in block_ids:
+            selected = (cameras == int(camera)) & (blocks == int(block))
+            if np.count_nonzero(selected) <= 1:
+                raise ValueError("each camera-time block must contain at least two samples")
+            for signal in gains:
+                base = _normalized_adjacent(np.asarray(base_signals[signal])[selected])
+                candidate = _normalized_adjacent(
+                    np.asarray(candidate_signals[signal])[selected]
+                )
+                gains[signal].append(1.0 - float(_safe_ratio(candidate, base)))
+    output = {}
+    quantile = float(gain_quantile)
+    if not 0.0 <= quantile <= 1.0:
+        raise ValueError("gain_quantile must be in [0, 1]")
+    for signal, values in gains.items():
+        array = np.asarray(values, dtype=np.float64)
+        output[f"{signal}_gains"] = array
+        output[f"{signal}_positive_fraction"] = float(np.mean(array > 0.0))
+        output[f"{signal}_gain_quantile"] = float(np.quantile(array, quantile))
+        output[f"{signal}_gain_median"] = float(np.median(array))
+        output[f"{signal}_worst_gain"] = float(np.min(array))
+    return output
+
+
+def rank_temporal_block_metrics(
+    metrics,
+    *,
+    minimum_positive_fraction: float,
+    minimum_gain_quantile: float,
+    maximum_worst_regression: float,
+    cvar_fraction: float,
+) -> tuple[float, float]:
+    fraction = float(cvar_fraction)
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("cvar_fraction must be in (0, 1]")
+    violation = 0.0
+    cvar_losses = []
+    for signal in ("outer", "boundary"):
+        violation += max(
+            0.0,
+            float(minimum_positive_fraction)
+            - float(metrics[f"{signal}_positive_fraction"]),
+        )
+        violation += max(
+            0.0,
+            float(minimum_gain_quantile)
+            - float(metrics[f"{signal}_gain_quantile"]),
+        )
+        violation += max(
+            0.0,
+            -float(maximum_worst_regression)
+            - float(metrics[f"{signal}_worst_gain"]),
+        )
+        gains = np.sort(np.asarray(metrics[f"{signal}_gains"], dtype=np.float64))
+        count = max(1, int(math.ceil(fraction * gains.size)))
+        cvar_losses.append(-float(np.mean(gains[:count])))
+    return float(violation), float(max(cvar_losses))
+
+
+def camera_time_fold_specs(camera_ids, block_ids) -> list[dict[str, int]]:
+    return [
+        {"held_out_camera": int(camera), "held_out_block": int(block)}
+        for camera in camera_ids
+        for block in block_ids
+    ]
+
+
+def camera_time_fold_passes(camera_evaluation, block_evaluation) -> bool:
+    return bool(
+        camera_evaluation.get("passed")
+        and block_evaluation.get("temporal_passed")
+    )
+
+
+def consensus_fold_weights(
+    *,
+    a5_weights,
+    fold_weights,
+    minimum_fold_count: int,
+    selection_threshold: float,
+) -> dict:
+    a5 = np.asarray(a5_weights, dtype=np.float64).reshape(-1)
+    folds = np.asarray(fold_weights, dtype=np.float64)
+    if folds.ndim != 2 or folds.shape[1] != a5.size:
+        raise ValueError("fold_weights must have shape [F, N]")
+    minimum = int(minimum_fold_count)
+    if minimum <= 0 or minimum > folds.shape[0]:
+        raise ValueError("minimum_fold_count must be in [1, fold_count]")
+    changed = np.abs(folds - a5[None, :]) > 1.0e-8
+    frequency = np.sum(changed, axis=0, dtype=np.int32)
+    weights = a5.copy()
+    selected = []
+    levels = {}
+    for index in np.flatnonzero(frequency >= minimum):
+        values = folds[changed[:, index], index]
+        rounded = np.round(values, decimals=8)
+        unique, counts = np.unique(rounded, return_counts=True)
+        modal = unique[counts == np.max(counts)]
+        level = float(np.max(modal))
+        if a5[index] >= float(selection_threshold) and level < float(selection_threshold):
+            raise ValueError("consensus level crosses the selection threshold")
+        weights[index] = level
+        selected.append(int(index))
+        levels[str(int(index))] = level
+    return {
+        "weights": weights.astype(np.float32),
+        "selected_indices": selected,
+        "selection_frequency": [int(value) for value in frequency],
+        "selected_levels": levels,
+        "minimum_fold_count": minimum,
+        "fold_count": int(folds.shape[0]),
+    }
+
+
+def _rank_improves(trial, current, *, tolerance: float = 1.0e-10) -> bool:
+    for trial_value, current_value in zip(trial, current):
+        if float(trial_value) < float(current_value) - float(tolerance):
+            return True
+        if float(trial_value) > float(current_value) + float(tolerance):
+            return False
+    return False
+
+
 def consecutive_support_from_sequences(
     *,
     selection_target_sequence,
@@ -38,6 +201,7 @@ def consecutive_support_from_sequences(
     camera_index,
     camera_ids,
     visibility_epsilon: float = 1.0e-8,
+    segment_index=None,
 ) -> np.ndarray:
     target = np.asarray(selection_target_sequence, dtype=np.float64)
     outer = np.asarray(selection_outer_sequence, dtype=np.float64)
@@ -46,13 +210,23 @@ def consecutive_support_from_sequences(
         raise ValueError("selection sequences must have matching shape [S, N]")
     if cameras.shape != (target.shape[0],):
         raise ValueError("camera_index must match the selection sample count")
+    segments = None
+    if segment_index is not None:
+        segments = np.asarray(segment_index).reshape(-1)
+        if segments.shape != cameras.shape:
+            raise ValueError("segment_index must match the selection sample count")
     support = np.zeros((target.shape[1],), dtype=np.int32)
     for camera in camera_ids:
-        visible = (target[cameras == int(camera)] + outer[cameras == int(camera)]) > float(
+        selected = cameras == int(camera)
+        visible = (target[selected] + outer[selected]) > float(
             visibility_epsilon
         )
         if visible.shape[0] > 1:
-            support += np.sum(visible[1:] & visible[:-1], axis=0, dtype=np.int32)
+            pairs = visible[1:] & visible[:-1]
+            if segments is not None:
+                camera_segments = segments[selected]
+                pairs &= (camera_segments[1:] == camera_segments[:-1])[:, None]
+            support += np.sum(pairs, axis=0, dtype=np.int32)
     return support
 
 
@@ -269,6 +443,13 @@ def optimize_constrained_sparse_part(
     objective_mean_weight: float,
     objective_absolute_adjacent_weight: float,
     selection_threshold: float = 0.2,
+    temporal_block_index=None,
+    temporal_block_ids=None,
+    minimum_positive_block_fraction: float = 0.0,
+    minimum_block_gain_quantile: float = -1.0,
+    maximum_worst_block_regression: float = 1.0,
+    block_gain_quantile: float = 0.1,
+    block_cvar_fraction: float = 0.1,
 ) -> dict:
     a5 = np.asarray(a5_weights, dtype=np.float64).reshape(-1)
     weights = np.asarray(initial_weights, dtype=np.float64).reshape(-1).copy()
@@ -301,7 +482,9 @@ def optimize_constrained_sparse_part(
             camera_ids=cameras,
         )
 
-    def rank(metrics):
+    block_metrics = None
+
+    def rank(metrics, signals):
         violation = _constraint_violation(
             metrics,
             minimum_camera_target_ratio=minimum_camera_target_ratio,
@@ -313,10 +496,28 @@ def optimize_constrained_sparse_part(
             mean_weight=objective_mean_weight,
             adjacent_weight=objective_absolute_adjacent_weight,
         )
-        return violation, score
+        if temporal_block_index is None:
+            return (violation, 0.0, 0.0, score), None
+        current_block_metrics = evaluate_temporal_block_robustness(
+            base_signals=base_signals,
+            candidate_signals=signals,
+            camera_index=camera_index,
+            block_index=temporal_block_index,
+            camera_ids=cameras,
+            block_ids=temporal_block_ids,
+            gain_quantile=block_gain_quantile,
+        )
+        block_rank = rank_temporal_block_metrics(
+            current_block_metrics,
+            minimum_positive_fraction=minimum_positive_block_fraction,
+            minimum_gain_quantile=minimum_block_gain_quantile,
+            maximum_worst_regression=maximum_worst_block_regression,
+            cvar_fraction=block_cvar_fraction,
+        )
+        return (violation, block_rank[0], block_rank[1], score), current_block_metrics
 
     metrics = evaluate(current_signals)
-    current_rank = rank(metrics)
+    current_rank, block_metrics = rank(metrics, current_signals)
     accepted_moves = []
     used = set()
     maximum_steps = max(0, int(maximum_changed_count)) + int(
@@ -344,15 +545,9 @@ def optimize_constrained_sparse_part(
                     for key, sequence in sequences.items()
                 }
                 trial_metrics = evaluate(trial_signals)
-                trial_rank = rank(trial_metrics)
-                key = (trial_rank[0], trial_rank[1], index, float(level))
-                improves = (
-                    trial_rank[0] < current_rank[0] - 1.0e-10
-                    or (
-                        trial_rank[0] <= current_rank[0] + 1.0e-10
-                        and trial_rank[1] < current_rank[1] - 1.0e-7
-                    )
-                )
+                trial_rank, trial_block_metrics = rank(trial_metrics, trial_signals)
+                key = (*trial_rank, index, float(level))
+                improves = _rank_improves(trial_rank, current_rank)
                 if improves and (best is None or key < best[0]):
                     best = (
                         key,
@@ -362,10 +557,20 @@ def optimize_constrained_sparse_part(
                         trial_signals,
                         trial_metrics,
                         trial_rank,
+                        trial_block_metrics,
                     )
         if best is None:
             break
-        _key, index, level, weights, current_signals, metrics, current_rank = best
+        (
+            _key,
+            index,
+            level,
+            weights,
+            current_signals,
+            metrics,
+            current_rank,
+            block_metrics,
+        ) = best
         used.add(index)
         accepted_moves.append(
             {
@@ -374,7 +579,7 @@ def optimize_constrained_sparse_part(
                 "input_weight": float(initial_weights[index]),
                 "output_weight": float(level),
                 "constraint_violation": float(current_rank[0]),
-                "score": float(current_rank[1]),
+                "score": float(current_rank[-1]),
             }
         )
 
@@ -384,8 +589,11 @@ def optimize_constrained_sparse_part(
         "changed_indices": [int(value) for value in changed],
         "accepted_moves": accepted_moves,
         "constraint_violation": float(current_rank[0]),
-        "final_score": float(current_rank[1]),
+        "block_violation": float(current_rank[1]),
+        "block_cvar_loss": float(current_rank[2]),
+        "final_score": float(current_rank[-1]),
         "final_metrics": metrics,
+        "final_block_metrics": block_metrics,
     }
 
 
@@ -822,4 +1030,244 @@ def run_constrained_v5_capacity(
             "construction_evaluation": final_construction,
             "evaluation": final_evaluation,
         },
+    }
+
+
+def run_camera_time_stability_capacity(
+    *,
+    a5_weights,
+    v4_weights,
+    sequences,
+    target_pixel_count,
+    camera_index,
+    frame_index,
+    hair_index: int,
+    lower_index: int,
+    selection_threshold: float,
+    min_pair_support: int,
+    reduction_fractions,
+    maximum_changed_fraction: float,
+    minimum_camera_target_ratio: float,
+    maximum_camera_soft_iou_drop: float,
+    maximum_camera_visibility_response_ratio: float,
+    objective_mean_weight: float,
+    objective_absolute_adjacent_weight: float,
+    temporal_block_count: int,
+    minimum_stability_fold_count: int,
+    minimum_positive_block_fraction: float,
+    minimum_block_gain_quantile: float,
+    maximum_worst_block_regression: float,
+    block_gain_quantile: float,
+    block_cvar_fraction: float,
+    minimum_aggregate_temporal_gain: float,
+    minimum_lower_temporal_gain: float,
+    maximum_changed_count: int,
+    source_v4_minimum_camera_target_ratio: float = 0.98,
+) -> dict:
+    a5 = np.asarray(a5_weights, dtype=np.float32)
+    v4 = np.asarray(v4_weights, dtype=np.float32)
+    cameras = np.asarray(camera_index).reshape(-1)
+    frames = np.asarray(frame_index).reshape(-1)
+    if cameras.shape != frames.shape:
+        raise ValueError("camera_index and frame_index must match")
+    blocks = assign_temporal_blocks(cameras, block_count=temporal_block_count)
+    camera_ids = tuple(int(value) for value in np.unique(cameras))
+    block_ids = tuple(range(int(temporal_block_count)))
+    arrays = {key: np.asarray(value) for key, value in sequences.items()}
+    pixels = np.asarray(target_pixel_count)
+    fold_rows = []
+    lower_fold_weights = []
+
+    for spec in camera_time_fold_specs(camera_ids, block_ids):
+        held_camera = int(spec["held_out_camera"])
+        held_block = int(spec["held_out_block"])
+        train_mask = (cameras != held_camera) & (blocks != held_block)
+        train_cameras = tuple(value for value in camera_ids if value != held_camera)
+        train_blocks = tuple(value for value in block_ids if value != held_block)
+        train_sequences = {key: value[train_mask] for key, value in arrays.items()}
+        train_camera_index = cameras[train_mask]
+        train_block_index = blocks[train_mask]
+        fold_support = consecutive_support_from_sequences(
+            selection_target_sequence=train_sequences["selection_target"][:, :, lower_index],
+            selection_outer_sequence=train_sequences["selection_outer"][:, :, lower_index],
+            camera_index=train_camera_index,
+            camera_ids=train_cameras,
+            segment_index=train_block_index,
+        )
+        eligible = np.flatnonzero(
+            (a5[:, lower_index] >= float(selection_threshold))
+            & (fold_support >= int(min_pair_support))
+        )
+        fold_seed = optimize_sparse_part(
+            a5_weights=a5[:, lower_index],
+            target_sequence=train_sequences["target"][:, :, lower_index],
+            outer_sequence=train_sequences["outer"][:, :, lower_index],
+            boundary_sequence=train_sequences["boundary"][:, :, lower_index],
+            camera_index=train_camera_index,
+            optimization_camera_ids=train_cameras,
+            eligible_indices=eligible,
+            reduction_fractions=reduction_fractions,
+            maximum_changed_count=int(maximum_changed_count),
+            minimum_camera_target_ratio=float(source_v4_minimum_camera_target_ratio),
+            objective_mean_weight=objective_mean_weight,
+            objective_absolute_adjacent_weight=objective_absolute_adjacent_weight,
+            selection_threshold=selection_threshold,
+        )
+        optimized = optimize_constrained_sparse_part(
+            a5_weights=a5[:, lower_index],
+            initial_weights=fold_seed["weights"],
+            edit_target_sequence=train_sequences["target"][:, :, lower_index],
+            edit_outer_sequence=train_sequences["outer"][:, :, lower_index],
+            edit_boundary_sequence=train_sequences["boundary"][:, :, lower_index],
+            selection_target_sequence=train_sequences["selection_target"][:, :, lower_index],
+            selection_outer_sequence=train_sequences["selection_outer"][:, :, lower_index],
+            target_pixel_count_sequence=pixels[train_mask, lower_index],
+            camera_index=train_camera_index,
+            optimization_camera_ids=train_cameras,
+            eligible_indices=eligible,
+            reduction_fractions=reduction_fractions,
+            maximum_changed_count=int(maximum_changed_count),
+            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+            maximum_camera_visibility_response_ratio=maximum_camera_visibility_response_ratio,
+            objective_mean_weight=objective_mean_weight,
+            objective_absolute_adjacent_weight=objective_absolute_adjacent_weight,
+            selection_threshold=selection_threshold,
+            temporal_block_index=train_block_index,
+            temporal_block_ids=train_blocks,
+            minimum_positive_block_fraction=minimum_positive_block_fraction,
+            minimum_block_gain_quantile=minimum_block_gain_quantile,
+            maximum_worst_block_regression=maximum_worst_block_regression,
+            block_gain_quantile=block_gain_quantile,
+            block_cvar_fraction=block_cvar_fraction,
+        )
+        fold_weights = a5.copy()
+        fold_weights[:, lower_index] = optimized["weights"]
+        lower_fold_weights.append(np.asarray(optimized["weights"], dtype=np.float32))
+        held_camera_evaluation = _evaluate_active_candidate(
+            a5_weights=a5,
+            candidate_weights=fold_weights,
+            sequences=arrays,
+            target_pixel_count=pixels,
+            camera_index=cameras,
+            camera_ids=(held_camera,),
+            part_indices=(hair_index, lower_index),
+            constraint_part_indices=(lower_index,),
+            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+            maximum_camera_visibility_response_ratio=1.0,
+            minimum_active_temporal_gain=0.0,
+        )
+        held_block_mask = (cameras != held_camera) & (blocks == held_block)
+        held_block_cameras = tuple(value for value in camera_ids if value != held_camera)
+        held_block_evaluation = _evaluate_active_candidate(
+            a5_weights=a5,
+            candidate_weights=fold_weights,
+            sequences={key: value[held_block_mask] for key, value in arrays.items()},
+            target_pixel_count=pixels[held_block_mask],
+            camera_index=cameras[held_block_mask],
+            camera_ids=held_block_cameras,
+            part_indices=(hair_index, lower_index),
+            constraint_part_indices=(lower_index,),
+            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+            maximum_camera_visibility_response_ratio=1.0,
+            minimum_active_temporal_gain=0.0,
+        )
+        fold_rows.append(
+            {
+                **spec,
+                "training_cameras": list(train_cameras),
+                "training_blocks": list(train_blocks),
+                "fold_v4_lower_seed_changed_indices": fold_seed["changed_indices"],
+                "changed_indices": optimized["changed_indices"],
+                "block_violation": float(optimized["block_violation"]),
+                "held_out_camera_evaluation": held_camera_evaluation,
+                "held_out_block_evaluation": held_block_evaluation,
+                "passed": camera_time_fold_passes(
+                    held_camera_evaluation, held_block_evaluation
+                ),
+            }
+        )
+
+    consensus = consensus_fold_weights(
+        a5_weights=a5[:, lower_index],
+        fold_weights=np.stack(lower_fold_weights, axis=0),
+        minimum_fold_count=minimum_stability_fold_count,
+        selection_threshold=selection_threshold,
+    )
+    final_weights = a5.copy()
+    final_weights[:, lower_index] = consensus["weights"]
+    full_evaluation = _evaluate_active_candidate(
+        a5_weights=a5,
+        candidate_weights=final_weights,
+        sequences=arrays,
+        target_pixel_count=pixels,
+        camera_index=cameras,
+        camera_ids=camera_ids,
+        part_indices=(hair_index, lower_index),
+        constraint_part_indices=(lower_index,),
+        minimum_camera_target_ratio=minimum_camera_target_ratio,
+        maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
+        maximum_camera_visibility_response_ratio=maximum_camera_visibility_response_ratio,
+        minimum_active_temporal_gain=minimum_aggregate_temporal_gain,
+    )
+    lower_metrics = full_evaluation["per_part"][str(lower_index)]
+    lower_outer_gain = 1.0 - float(np.mean(lower_metrics["outer_normalized_flicker"]))
+    lower_boundary_gain = 1.0 - float(
+        np.mean(lower_metrics["boundary_normalized_flicker"])
+    )
+    base_lower = {
+        signal: arrays[signal][:, :, lower_index] @ a5[:, lower_index]
+        for signal in ("outer", "boundary")
+    }
+    candidate_lower = {
+        signal: arrays[signal][:, :, lower_index] @ final_weights[:, lower_index]
+        for signal in ("outer", "boundary")
+    }
+    block_metrics = evaluate_temporal_block_robustness(
+        base_signals=base_lower,
+        candidate_signals=candidate_lower,
+        camera_index=cameras,
+        block_index=blocks,
+        camera_ids=camera_ids,
+        block_ids=block_ids,
+        gain_quantile=block_gain_quantile,
+    )
+    block_rank = rank_temporal_block_metrics(
+        block_metrics,
+        minimum_positive_fraction=minimum_positive_block_fraction,
+        minimum_gain_quantile=minimum_block_gain_quantile,
+        maximum_worst_regression=maximum_worst_block_regression,
+        cvar_fraction=block_cvar_fraction,
+    )
+    lower_gate = (
+        lower_outer_gain >= float(minimum_lower_temporal_gain) - 1.0e-7
+        and lower_boundary_gain >= float(minimum_lower_temporal_gain) - 1.0e-7
+    )
+    valid = bool(
+        all(row["passed"] for row in fold_rows)
+        and full_evaluation["passed"]
+        and lower_gate
+        and block_rank[0] <= 1.0e-10
+    )
+    return {
+        "weights": final_weights,
+        "camera_ids": list(camera_ids),
+        "block_ids": list(block_ids),
+        "fold_count": len(fold_rows),
+        "folds": fold_rows,
+        "all_folds_passed": all(row["passed"] for row in fold_rows),
+        "consensus": {key: value for key, value in consensus.items() if key != "weights"},
+        "final": {
+            "evaluation": full_evaluation,
+            "lower_outer_gain": lower_outer_gain,
+            "lower_boundary_gain": lower_boundary_gain,
+            "lower_gate_passed": bool(lower_gate),
+            "block_metrics": _jsonable_metrics(block_metrics),
+            "block_violation": float(block_rank[0]),
+            "block_cvar_loss": float(block_rank[1]),
+            "passed": valid,
+        },
+        "valid": valid,
     }

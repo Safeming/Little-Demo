@@ -34,6 +34,9 @@ A7_V5_3_EVIDENCE_CONTRACT_PATH = Path(
 A7_V5_3_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_dual_evidence_v5_3_canary_377.json"
 )
+A7_V5_4_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_dual_evidence_v5_4_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -326,4 +329,21 @@ def test_frozen_a7_v5_3_candidate_contract_pins_eight_camera_evidence():
         0.998
     )
     assert contract["minimum_loco_held_out_temporal_gain"] == pytest.approx(0.0)
+    assert contract["paper_test_eligible"] is False
+
+
+def test_frozen_a7_v5_4_contract_pins_camera_time_stability_policy():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V5_4_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_dual_evidence_v5_4_canary_377"
+    assert contract["temporal_block_count"] == 6
+    assert contract["stability_fold_count"] == 48
+    assert contract["minimum_stability_selection_count"] == 36
+    assert contract["minimum_positive_block_fraction"] == pytest.approx(44 / 48)
+    assert contract["minimum_active_temporal_gain"] == pytest.approx(0.0075)
+    assert contract["minimum_lower_temporal_gain"] == pytest.approx(0.015)
+    assert contract["maximum_hair_changed_count"] == 0
+    assert contract["audit_cameras"] == []
     assert contract["paper_test_eligible"] is False

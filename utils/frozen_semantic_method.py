@@ -108,6 +108,7 @@ def validate_a7_temporal_contract(
         "a7_dual_evidence_v5_2_canary_377",
         "a7_dual_evidence_v5_3_evidence_377",
         "a7_dual_evidence_v5_3_canary_377",
+        "a7_dual_evidence_v5_4_canary_377",
     }:
         raise ValueError("unsupported A7 contract freeze_id")
     required_values = dict(_A7_REQUIRED_VALUES)
@@ -116,12 +117,14 @@ def validate_a7_temporal_contract(
         "a7_dual_evidence_v5_2_canary_377",
         "a7_dual_evidence_v5_3_evidence_377",
         "a7_dual_evidence_v5_3_canary_377",
+        "a7_dual_evidence_v5_4_canary_377",
     }:
         required_values["retrospective_test_cameras"] = ["c21", "c22", "c23"]
         required_values["frozen_test_cameras"] = []
     if freeze_id in {
         "a7_dual_evidence_v5_3_evidence_377",
         "a7_dual_evidence_v5_3_canary_377",
+        "a7_dual_evidence_v5_4_canary_377",
     }:
         required_values["evidence_cameras"] = [
             "c01", "c05", "c09", "c13", "c17", "c18", "c19", "c20"
@@ -412,6 +415,57 @@ def validate_a7_temporal_contract(
         for field, expected in expected_policy.items():
             if payload.get(field) != expected:
                 raise ValueError(f"A7 v5.3 contract {field} must be {expected!r}")
+    if freeze_id == "a7_dual_evidence_v5_4_canary_377":
+        expected_policy = {
+            "subject": "377",
+            "evidence_role": "development_construction",
+            "evidence_mode": "renderer_aligned_dual_sequence_constrained",
+            "renderer_attribution": "colors_gradient_dual",
+            "source_evidence_sha256": "8b655f48fad664ba308f51d3291971382d7f9037fc7d69e38fca37907efd77f4",
+            "source_evidence_contract_fingerprint": "9f4322fe3a7ac2812908289d65964f4d6d74c39d048e8707dd90fe938f04b368",
+            "source_v4_bank_sha256": "f1c22122e4e3cc07e884f620efd01632daa853604db2b2d46a51525cf29eadb1",
+            "processed_parts": ["hair", "lower"],
+            "frozen_parts": ["face", "upper", "shoes", "skin"],
+            "initial_hair_policy": "a5",
+            "initial_lower_policy": "v4",
+            "source_v4_minimum_camera_target_ratio": 0.98,
+            "selection_threshold": 0.2,
+            "preserve_a5_selection_topology": True,
+            "maximum_weight_above_a5": 0.0,
+            "renderer_contribution_epsilon": 1.0e-8,
+            "renderer_boundary_radius": 6,
+            "coordinate_reduction_fractions": [0.05, 0.1],
+            "maximum_changed_fraction": 0.2,
+            "maximum_hair_changed_count": 0,
+            "minimum_camera_target_ratio": 0.99,
+            "minimum_training_target_response_ratio": 0.995,
+            "minimum_audit_target_response_ratio": 0.99,
+            "maximum_evidence_soft_iou_drop": 0.005,
+            "maximum_training_visibility_response_ratio": 0.998,
+            "maximum_audit_visibility_response_ratio": 1.0,
+            "objective_mean_weight": 0.25,
+            "objective_absolute_adjacent_weight": 0.05,
+            "loco_all_folds_required": True,
+            "temporal_block_count": 6,
+            "stability_fold_count": 48,
+            "minimum_stability_selection_count": 36,
+            "minimum_positive_block_fraction": 44.0 / 48.0,
+            "block_gain_quantile": 0.1,
+            "block_cvar_fraction": 0.1,
+            "minimum_block_gain_quantile": 0.0,
+            "maximum_worst_block_regression": 0.005,
+            "minimum_active_temporal_gain": 0.0075,
+            "minimum_lower_temporal_gain": 0.015,
+            "audit_cameras": [],
+            "paper_test_eligible": False,
+            "maximum_spatial_burden_worsening": 0.02,
+            "maximum_part_soft_iou_drop": 0.01,
+            "maximum_macro_miou_drop": 0.01,
+            "maximum_micro_iou_drop": 0.005,
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v5.4 contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(

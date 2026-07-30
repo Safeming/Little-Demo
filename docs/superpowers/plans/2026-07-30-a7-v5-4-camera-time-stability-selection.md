@@ -16,10 +16,10 @@
 - Modify: `utils/constrained_sparse_temporal_optimizer.py`
 - Test: `tests/test_constrained_sparse_temporal_optimizer.py`
 
-- [ ] Add failing tests for six balanced blocks per camera, segment-safe adjacent support, and block gain summaries.
-- [ ] Run the focused tests and confirm the new APIs are missing.
-- [ ] Implement `assign_temporal_blocks`, segment-aware support, and block robustness metrics.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing tests for six balanced blocks per camera, segment-safe adjacent support, and block gain summaries.
+- [x] Run the focused tests and confirm the new APIs are missing.
+- [x] Implement `assign_temporal_blocks`, segment-aware support, and block robustness metrics.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 2: Block-Aware Sparse Ranking
 
@@ -27,10 +27,10 @@
 - Modify: `utils/constrained_sparse_temporal_optimizer.py`
 - Test: `tests/test_constrained_sparse_temporal_optimizer.py`
 
-- [ ] Add a failing test where the mean camera score improves while one block regresses, and require the block-safe move to rank first.
-- [ ] Run the test and confirm the current full-camera scorer chooses the wrong move or lacks the API.
-- [ ] Add lexicographic block violation and worst-decile ranking to constrained lower optimization.
-- [ ] Run the optimizer tests and confirm they pass.
+- [x] Add a failing test where the mean camera score improves while one block regresses, and require the block-safe move to rank first.
+- [x] Run the test and confirm the current full-camera scorer chooses the wrong move or lacks the API.
+- [x] Add lexicographic block violation and worst-decile ranking to constrained lower optimization.
+- [x] Run the optimizer tests and confirm they pass.
 
 ### Task 3: Forty-Eight-Fold Stability Consensus
 
@@ -38,10 +38,10 @@
 - Modify: `utils/constrained_sparse_temporal_optimizer.py`
 - Test: `tests/test_constrained_sparse_temporal_optimizer.py`
 
-- [ ] Add failing tests for 48 `(camera, block)` folds, 36/48 carrier admission, deterministic level consensus, and rejection of full-data-only carriers.
-- [ ] Run the tests and confirm consensus capacity is unavailable.
-- [ ] Implement `run_camera_time_stability_capacity` with fold-local support and consensus weights.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing tests for 48 `(camera, block)` folds, 36/48 carrier admission, deterministic level consensus, and rejection of full-data-only carriers.
+- [x] Run the tests and confirm consensus capacity is unavailable.
+- [x] Implement `run_camera_time_stability_capacity` with fold-local support and consensus weights.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 4: Frozen v5.4 Contract And Calibrator
 
@@ -53,10 +53,10 @@
 - Test: `tests/test_frozen_a7_temporal_method.py`
 - Test: `tests/test_calibrate_constrained_a7_weights.py`
 
-- [ ] Add failing contract and CLI tests for the fixed block policy and candidate ID `dual_evidence_camera_time_v5_4`.
-- [ ] Run the tests and confirm v5.4 is unsupported.
-- [ ] Add the frozen contract validation and calibrator route.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing contract and CLI tests for the fixed block policy and candidate ID `dual_evidence_camera_time_v5_4`.
+- [x] Run the tests and confirm v5.4 is unsupported.
+- [x] Add the frozen contract validation and calibrator route.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 5: Evidence-Only Summary And Runner
 
@@ -66,18 +66,18 @@
 - Create: `exp/acceptdata/a7_dual_evidence_v5_4_canary_377/run_377_v5_4_development.sh`
 - Create: `tests/test_run_377_a7_dual_evidence_v5_4.py`
 
-- [ ] Add failing tests requiring 48-fold identity, block gates, spatial gates, `paper_test_eligible=false`, and absence of c21-c23 rendering.
-- [ ] Run the tests and confirm the files are missing.
-- [ ] Implement the summary and resumable runner with freeze-manifest and stale-output checks.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing tests requiring 48-fold identity, block gates, spatial gates, `paper_test_eligible=false`, and absence of c21-c23 rendering.
+- [x] Run the tests and confirm the files are missing.
+- [x] Implement the summary and resumable runner with freeze-manifest and stale-output checks.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 6: Capacity, Verification, Documentation, And Launch
 
 **Files:**
 - Modify: `docs/A7时序可靠性校准实施计划与新对话交接_20260728.md`
 
-- [ ] Run formal v5.4 capacity on the frozen eight-camera evidence.
-- [ ] Reject the route if the consensus candidate fails any frozen development gate.
+- [x] Run formal v5.4 capacity on the frozen eight-camera evidence.
+- [x] Reject the route if the consensus candidate fails any frozen development gate.
 - [ ] Run the complete A7 regression, Python compilation, JSON validation, shell syntax, and `git diff --check`.
 - [ ] Commit only v5.4 files.
 - [ ] Launch the runner with `setsid` on the free GPU/CPU and confirm capacity progress.

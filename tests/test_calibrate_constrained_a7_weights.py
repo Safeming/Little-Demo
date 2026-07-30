@@ -27,11 +27,18 @@ def _save_bank(path: Path, weights):
     )
 
 
-def _save_dual_evidence(path: Path, contract_fingerprint: str, point_count: int):
+def _save_dual_evidence(
+    path: Path,
+    contract_fingerprint: str,
+    point_count: int,
+    *,
+    camera_count: int = 2,
+    samples_per_camera: int = 10,
+):
     from tools.build_temporal_reliability_evidence import _payload_fingerprint
 
     channels = len(PART_NAMES)
-    samples = 20
+    samples = int(camera_count) * int(samples_per_camera)
     shape = (point_count, channels)
     sequence_shape = (samples, point_count, channels)
     target = np.full(sequence_shape, 10.0, dtype=np.float16)
@@ -49,7 +56,9 @@ def _save_dual_evidence(path: Path, contract_fingerprint: str, point_count: int)
         "point_count": np.array(point_count, dtype=np.int64),
         "part_names": np.asarray(PART_NAMES, dtype="U16"),
         "formal_protocol": np.array(0, dtype=np.uint8),
-        "cameras": np.asarray(["c01", "c05"], dtype="U3"),
+        "cameras": np.asarray(
+            [f"c{1 + 4 * index:02d}" for index in range(camera_count)], dtype="U3"
+        ),
         "frame_start": np.array(0, dtype=np.int64),
         "frame_end": np.array(10, dtype=np.int64),
         "frame_stride": np.array(5, dtype=np.int64),
@@ -77,10 +86,10 @@ def _save_dual_evidence(path: Path, contract_fingerprint: str, point_count: int)
             (samples, channels), 100.0, dtype=np.float32
         ),
         "renderer_sequence_camera_index": np.repeat(
-            np.array([0, 1], dtype=np.int16), samples // 2
+            np.arange(camera_count, dtype=np.int16), samples_per_camera
         ),
         "renderer_sequence_frame_index": np.tile(
-            np.arange(0, (samples // 2) * 5, 5, dtype=np.int32), 2
+            np.arange(0, samples_per_camera * 5, 5, dtype=np.int32), camera_count
         ),
     }
     arrays["output_fingerprint"] = np.array(_payload_fingerprint(arrays))
@@ -291,3 +300,50 @@ def test_constrained_v5_3_cli_accepts_eight_camera_source_contract(tmp_path):
     assert candidate["capacity_summary"]["minimum_training_target_response_ratio"] == 0.995
     assert candidate["capacity_summary"]["maximum_training_visibility_response_ratio"] == 0.998
     assert candidate["capacity_summary"]["minimum_held_out_temporal_gain"] == 0.0
+
+
+def test_constrained_v5_4_cli_builds_camera_time_stability_capacity(tmp_path):
+    from tools.calibrate_constrained_a7_weights import main
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    freeze = Path("configs/semantic/frozen_a5_main_method_v1.json")
+    evidence_contract = load_a7_temporal_contract(
+        "configs/semantic/frozen_a7_dual_evidence_v5_3_evidence_377.json", freeze
+    )
+    contract = Path(
+        "configs/semantic/frozen_a7_dual_evidence_v5_4_canary_377.json"
+    )
+    weights = np.full((5, len(PART_NAMES)), 0.6, dtype=np.float32)
+    v4_weights = weights.copy()
+    v4_weights[0, PART_NAMES.index("lower")] *= 0.9
+    a5 = tmp_path / "a5.npz"
+    v4 = tmp_path / "v4.npz"
+    evidence = tmp_path / "evidence.npz"
+    output = tmp_path / "candidates"
+    _save_bank(a5, weights)
+    _save_bank(v4, v4_weights)
+    _save_dual_evidence(
+        evidence,
+        evidence_contract["_fingerprint"],
+        len(weights),
+        camera_count=8,
+        samples_per_camera=12,
+    )
+
+    assert main(
+        [
+            "--a5-bank", str(a5),
+            "--v4-bank", str(v4),
+            "--evidence", str(evidence),
+            "--method-freeze", str(freeze),
+            "--a7-contract", str(contract),
+            "--output-dir", str(output),
+            "--allow-canary-inputs",
+        ]
+    ) == 0
+
+    index = json.loads((output / "candidate_index.json").read_text())
+    candidate = index["candidates"][0]
+    assert candidate["candidate_id"] == "dual_evidence_camera_time_v5_4"
+    assert candidate["capacity_summary"]["fold_count"] == 48
+    assert candidate["capacity_summary"]["consensus"]["minimum_fold_count"] == 36
