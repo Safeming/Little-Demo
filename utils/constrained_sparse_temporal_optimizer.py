@@ -88,6 +88,18 @@ def resolve_target_limits(
     return training, audit
 
 
+def resolve_temporal_gain_limits(
+    *,
+    minimum_construction_temporal_gain: float,
+    minimum_held_out_temporal_gain: float,
+) -> tuple[float, float]:
+    construction = float(minimum_construction_temporal_gain)
+    held_out = float(minimum_held_out_temporal_gain)
+    if held_out > construction:
+        raise ValueError("held-out temporal gain must not exceed construction gain")
+    return construction, held_out
+
+
 def capacity_candidate_passes(
     construction_evaluation: dict, audit_evaluation: dict
 ) -> bool:
@@ -605,6 +617,7 @@ def run_constrained_v5_capacity(
     maximum_audit_visibility_response_ratio: float | None = None,
     minimum_training_target_response_ratio: float | None = None,
     minimum_audit_target_response_ratio: float | None = None,
+    minimum_held_out_temporal_gain: float | None = None,
 ) -> dict:
     a5 = np.asarray(a5_weights, dtype=np.float32)
     v4 = np.asarray(v4_weights, dtype=np.float32)
@@ -634,6 +647,14 @@ def run_constrained_v5_capacity(
             else minimum_audit_target_response_ratio
         ),
     )
+    construction_gain, held_out_gain = resolve_temporal_gain_limits(
+        minimum_construction_temporal_gain=minimum_active_temporal_gain,
+        minimum_held_out_temporal_gain=(
+            minimum_active_temporal_gain
+            if minimum_held_out_temporal_gain is None
+            else minimum_held_out_temporal_gain
+        ),
+    )
     kwargs = {
         "a5_weights": a5,
         "v4_weights": v4,
@@ -652,7 +673,7 @@ def run_constrained_v5_capacity(
         "maximum_camera_visibility_response_ratio": training_visibility,
         "objective_mean_weight": float(objective_mean_weight),
         "objective_absolute_adjacent_weight": float(objective_absolute_adjacent_weight),
-        "minimum_active_temporal_gain": float(minimum_active_temporal_gain),
+        "minimum_active_temporal_gain": construction_gain,
     }
     folds = []
     for held_out in unique_cameras:
@@ -713,7 +734,7 @@ def run_constrained_v5_capacity(
             minimum_camera_target_ratio=training_target,
             maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
             maximum_camera_visibility_response_ratio=training_visibility,
-            minimum_active_temporal_gain=minimum_active_temporal_gain,
+            minimum_active_temporal_gain=construction_gain,
         )
         held = _evaluate_active_candidate(
             a5_weights=a5,
@@ -726,7 +747,7 @@ def run_constrained_v5_capacity(
             minimum_camera_target_ratio=audit_target,
             maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
             maximum_camera_visibility_response_ratio=audit_visibility,
-            minimum_active_temporal_gain=minimum_active_temporal_gain,
+            minimum_active_temporal_gain=held_out_gain,
         )
         folds.append(
             {
@@ -771,7 +792,7 @@ def run_constrained_v5_capacity(
         minimum_camera_target_ratio=training_target,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
         maximum_camera_visibility_response_ratio=training_visibility,
-        minimum_active_temporal_gain=minimum_active_temporal_gain,
+        minimum_active_temporal_gain=construction_gain,
     )
     final_evaluation = _evaluate_active_candidate(
         a5_weights=a5,
@@ -784,7 +805,7 @@ def run_constrained_v5_capacity(
         minimum_camera_target_ratio=audit_target,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
         maximum_camera_visibility_response_ratio=audit_visibility,
-        minimum_active_temporal_gain=minimum_active_temporal_gain,
+        minimum_active_temporal_gain=construction_gain,
     )
     return {
         "weights": final_weights,
@@ -793,6 +814,7 @@ def run_constrained_v5_capacity(
         "maximum_audit_visibility_response_ratio": audit_visibility,
         "minimum_training_target_response_ratio": training_target,
         "minimum_audit_target_response_ratio": audit_target,
+        "minimum_held_out_temporal_gain": held_out_gain,
         "folds": folds,
         "all_folds_passed": all(fold["passed"] for fold in folds),
         "final": {

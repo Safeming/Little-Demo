@@ -51,6 +51,7 @@ def load_validated_candidate(index_path: Path, contract: dict) -> tuple[dict, st
     expected_candidates = {
         "a7_dual_evidence_v5_1_canary_377": "dual_evidence_constrained_v5_1",
         "a7_dual_evidence_v5_2_canary_377": "dual_evidence_constrained_v5_2",
+        "a7_dual_evidence_v5_3_canary_377": "dual_evidence_constrained_v5_3",
     }
     expected_candidate = expected_candidates.get(contract.get("freeze_id"))
     if expected_candidate is None:

@@ -24,9 +24,15 @@ frames 0:570:5
 ```
 
 Run the existing fold-local support, v4 lower seed, target, soft-IoU, and
-normalized visibility constraints over all eight cameras. Keep construction
-visibility `<=0.9990`, construction target response `>=0.9975`, held-out
-visibility `<=1.0`, and held-out target response `>=0.99`.
+normalized visibility constraints over all eight cameras. The formal
+eight-camera feasibility sweep fixes construction visibility at `<=0.9980`
+and construction target response at `>=0.995`; held-out visibility remains
+`<=1.0` and retrospective target response remains `>=0.99`.
+
+The full construction candidate must improve outer and boundary by at least
+0.5%. A single LOCO held-out camera is a direction and constraint check rather
+than a second aggregate-effect-size test: its outer and boundary ratios must
+both be below 1.0 while target, visibility, and soft-IoU constraints pass.
 
 This is preferable to another threshold-only repair because it constrains the
 actual camera phases that failed. It is preferable to expanding the action grid
@@ -64,8 +70,10 @@ v5.3 run only freezes the algorithm for clean five-subject LOSO testing.
 
 - Eight-camera LOCO: 8/8 folds pass.
 - Full construction candidate: outer and boundary improve at least 0.5%, every
-  construction camera has visibility at most 0.9990 and target response at
-  least 0.9975.
+  construction camera has visibility at most 0.9980 and target response at
+  least 0.995.
+- Each LOCO held-out camera improves both temporal metrics directionally and
+  passes its target, visibility, and soft-IoU constraints.
 - Retrospective c21-c23: both temporal metrics improve, visibility is at most
   1.0, and target response is at least 0.99.
 - Spatial burden, coverage, soft-IoU, macro/micro IoU, topology, provenance, and

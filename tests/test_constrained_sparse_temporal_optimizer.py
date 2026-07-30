@@ -84,6 +84,23 @@ def test_target_limits_require_construction_floor_not_weaker_than_audit():
         )
 
 
+def test_temporal_gain_limits_allow_directional_held_out_gate():
+    from utils.constrained_sparse_temporal_optimizer import resolve_temporal_gain_limits
+
+    assert resolve_temporal_gain_limits(
+        minimum_construction_temporal_gain=0.005,
+        minimum_held_out_temporal_gain=0.0,
+    ) == (0.005, 0.0)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="held-out temporal"):
+        resolve_temporal_gain_limits(
+            minimum_construction_temporal_gain=0.005,
+            minimum_held_out_temporal_gain=0.006,
+        )
+
+
 def test_capacity_requires_both_construction_and_audit_evaluations():
     from utils.constrained_sparse_temporal_optimizer import capacity_candidate_passes
 

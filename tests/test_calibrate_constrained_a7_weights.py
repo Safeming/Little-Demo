@@ -249,3 +249,45 @@ def test_constrained_v5_2_cli_routes_separate_target_and_visibility_gates(tmp_pa
     assert capacity["minimum_audit_target_response_ratio"] == 0.99
     assert capacity["maximum_training_visibility_response_ratio"] == 0.999
     assert capacity["maximum_audit_visibility_response_ratio"] == 1.0
+
+
+def test_constrained_v5_3_cli_accepts_eight_camera_source_contract(tmp_path):
+    from tools.calibrate_constrained_a7_weights import main
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    freeze = Path("configs/semantic/frozen_a5_main_method_v1.json")
+    evidence_contract = load_a7_temporal_contract(
+        "configs/semantic/frozen_a7_dual_evidence_v5_3_evidence_377.json", freeze
+    )
+    contract = Path(
+        "configs/semantic/frozen_a7_dual_evidence_v5_3_canary_377.json"
+    )
+    weights = np.full((5, len(PART_NAMES)), 0.6, dtype=np.float32)
+    v4_weights = weights.copy()
+    v4_weights[0, PART_NAMES.index("lower")] *= 0.9
+    a5 = tmp_path / "a5.npz"
+    v4 = tmp_path / "v4.npz"
+    evidence = tmp_path / "evidence.npz"
+    output = tmp_path / "candidates"
+    _save_bank(a5, weights)
+    _save_bank(v4, v4_weights)
+    _save_dual_evidence(evidence, evidence_contract["_fingerprint"], len(weights))
+
+    assert main(
+        [
+            "--a5-bank", str(a5),
+            "--v4-bank", str(v4),
+            "--evidence", str(evidence),
+            "--method-freeze", str(freeze),
+            "--a7-contract", str(contract),
+            "--output-dir", str(output),
+            "--allow-canary-inputs",
+        ]
+    ) == 0
+
+    index = json.loads((output / "candidate_index.json").read_text())
+    candidate = index["candidates"][0]
+    assert candidate["candidate_id"] == "dual_evidence_constrained_v5_3"
+    assert candidate["capacity_summary"]["minimum_training_target_response_ratio"] == 0.995
+    assert candidate["capacity_summary"]["maximum_training_visibility_response_ratio"] == 0.998
+    assert candidate["capacity_summary"]["minimum_held_out_temporal_gain"] == 0.0

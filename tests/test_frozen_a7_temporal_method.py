@@ -31,6 +31,9 @@ A7_V5_2_CONTRACT_PATH = Path(
 A7_V5_3_EVIDENCE_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_dual_evidence_v5_3_evidence_377.json"
 )
+A7_V5_3_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_dual_evidence_v5_3_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -303,3 +306,24 @@ def test_frozen_a7_v5_3_evidence_contract_uses_eight_construction_cameras():
     assert contract["retrospective_test_cameras"] == ["c21", "c22", "c23"]
     assert contract["frozen_test_cameras"] == []
     assert contract["evidence_role"] == "development_construction"
+
+
+def test_frozen_a7_v5_3_candidate_contract_pins_eight_camera_evidence():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V5_3_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_dual_evidence_v5_3_canary_377"
+    assert contract["source_evidence_sha256"] == (
+        "8b655f48fad664ba308f51d3291971382d7f9037fc7d69e38fca37907efd77f4"
+    )
+    assert contract["source_evidence_contract_fingerprint"] == (
+        "9f4322fe3a7ac2812908289d65964f4d6d74c39d048e8707dd90fe938f04b368"
+    )
+    assert len(contract["evidence_cameras"]) == 8
+    assert contract["minimum_training_target_response_ratio"] == pytest.approx(0.995)
+    assert contract["maximum_training_visibility_response_ratio"] == pytest.approx(
+        0.998
+    )
+    assert contract["minimum_loco_held_out_temporal_gain"] == pytest.approx(0.0)
+    assert contract["paper_test_eligible"] is False
