@@ -103,6 +103,7 @@ def validate_a7_temporal_contract(
         "a7_renderer_aligned_v2_canary_377",
         "a7_renderer_objective_v3_canary_377",
         "a7_sparse_robust_v4_canary_377",
+        "a7_dual_evidence_v5_canary_377",
     }:
         raise ValueError("unsupported A7 contract freeze_id")
     required_values = dict(_A7_REQUIRED_VALUES)
@@ -215,6 +216,41 @@ def validate_a7_temporal_contract(
         for field, expected in expected_policy.items():
             if payload.get(field) != expected:
                 raise ValueError(f"A7 v4 contract {field} must be {expected!r}")
+    if freeze_id == "a7_dual_evidence_v5_canary_377":
+        expected_policy = {
+            "subject": "377",
+            "evidence_mode": "renderer_aligned_dual_sequence_constrained",
+            "renderer_attribution": "colors_gradient_dual",
+            "source_v4_bank_sha256": "f1c22122e4e3cc07e884f620efd01632daa853604db2b2d46a51525cf29eadb1",
+            "processed_parts": ["hair", "lower"],
+            "frozen_parts": ["face", "upper", "shoes", "skin"],
+            "initial_hair_policy": "a5",
+            "initial_lower_policy": "v4",
+            "source_v4_minimum_camera_target_ratio": 0.98,
+            "selection_threshold": 0.2,
+            "preserve_a5_selection_topology": True,
+            "maximum_weight_above_a5": 0.0,
+            "renderer_contribution_epsilon": 1.0e-8,
+            "renderer_boundary_radius": 6,
+            "coordinate_reduction_fractions": [0.05, 0.1],
+            "maximum_changed_fraction": 0.2,
+            "maximum_hair_changed_count": 3,
+            "minimum_camera_target_ratio": 0.99,
+            "maximum_evidence_soft_iou_drop": 0.005,
+            "maximum_visibility_response_ratio": 1.0,
+            "objective_mean_weight": 0.25,
+            "objective_absolute_adjacent_weight": 0.05,
+            "loco_all_folds_required": True,
+            "minimum_active_temporal_gain": 0.005,
+            "audit_cameras": ["c21", "c22", "c23"],
+            "maximum_spatial_burden_worsening": 0.02,
+            "maximum_part_soft_iou_drop": 0.01,
+            "maximum_macro_miou_drop": 0.01,
+            "maximum_micro_iou_drop": 0.005,
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v5 contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(

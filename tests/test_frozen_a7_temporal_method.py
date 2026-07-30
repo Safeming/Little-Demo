@@ -19,6 +19,9 @@ A7_V3_CONTRACT_PATH = Path(
 A7_V4_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_sparse_robust_v4_canary_377.json"
 )
+A7_V5_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_dual_evidence_v5_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -206,6 +209,30 @@ def test_frozen_a7_v4_contract_freezes_sparse_robust_capacity_policy():
     assert contract["minimum_camera_target_ratio"] == pytest.approx(0.98)
     assert contract["loco_all_folds_required"] is True
     assert contract["minimum_active_temporal_gain"] == pytest.approx(0.005)
+    assert contract["maximum_part_soft_iou_drop"] == pytest.approx(0.01)
+    assert contract["preserve_a5_selection_topology"] is True
+    assert contract["maximum_weight_above_a5"] == pytest.approx(0.0)
+
+
+def test_frozen_a7_v5_contract_freezes_dual_evidence_repair_policy():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V5_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_dual_evidence_v5_canary_377"
+    assert contract["evidence_mode"] == "renderer_aligned_dual_sequence_constrained"
+    assert contract["source_v4_bank_sha256"] == (
+        "f1c22122e4e3cc07e884f620efd01632daa853604db2b2d46a51525cf29eadb1"
+    )
+    assert contract["initial_hair_policy"] == "a5"
+    assert contract["initial_lower_policy"] == "v4"
+    assert contract["source_v4_minimum_camera_target_ratio"] == pytest.approx(0.98)
+    assert contract["maximum_hair_changed_count"] == 3
+    assert contract["coordinate_reduction_fractions"] == [0.05, 0.1]
+    assert contract["minimum_camera_target_ratio"] == pytest.approx(0.99)
+    assert contract["maximum_evidence_soft_iou_drop"] == pytest.approx(0.005)
+    assert contract["maximum_visibility_response_ratio"] == pytest.approx(1.0)
+    assert contract["audit_cameras"] == ["c21", "c22", "c23"]
     assert contract["maximum_part_soft_iou_drop"] == pytest.approx(0.01)
     assert contract["preserve_a5_selection_topology"] is True
     assert contract["maximum_weight_above_a5"] == pytest.approx(0.0)

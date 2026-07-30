@@ -31,6 +31,9 @@ def test_extract_renderer_region_contributions_uses_rgb_gradient_channels():
     torch.testing.assert_close(result["target"], torch.tensor([2.0, 0.0]))
     torch.testing.assert_close(result["outer"], torch.tensor([1.0, 1.5]))
     torch.testing.assert_close(result["boundary"], torch.tensor([0.0, 1.0]))
+    torch.testing.assert_close(result["selection_target"], torch.tensor([1.0, 0.0]))
+    torch.testing.assert_close(result["selection_outer"], torch.tensor([0.5, 3.0]))
+    torch.testing.assert_close(result["selection_boundary"], torch.tensor([0.0, 2.0]))
 
 
 def test_renderer_contribution_accumulator_exports_raw_and_compatibility_fields():
@@ -85,6 +88,10 @@ def test_renderer_contribution_sequence_exports_float16_samples_and_metadata():
             target_contribution=values,
             outer_contribution=values * 2.0,
             boundary_contribution=values * 3.0,
+            selection_target_contribution=values * 4.0,
+            selection_outer_contribution=values * 5.0,
+            selection_boundary_contribution=values * 6.0,
+            target_pixel_count=np.array([10.0 + scale], dtype=np.float32),
         )
 
     result = finalize_renderer_contribution_sequence(state)
@@ -93,8 +100,15 @@ def test_renderer_contribution_sequence_exports_float16_samples_and_metadata():
     assert result["renderer_target_contribution_sequence"].dtype == np.float16
     assert result["renderer_outer_contribution_sequence"].dtype == np.float16
     assert result["renderer_boundary_contribution_sequence"].dtype == np.float16
+    assert result["renderer_selection_target_contribution_sequence"].dtype == np.float16
+    assert result["renderer_selection_outer_contribution_sequence"].dtype == np.float16
+    assert result["renderer_selection_boundary_contribution_sequence"].dtype == np.float16
     assert result["renderer_sequence_camera_index"].tolist() == [0, 0, 1]
     assert result["renderer_sequence_frame_index"].tolist() == [0, 5, 0]
+    np.testing.assert_allclose(
+        result["renderer_sequence_target_pixel_count"],
+        np.array([[11.0], [12.0], [13.0]], dtype=np.float32),
+    )
     np.testing.assert_allclose(
         result["renderer_boundary_contribution_sequence"][:, 0, 0],
         np.array([3.0, 6.0, 9.0], dtype=np.float16),

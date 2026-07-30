@@ -70,7 +70,10 @@ def _save_evidence(
     arrays = {key: np.asarray(value) for key, value in evidence.items()}
     arrays.update(
         {
-            "schema_version": np.array(3, dtype=np.int32),
+            "schema_version": np.array(
+                4 if "renderer_selection_target_contribution_sequence" in arrays else 3,
+                dtype=np.int32,
+            ),
             "point_count": np.array(evidence["temporal_visible_count"].shape[0], dtype=np.int64),
             "part_names": np.asarray(PART_NAMES, dtype="U16"),
             "cameras": np.asarray(contract["evidence_cameras"], dtype="U3"),
@@ -80,7 +83,9 @@ def _save_evidence(
             "formal_protocol": np.array(1, dtype=np.uint8),
             "sample_count": np.array(sample_count, dtype=np.int64),
             "evidence_mode": np.array(contract["evidence_mode"]),
-            "renderer_attribution": np.array("colors_gradient"),
+            "renderer_attribution": np.array(
+                contract.get("renderer_attribution", "colors_gradient")
+            ),
             "a7_contract_fingerprint": np.array(contract["_fingerprint"]),
             "base_method_freeze_fingerprint": np.array(
                 contract["base_method_freeze_fingerprint"]
@@ -202,10 +207,15 @@ def run(args: argparse.Namespace, contract: dict) -> dict:
         target_values = np.zeros((point_count, len(PART_NAMES)), dtype=np.float32)
         outer_values = np.zeros_like(target_values)
         boundary_values = np.zeros_like(target_values)
+        selection_target_values = np.zeros_like(target_values)
+        selection_outer_values = np.zeros_like(target_values)
+        selection_boundary_values = np.zeros_like(target_values)
+        target_pixel_counts = np.zeros((len(PART_NAMES),), dtype=np.float32)
         valid_mask = np.asarray(valid, dtype=np.float32) >= 0.5
         for part_offset, part in enumerate(contract["parts"]):
             part_index = PART_NAMES.index(part)
             target_mask = np.asarray(part_masks[part], dtype=np.float32) >= 0.5
+            target_pixel_counts[part_index] = float(np.count_nonzero(target_mask & valid_mask))
             boundary_mask = make_boundary_band(
                 target_mask.astype(np.float32),
                 radius=int(contract["renderer_boundary_radius"]),
@@ -229,6 +239,15 @@ def run(args: argparse.Namespace, contract: dict) -> dict:
             target_values[:, part_index] = contributions["target"].detach().cpu().numpy()
             outer_values[:, part_index] = contributions["outer"].detach().cpu().numpy()
             boundary_values[:, part_index] = contributions["boundary"].detach().cpu().numpy()
+            selection_target_values[:, part_index] = contributions[
+                "selection_target"
+            ].detach().cpu().numpy()
+            selection_outer_values[:, part_index] = contributions[
+                "selection_outer"
+            ].detach().cpu().numpy()
+            selection_boundary_values[:, part_index] = contributions[
+                "selection_boundary"
+            ].detach().cpu().numpy()
         accumulate_renderer_contribution_frame(
             state,
             frame_index=frame,
@@ -244,6 +263,10 @@ def run(args: argparse.Namespace, contract: dict) -> dict:
             target_contribution=target_values,
             outer_contribution=outer_values,
             boundary_contribution=boundary_values,
+            selection_target_contribution=selection_target_values,
+            selection_outer_contribution=selection_outer_values,
+            selection_boundary_contribution=selection_boundary_values,
+            target_pixel_count=target_pixel_counts,
         )
         print(f"[A7 renderer evidence] {sample_index + 1}/{len(expected)} {image_name}", flush=True)
         del render_pkg, attribution_colors, deformed, base_colors

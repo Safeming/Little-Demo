@@ -17,6 +17,10 @@ def append_renderer_contribution_sequence(
     target_contribution,
     outer_contribution,
     boundary_contribution,
+    selection_target_contribution=None,
+    selection_outer_contribution=None,
+    selection_boundary_contribution=None,
+    target_pixel_count=None,
 ) -> None:
     if not isinstance(state, MutableMapping):
         raise ValueError("state must be a mutable mapping")
@@ -29,6 +33,28 @@ def append_renderer_contribution_sequence(
         "outer": np.asarray(outer_contribution, dtype=np.float32),
         "boundary": np.asarray(boundary_contribution, dtype=np.float32),
     }
+    selection_values = (
+        selection_target_contribution,
+        selection_outer_contribution,
+        selection_boundary_contribution,
+    )
+    has_selection = any(value is not None for value in selection_values)
+    if has_selection and not all(value is not None for value in selection_values):
+        raise ValueError("selection contribution sequences must be supplied together")
+    if has_selection:
+        arrays.update(
+            {
+                "selection_target": np.asarray(
+                    selection_target_contribution, dtype=np.float32
+                ),
+                "selection_outer": np.asarray(
+                    selection_outer_contribution, dtype=np.float32
+                ),
+                "selection_boundary": np.asarray(
+                    selection_boundary_contribution, dtype=np.float32
+                ),
+            }
+        )
     shape = arrays["target"].shape
     if len(shape) != 2 or any(value.shape != shape for value in arrays.values()):
         raise ValueError("renderer sequence contributions must have matching shape [N, C]")
@@ -38,20 +64,35 @@ def append_renderer_contribution_sequence(
         state["shape"] = shape
         state["camera_indices"] = []
         state["frame_indices"] = []
-        for signal in SIGNALS:
+        state["has_selection"] = has_selection
+        state["has_target_pixel_count"] = target_pixel_count is not None
+        for signal in arrays:
             state[signal] = []
+        if target_pixel_count is not None:
+            state["target_pixel_count"] = []
     if tuple(state.get("shape", ())) != shape:
         raise ValueError("renderer sequence sample shape changed")
+    if bool(state.get("has_selection")) != has_selection:
+        raise ValueError("renderer sequence selection fields changed")
+    if bool(state.get("has_target_pixel_count")) != (target_pixel_count is not None):
+        raise ValueError("renderer sequence target pixel count fields changed")
     state["camera_indices"].append(int(camera_index))
     state["frame_indices"].append(int(frame_index))
     for signal, value in arrays.items():
         state[signal].append(value.astype(np.float16))
+    if target_pixel_count is not None:
+        counts = np.asarray(target_pixel_count, dtype=np.float32).reshape(-1)
+        if counts.shape != (shape[1],):
+            raise ValueError("target_pixel_count must match the contribution part count")
+        if not np.all(np.isfinite(counts)) or np.any(counts < 0.0):
+            raise ValueError("target_pixel_count must be finite and non-negative")
+        state["target_pixel_count"].append(counts)
 
 
 def finalize_renderer_contribution_sequence(state) -> dict[str, np.ndarray]:
     if not isinstance(state, MutableMapping) or not state.get("camera_indices"):
         raise ValueError("cannot finalize an empty renderer contribution sequence")
-    return {
+    result = {
         "renderer_target_contribution_sequence": np.stack(state["target"], axis=0),
         "renderer_outer_contribution_sequence": np.stack(state["outer"], axis=0),
         "renderer_boundary_contribution_sequence": np.stack(state["boundary"], axis=0),
@@ -62,6 +103,16 @@ def finalize_renderer_contribution_sequence(state) -> dict[str, np.ndarray]:
             state["frame_indices"], dtype=np.int32
         ),
     }
+    if state.get("has_selection"):
+        for signal in SIGNALS:
+            result[f"renderer_selection_{signal}_contribution_sequence"] = np.stack(
+                state[f"selection_{signal}"], axis=0
+            )
+    if state.get("has_target_pixel_count"):
+        result["renderer_sequence_target_pixel_count"] = np.stack(
+            state["target_pixel_count"], axis=0
+        ).astype(np.float32)
+    return result
 
 
 def extract_renderer_region_contributions(
@@ -103,10 +154,18 @@ def extract_renderer_region_contributions(
         retain_graph=retain_graph,
         create_graph=False,
     )[0]
-    weighted = gradients.clamp_min(0.0) * sensitivity.to(
+    selection = gradients.clamp_min(0.0)
+    weighted = selection * sensitivity.to(
         device=gradients.device, dtype=gradients.dtype
     )[:, None].clamp_min(0.0)
-    return {name: weighted[:, index] for index, name in enumerate(SIGNALS)}
+    result = {name: weighted[:, index] for index, name in enumerate(SIGNALS)}
+    result.update(
+        {
+            f"selection_{name}": selection[:, index]
+            for index, name in enumerate(SIGNALS)
+        }
+    )
+    return result
 
 
 def _initialize_state(state: MutableMapping, shape: tuple[int, int]) -> None:
