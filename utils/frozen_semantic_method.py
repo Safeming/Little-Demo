@@ -106,13 +106,22 @@ def validate_a7_temporal_contract(
         "a7_dual_evidence_v5_canary_377",
         "a7_dual_evidence_v5_1_canary_377",
         "a7_dual_evidence_v5_2_canary_377",
+        "a7_dual_evidence_v5_3_evidence_377",
     }:
         raise ValueError("unsupported A7 contract freeze_id")
     required_values = dict(_A7_REQUIRED_VALUES)
     required_values["freeze_id"] = freeze_id
-    if freeze_id == "a7_dual_evidence_v5_2_canary_377":
+    if freeze_id in {
+        "a7_dual_evidence_v5_2_canary_377",
+        "a7_dual_evidence_v5_3_evidence_377",
+    }:
         required_values["retrospective_test_cameras"] = ["c21", "c22", "c23"]
         required_values["frozen_test_cameras"] = []
+    if freeze_id == "a7_dual_evidence_v5_3_evidence_377":
+        required_values["evidence_cameras"] = [
+            "c01", "c05", "c09", "c13", "c17", "c18", "c19", "c20"
+        ]
+        required_values["validation_cameras"] = []
     for field, expected in required_values.items():
         if payload.get(field) != expected:
             raise ValueError(f"A7 contract {field} must be {expected!r}")
@@ -337,6 +346,24 @@ def validate_a7_temporal_contract(
         for field, expected in expected_policy.items():
             if payload.get(field) != expected:
                 raise ValueError(f"A7 v5.2 contract {field} must be {expected!r}")
+    if freeze_id == "a7_dual_evidence_v5_3_evidence_377":
+        expected_policy = {
+            "subject": "377",
+            "evidence_role": "development_construction",
+            "evidence_mode": "renderer_aligned_dual_sequence_constrained",
+            "renderer_attribution": "colors_gradient_dual",
+            "processed_parts": ["hair", "lower"],
+            "frozen_parts": ["face", "upper", "shoes", "skin"],
+            "selection_threshold": 0.2,
+            "preserve_a5_selection_topology": True,
+            "maximum_weight_above_a5": 0.0,
+            "renderer_contribution_epsilon": 1.0e-8,
+            "renderer_boundary_radius": 6,
+            "paper_test_eligible": False,
+        }
+        for field, expected in expected_policy.items():
+            if payload.get(field) != expected:
+                raise ValueError(f"A7 v5.3 evidence contract {field} must be {expected!r}")
 
 
 def load_a7_temporal_contract(
