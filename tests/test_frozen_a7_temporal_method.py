@@ -25,6 +25,9 @@ A7_V5_CONTRACT_PATH = Path(
 A7_V5_1_CONTRACT_PATH = Path(
     "configs/semantic/frozen_a7_dual_evidence_v5_1_canary_377.json"
 )
+A7_V5_2_CONTRACT_PATH = Path(
+    "configs/semantic/frozen_a7_dual_evidence_v5_2_canary_377.json"
+)
 
 
 EXPECTED_PROTOCOL = {
@@ -259,3 +262,23 @@ def test_frozen_a7_v5_1_contract_separates_visibility_margin_and_audit_gate():
     assert contract["maximum_audit_visibility_response_ratio"] == pytest.approx(1.0)
     assert contract["coordinate_reduction_fractions"] == [0.05, 0.1]
     assert contract["maximum_hair_changed_count"] == 3
+
+
+def test_frozen_a7_v5_2_contract_separates_target_and_visibility_margins():
+    from utils.frozen_semantic_method import load_a7_temporal_contract
+
+    contract = load_a7_temporal_contract(A7_V5_2_CONTRACT_PATH, A5_FREEZE_PATH)
+
+    assert contract["freeze_id"] == "a7_dual_evidence_v5_2_canary_377"
+    assert contract["minimum_training_target_response_ratio"] == pytest.approx(
+        0.9975
+    )
+    assert contract["minimum_audit_target_response_ratio"] == pytest.approx(0.99)
+    assert contract["maximum_training_visibility_response_ratio"] == pytest.approx(
+        0.999
+    )
+    assert contract["maximum_audit_visibility_response_ratio"] == pytest.approx(1.0)
+    assert contract["validation_cameras"] == ["c17", "c18", "c19", "c20"]
+    assert contract["retrospective_test_cameras"] == ["c21", "c22", "c23"]
+    assert contract["frozen_test_cameras"] == []
+    assert contract["paper_test_eligible"] is False

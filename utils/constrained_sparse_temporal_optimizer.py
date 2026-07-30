@@ -76,6 +76,18 @@ def resolve_visibility_limits(
     return training, audit
 
 
+def resolve_target_limits(
+    *,
+    minimum_training_target_response_ratio: float,
+    minimum_audit_target_response_ratio: float,
+) -> tuple[float, float]:
+    training = float(minimum_training_target_response_ratio)
+    audit = float(minimum_audit_target_response_ratio)
+    if training < audit:
+        raise ValueError("training target ratio must not be below the audit ratio")
+    return training, audit
+
+
 def capacity_candidate_passes(
     construction_evaluation: dict, audit_evaluation: dict
 ) -> bool:
@@ -591,6 +603,8 @@ def run_constrained_v5_capacity(
     source_v4_minimum_camera_target_ratio: float = 0.98,
     maximum_training_visibility_response_ratio: float | None = None,
     maximum_audit_visibility_response_ratio: float | None = None,
+    minimum_training_target_response_ratio: float | None = None,
+    minimum_audit_target_response_ratio: float | None = None,
 ) -> dict:
     a5 = np.asarray(a5_weights, dtype=np.float32)
     v4 = np.asarray(v4_weights, dtype=np.float32)
@@ -608,6 +622,18 @@ def run_constrained_v5_capacity(
             else maximum_audit_visibility_response_ratio
         ),
     )
+    training_target, audit_target = resolve_target_limits(
+        minimum_training_target_response_ratio=(
+            minimum_camera_target_ratio
+            if minimum_training_target_response_ratio is None
+            else minimum_training_target_response_ratio
+        ),
+        minimum_audit_target_response_ratio=(
+            minimum_camera_target_ratio
+            if minimum_audit_target_response_ratio is None
+            else minimum_audit_target_response_ratio
+        ),
+    )
     kwargs = {
         "a5_weights": a5,
         "v4_weights": v4,
@@ -621,7 +647,7 @@ def run_constrained_v5_capacity(
         "reduction_fractions": reduction_fractions,
         "maximum_changed_fraction": float(maximum_changed_fraction),
         "maximum_hair_changed_count": int(maximum_hair_changed_count),
-        "minimum_camera_target_ratio": float(minimum_camera_target_ratio),
+        "minimum_camera_target_ratio": training_target,
         "maximum_camera_soft_iou_drop": float(maximum_camera_soft_iou_drop),
         "maximum_camera_visibility_response_ratio": training_visibility,
         "objective_mean_weight": float(objective_mean_weight),
@@ -684,7 +710,7 @@ def run_constrained_v5_capacity(
             constraint_part_indices=_changed_part_indices(
                 a5, fold_weights, (hair_index, lower_index)
             ),
-            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            minimum_camera_target_ratio=training_target,
             maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
             maximum_camera_visibility_response_ratio=training_visibility,
             minimum_active_temporal_gain=minimum_active_temporal_gain,
@@ -697,7 +723,7 @@ def run_constrained_v5_capacity(
             camera_index=cameras,
             camera_ids=(held_out,),
             part_indices=(hair_index, lower_index),
-            minimum_camera_target_ratio=minimum_camera_target_ratio,
+            minimum_camera_target_ratio=audit_target,
             maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
             maximum_camera_visibility_response_ratio=audit_visibility,
             minimum_active_temporal_gain=minimum_active_temporal_gain,
@@ -742,7 +768,7 @@ def run_constrained_v5_capacity(
         constraint_part_indices=_changed_part_indices(
             a5, final_weights, (hair_index, lower_index)
         ),
-        minimum_camera_target_ratio=minimum_camera_target_ratio,
+        minimum_camera_target_ratio=training_target,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
         maximum_camera_visibility_response_ratio=training_visibility,
         minimum_active_temporal_gain=minimum_active_temporal_gain,
@@ -755,7 +781,7 @@ def run_constrained_v5_capacity(
         camera_index=cameras,
         camera_ids=unique_cameras,
         part_indices=(hair_index, lower_index),
-        minimum_camera_target_ratio=minimum_camera_target_ratio,
+        minimum_camera_target_ratio=audit_target,
         maximum_camera_soft_iou_drop=maximum_camera_soft_iou_drop,
         maximum_camera_visibility_response_ratio=audit_visibility,
         minimum_active_temporal_gain=minimum_active_temporal_gain,
@@ -765,6 +791,8 @@ def run_constrained_v5_capacity(
         "camera_ids": list(unique_cameras),
         "maximum_training_visibility_response_ratio": training_visibility,
         "maximum_audit_visibility_response_ratio": audit_visibility,
+        "minimum_training_target_response_ratio": training_target,
+        "minimum_audit_target_response_ratio": audit_target,
         "folds": folds,
         "all_folds_passed": all(fold["passed"] for fold in folds),
         "final": {

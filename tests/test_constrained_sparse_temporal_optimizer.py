@@ -67,6 +67,23 @@ def test_visibility_limits_require_construction_margin_not_weaker_than_audit():
         )
 
 
+def test_target_limits_require_construction_floor_not_weaker_than_audit():
+    from utils.constrained_sparse_temporal_optimizer import resolve_target_limits
+
+    assert resolve_target_limits(
+        minimum_training_target_response_ratio=0.9975,
+        minimum_audit_target_response_ratio=0.99,
+    ) == (0.9975, 0.99)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="training target"):
+        resolve_target_limits(
+            minimum_training_target_response_ratio=0.99,
+            minimum_audit_target_response_ratio=0.9975,
+        )
+
+
 def test_capacity_requires_both_construction_and_audit_evaluations():
     from utils.constrained_sparse_temporal_optimizer import capacity_candidate_passes
 

@@ -24,6 +24,7 @@ from utils.part_label_bank import PART_NAMES, load_part_label_bank, save_a7_part
 
 V5_CANDIDATE_ID = "dual_evidence_constrained_v5"
 V5_1_CANDIDATE_ID = "dual_evidence_constrained_v5_1"
+V5_2_CANDIDATE_ID = "dual_evidence_constrained_v5_2"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -173,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     candidate_ids = {
         "a7_dual_evidence_v5_canary_377": V5_CANDIDATE_ID,
         "a7_dual_evidence_v5_1_canary_377": V5_1_CANDIDATE_ID,
+        "a7_dual_evidence_v5_2_canary_377": V5_2_CANDIDATE_ID,
     }
     if contract["freeze_id"] not in candidate_ids:
         raise ValueError("constrained calibration requires an A7 v5 contract")
@@ -208,6 +210,18 @@ def main(argv: list[str] | None = None) -> int:
     audit_visibility_ratio = float(
         contract.get(
             "maximum_audit_visibility_response_ratio", legacy_visibility_ratio
+        )
+    )
+    training_target_ratio = float(
+        contract.get(
+            "minimum_training_target_response_ratio",
+            contract["minimum_camera_target_ratio"],
+        )
+    )
+    audit_target_ratio = float(
+        contract.get(
+            "minimum_audit_target_response_ratio",
+            contract["minimum_camera_target_ratio"],
         )
     )
 
@@ -253,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         maximum_training_visibility_response_ratio=training_visibility_ratio,
         maximum_audit_visibility_response_ratio=audit_visibility_ratio,
+        minimum_training_target_response_ratio=training_target_ratio,
+        minimum_audit_target_response_ratio=audit_target_ratio,
     )
     weights = np.asarray(capacity.pop("weights"), dtype=np.float32)
     selected_a5 = a5 >= float(contract["selection_threshold"])

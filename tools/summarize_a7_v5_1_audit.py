@@ -48,12 +48,19 @@ def load_validated_candidate(index_path: Path, contract: dict) -> tuple[dict, st
     index = json.loads(index_path.read_text(encoding="utf-8"))
     if index.get("a7_contract_fingerprint") != contract["_fingerprint"]:
         raise ValueError("candidate index contract fingerprint mismatch")
+    expected_candidates = {
+        "a7_dual_evidence_v5_1_canary_377": "dual_evidence_constrained_v5_1",
+        "a7_dual_evidence_v5_2_canary_377": "dual_evidence_constrained_v5_2",
+    }
+    expected_candidate = expected_candidates.get(contract.get("freeze_id"))
+    if expected_candidate is None:
+        raise ValueError("candidate index requires a supported constrained contract")
     shortlist = index.get("validation_shortlist", [])
-    if shortlist != ["dual_evidence_constrained_v5_1"]:
-        raise ValueError("candidate index must contain the frozen v5.1 candidate")
+    if shortlist != [expected_candidate]:
+        raise ValueError("candidate index must contain the frozen constrained candidate")
     candidates = [row for row in index.get("candidates", []) if row.get("candidate_id") == shortlist[0]]
     if len(candidates) != 1 or not candidates[0].get("valid"):
-        raise ValueError("frozen v5.1 candidate is not valid")
+        raise ValueError("frozen constrained candidate is not valid")
     candidate = candidates[0]
     capacity = candidate.get("capacity_summary", {})
     expected_cameras = list(range(len(contract.get("evidence_cameras", []))))

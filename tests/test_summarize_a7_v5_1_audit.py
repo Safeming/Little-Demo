@@ -209,7 +209,11 @@ def test_v5_1_audit_rejects_wrong_temporal_protocol(tmp_path):
 def test_v5_1_candidate_requires_construction_gate(tmp_path):
     from tools.summarize_a7_v5_1_audit import load_validated_candidate
 
-    contract = {"_fingerprint": "c" * 64, "evidence_cameras": ["c01", "c05"]}
+    contract = {
+        "_fingerprint": "c" * 64,
+        "freeze_id": "a7_dual_evidence_v5_1_canary_377",
+        "evidence_cameras": ["c01", "c05"],
+    }
     index = tmp_path / "candidate_index.json"
     _write_json(
         index,
