@@ -39,6 +39,7 @@
   "activation": "silu",
   "minimum_gate": 0.9,
   "maximum_gate": 1.0,
+  "selection_threshold": 0.2,
   "initial_minimum_gate": 0.999,
   "random_seed": 20260803,
   "training_epochs": 200,

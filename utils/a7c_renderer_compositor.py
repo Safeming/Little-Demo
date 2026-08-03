@@ -59,3 +59,70 @@ def normalized_flicker(values) -> float:
     return float(
         np.mean(np.abs(np.diff(signal))) / max(abs(float(np.mean(signal))), 1.0e-12)
     )
+
+
+def extract_runtime_probe_features(
+    *,
+    means3d,
+    world_view_transform,
+    camera_center,
+    visibility,
+    radii,
+    opacity,
+    a5_lower_weight,
+    selected_lower,
+) -> np.ndarray:
+    points = np.asarray(means3d, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("means3d must have shape [N, 3]")
+    count = points.shape[0]
+    transform = np.asarray(world_view_transform, dtype=np.float64)
+    center = np.asarray(camera_center, dtype=np.float64).reshape(3)
+    if transform.shape != (4, 4):
+        raise ValueError("world_view_transform must have shape [4, 4]")
+    homogeneous = np.concatenate([points, np.ones((count, 1))], axis=1)
+    camera = homogeneous @ transform
+    denominator = np.where(np.abs(camera[:, 3]) > 1.0e-8, camera[:, 3], 1.0)
+    camera_xyz = camera[:, :3] / denominator[:, None]
+    depth = np.maximum(np.abs(camera_xyz[:, 2]), 1.0e-6)
+    direction = center[None, :] - points
+    direction /= np.maximum(np.linalg.norm(direction, axis=1, keepdims=True), 1.0e-8)
+    visible = np.asarray(visibility, dtype=np.float64).reshape(-1)
+    radius = np.asarray(radii, dtype=np.float64).reshape(-1)
+    alpha = np.asarray(opacity, dtype=np.float64).reshape(-1)
+    lower = np.asarray(a5_lower_weight, dtype=np.float64).reshape(-1)
+    selected = np.asarray(selected_lower, dtype=np.float64).reshape(-1)
+    if any(value.shape != (count,) for value in (visible, radius, alpha, lower, selected)):
+        raise ValueError("per-carrier probe values must match means3d")
+    features = np.stack(
+        [
+            visible,
+            np.log1p(np.maximum(radius, 0.0)),
+            camera_xyz[:, 0] / depth,
+            camera_xyz[:, 1] / depth,
+            np.log(depth),
+            direction[:, 0],
+            direction[:, 1],
+            direction[:, 2],
+            alpha,
+            visible * np.maximum(alpha, 0.0) * np.square(np.maximum(radius, 0.0)),
+            lower,
+            selected,
+        ],
+        axis=1,
+    ).astype(np.float32)
+    if not np.all(np.isfinite(features)):
+        raise ValueError("runtime probe features must be finite")
+    return features
+
+
+def fit_feature_normalization(features, *, sample_mask) -> dict[str, np.ndarray]:
+    values = np.asarray(features, dtype=np.float64)
+    selected = np.asarray(sample_mask, dtype=bool).reshape(-1)
+    if values.ndim != 3 or selected.shape != (values.shape[0],) or not np.any(selected):
+        raise ValueError("features and non-empty sample_mask must share sample dimension")
+    fitting = values[selected].reshape(-1, values.shape[-1])
+    mean = np.mean(fitting, axis=0)
+    scale = np.std(fitting, axis=0)
+    scale = np.where(scale > 1.0e-6, scale, 1.0)
+    return {"mean": mean.astype(np.float32), "scale": scale.astype(np.float32)}

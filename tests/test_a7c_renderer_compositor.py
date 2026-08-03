@@ -23,6 +23,7 @@ def test_contract_freezes_canary_scope_and_model():
     assert payload["temporal_block_count"] == 6
     assert payload["minimum_gate"] == 0.9
     assert payload["maximum_gate"] == 1.0
+    assert payload["selection_threshold"] == 0.2
     assert payload["hidden_dimensions"] == [32, 16]
     assert payload["paper_test_eligible"] is False
 
@@ -58,3 +59,41 @@ def test_contiguous_block_ids_do_not_interleave_time():
     assert blocks.tolist() == [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
     with pytest.raises(ValueError, match="sorted"):
         contiguous_block_ids(frames[::-1], 3)
+
+
+def test_runtime_probe_features_are_finite_and_schema_ordered():
+    from utils.a7c_renderer_compositor import extract_runtime_probe_features
+
+    features = extract_runtime_probe_features(
+        means3d=np.array([[1.0, 2.0, 4.0], [0.0, 1.0, 2.0]]),
+        world_view_transform=np.eye(4),
+        camera_center=np.zeros(3),
+        visibility=np.array([True, False]),
+        radii=np.array([2.0, 0.0]),
+        opacity=np.array([0.5, 0.25]),
+        a5_lower_weight=np.array([0.8, 0.7]),
+        selected_lower=np.array([1.0, 1.0]),
+    )
+
+    assert features.shape == (2, 12)
+    assert np.all(np.isfinite(features))
+    assert features[0, 0] == 1.0
+    assert features[1, 0] == 0.0
+    assert features[0, 1] == pytest.approx(np.log1p(2.0))
+
+
+def test_probe_normalization_uses_only_selected_fit_samples():
+    from utils.a7c_renderer_compositor import fit_feature_normalization
+
+    features = np.array(
+        [
+            [[0.0, 1.0], [0.0, 3.0]],
+            [[0.0, 5.0], [0.0, 7.0]],
+            [[100.0, 100.0], [100.0, 100.0]],
+        ]
+    )
+    stats = fit_feature_normalization(features, sample_mask=np.array([1, 1, 0], bool))
+
+    np.testing.assert_allclose(stats["mean"], [0.0, 4.0])
+    assert stats["scale"][0] == 1.0
+    assert stats["mean"][0] != pytest.approx(100.0)
