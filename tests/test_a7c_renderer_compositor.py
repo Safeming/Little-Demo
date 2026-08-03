@@ -97,3 +97,63 @@ def test_probe_normalization_uses_only_selected_fit_samples():
     np.testing.assert_allclose(stats["mean"], [0.0, 4.0])
     assert stats["scale"][0] == 1.0
     assert stats["mean"][0] != pytest.approx(100.0)
+
+
+def test_bounded_carrier_mlp_is_stateless_bounded_and_near_identity():
+    import torch
+    from utils.a7c_renderer_compositor import BoundedCarrierMLP
+
+    torch.manual_seed(1)
+    model = BoundedCarrierMLP(12, [32, 16], minimum_gate=0.9, initial_gate=0.999)
+    values = torch.randn(9, 12)
+    first = model(values)
+    second = torch.cat([model(values[4:]), model(values[:4])])
+
+    assert float(first.min()) >= 0.9
+    assert float(first.max()) <= 1.0
+    assert float(first.min()) >= 0.999 - 1e-6
+    torch.testing.assert_close(second, torch.cat([first[4:], first[:4]]))
+    assert not any("embedding" in name.lower() for name, _ in model.named_parameters())
+
+
+def test_canary_splits_hold_out_contiguous_blocks_and_audit_cameras():
+    from utils.a7c_renderer_compositor import build_canary_splits
+
+    camera = np.repeat(np.arange(8), 12)
+    frame = np.tile(np.arange(0, 60, 5), 8)
+    split = build_canary_splits(
+        camera_index=camera,
+        frame_index=frame,
+        fit_camera_indices=(0, 1, 2, 3),
+        audit_camera_indices=(4, 5, 6, 7),
+        block_count=3,
+    )
+
+    assert np.all(camera[split["audit_mask"]] >= 4)
+    assert not np.any(split["fit_mask"] & split["audit_mask"])
+    assert len(split["held_block_masks"]) == 3
+    for mask in split["held_block_masks"]:
+        assert np.all(camera[mask] < 4)
+        for cam in range(4):
+            selected_frames = frame[mask & (camera == cam)]
+            assert np.all(np.diff(selected_frames) == 5)
+
+
+def test_contribution_prediction_metrics_preserve_target_and_reduce_flicker():
+    from utils.a7c_renderer_compositor import evaluate_contribution_predictions
+
+    outer = np.array([1.0, 2.0, 1.0, 2.0])
+    result = evaluate_contribution_predictions(
+        target=np.ones(4),
+        outer=outer,
+        boundary=outer,
+        point_target=np.zeros((4, 1)),
+        point_outer=outer[:, None],
+        point_boundary=outer[:, None],
+        gates=np.array([[1.0], [0.9], [1.0], [0.9]]),
+    )
+
+    assert result["outer_gain"] > 0.0
+    assert result["boundary_gain"] > 0.0
+    assert result["minimum_target_response"] == pytest.approx(1.0)
+    assert result["maximum_soft_iou_drop"] <= 0.0
