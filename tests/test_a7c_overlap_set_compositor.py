@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from utils.a7c_overlap_set_compositor import (
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "configs/semantic/a7c_r1_2b_dense_overlap_set_377_v1.json"
 TRAINER = ROOT / "tools/train_a7c_r1_2b_overlap_set_compositor.py"
+RUNNER = ROOT / "tools/run_a7c_r1_2b_overlap_set_377.sh"
 
 
 def test_contract_changes_only_the_registered_predictor():
@@ -199,3 +201,15 @@ def test_r1_2b_cpu_training_is_deterministic_and_bounded(tmp_path):
         )
         assert a["projected_gates"].min() >= 0.9
         assert a["projected_gates"].max() <= 1.0
+
+
+def test_r1_2b_runner_is_restart_safe_and_camera_isolated():
+    source = RUNNER.read_text(encoding="utf-8")
+    for camera in ("c17", "c18", "c19", "c20", "c21", "c22", "c23"):
+        assert re.search(rf"\b{camera}\b", source) is None
+    assert "training/final/model.pt" in source
+    assert "train_a7c_r1_2b_overlap_set_compositor.py" in source
+    audit = source.index("audit_a7c_r1_2a_quotient_compositor.py")
+    assert source.index("trap - ERR") < audit
+    assert ".rejected" in source
+    assert ".failed" in source
