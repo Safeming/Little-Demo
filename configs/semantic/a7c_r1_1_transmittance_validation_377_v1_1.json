@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "validation_id": "a7c_r1_1_transmittance_validation_377_v1_1",
+  "status": "frozen",
+  "base_experiment_id": "a7c_r1_1_transmittance_ray_context_377_v1",
+  "amendment_reason": "float32 full-image central-difference cancellation at epsilon 1e-4",
+  "failed_epsilon": 0.0001,
+  "gradient_finite_difference_epsilon": 0.01,
+  "gradient_maximum_relative_error": 0.001,
+  "maximum_invisible_mass": 1e-8,
+  "changes_feature_schema": false,
+  "changes_training_or_promotion_gates": false,
+  "paper_test_eligible": false
+}
