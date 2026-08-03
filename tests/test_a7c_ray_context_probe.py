@@ -61,3 +61,15 @@ def test_footprint_sampling_returns_center_mean_and_variance():
     assert result[0, 0] == pytest.approx(12.0)
     assert result[0, 1] == pytest.approx(12.0)
     assert result[0, 2] > 0.0
+
+
+def test_footprint_sampling_outside_image_is_finite():
+    from utils.a7c_ray_context_probe import sample_footprint_context
+
+    result = sample_footprint_context(
+        np.ones((1, 3, 3), dtype=np.float32),
+        projected_xy=np.array([[-100.0, -100.0]]),
+        radii=np.array([1.0]),
+    )
+
+    np.testing.assert_allclose(result, [[1.0, 1.0, 0.0]])

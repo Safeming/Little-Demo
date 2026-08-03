@@ -45,5 +45,11 @@ def sample_footprint_context(buffers, *, projected_xy, radii):
         mask = (xx - x) ** 2 + (yy - y) ** 2 <= r * r
         patch = values[:, y0:y1, x0:x1][:, mask]
         center = values[:, cy, cx]
-        output[index] = np.concatenate([center, patch.mean(axis=1), patch.var(axis=1)])
+        if patch.shape[1] == 0:
+            mean = center
+            variance = np.zeros_like(center)
+        else:
+            mean = patch.mean(axis=1)
+            variance = patch.var(axis=1)
+        output[index] = np.concatenate([center, mean, variance])
     return output
