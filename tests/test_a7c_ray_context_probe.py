@@ -73,3 +73,15 @@ def test_footprint_sampling_outside_image_is_finite():
     )
 
     np.testing.assert_allclose(result, [[1.0, 1.0, 0.0]])
+
+
+def test_feature_group_selection_preserves_frozen_order():
+    from utils.a7c_ray_context_probe import select_feature_group
+
+    names = ["a", "b", "c"]
+    values = np.arange(12).reshape(2, 2, 3)
+    selected = select_feature_group(values, names, ["c", "a"])
+
+    np.testing.assert_array_equal(selected, values[:, :, [2, 0]])
+    with pytest.raises(ValueError, match="missing"):
+        select_feature_group(values, names, ["d"])

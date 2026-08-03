@@ -53,3 +53,12 @@ def sample_footprint_context(buffers, *, projected_xy, radii):
             variance = patch.var(axis=1)
         output[index] = np.concatenate([center, mean, variance])
     return output
+
+
+def select_feature_group(features, feature_names, requested_names):
+    values = np.asarray(features)
+    names = list(map(str, feature_names))
+    missing = [name for name in requested_names if name not in names]
+    if missing:
+        raise ValueError(f"missing requested features: {missing}")
+    return values[..., [names.index(name) for name in requested_names]]
