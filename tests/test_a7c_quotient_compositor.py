@@ -1,5 +1,6 @@
 import json
 import inspect
+import re
 from pathlib import Path
 
 import numpy as np
@@ -260,3 +261,56 @@ def test_trainer_cpu_synthetic_run_uses_no_teacher_gate_loss(tmp_path):
     assert raw.shape == projected.shape == (samples, carriers)
     assert np.max(projected) <= 1.0
     assert np.min(projected) >= 0.9
+
+
+def _audit_contract():
+    return json.loads(CONTRACT.read_text(encoding="utf-8"))
+
+
+def test_audit_summary_requires_all_guards_and_r1_1_f1_improvement():
+    from tools.audit_a7c_r1_2a_quotient_compositor import summarize_records
+
+    records = [
+        {
+            "outer_gain": 0.01,
+            "boundary_gain": 0.03,
+            "minimum_target_response": 1.0,
+            "maximum_soft_iou_drop": 0.0,
+            "maximum_adjacent_gate_change": 0.01,
+        }
+        for _ in range(24)
+    ]
+    summary = summarize_records(records, _audit_contract())
+
+    assert summary["improves_over_r1_1_f1"] is True
+    assert summary["passed"] is True
+
+    records[0]["outer_gain"] = -0.01
+    summary = summarize_records(records, _audit_contract())
+    assert summary["outer_worst_block_gain"] == pytest.approx(-0.01)
+    assert summary["passed"] is False
+
+
+def test_audit_markers_are_mutually_exclusive(tmp_path):
+    from tools.audit_a7c_r1_2a_quotient_compositor import write_audit
+
+    write_audit(tmp_path, {"summary": {"passed": False}})
+    assert (tmp_path / ".rejected").is_file()
+    assert not (tmp_path / ".held_block_passed").exists()
+
+    write_audit(tmp_path, {"summary": {"passed": True}})
+    assert (tmp_path / ".held_block_passed").is_file()
+    assert not (tmp_path / ".rejected").exists()
+
+
+def test_runner_is_held_block_only_and_restart_safe():
+    runner = (
+        ROOT / "tools/run_a7c_r1_2a_quotient_377.sh"
+    ).read_text(encoding="utf-8")
+
+    for forbidden in ("c17", "c18", "c19", "c20", "c21", "c22", "c23"):
+        assert re.search(rf"\b{forbidden}\b", runner) is None
+    assert "training/final/model.pt" in runner
+    assert "audit_a7c_r1_2a_quotient_compositor.py" in runner
+    assert ".rejected" in runner
+    assert ".failed" in runner
