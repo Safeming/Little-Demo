@@ -177,3 +177,86 @@ def test_renderer_objective_guard_hinges_and_held_samples_are_isolated():
     assert float(violated["target_hinge"]) > 0.0
     assert float(violated["soft_iou_hinge"]) > 0.0
     assert float(violated["jump_hinge"]) > 0.0
+
+
+def test_trainer_rejects_source_fingerprint_mismatch(tmp_path):
+    from tools.train_a7c_r1_2a_quotient_compositor import verify_source_file
+
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"frozen-source")
+    with pytest.raises(ValueError, match="fingerprint"):
+        verify_source_file(source, "0" * 64, "probe")
+
+
+def test_trainer_cpu_synthetic_run_uses_no_teacher_gate_loss(tmp_path):
+    from tools.train_a7c_r1_2a_quotient_compositor import train_one
+
+    samples, carriers = 12, 2
+    peak = (np.arange(samples) % 2).astype(np.float32)
+    features = np.zeros((samples, carriers, 2), dtype=np.float32)
+    features[:, :, 0] = peak[:, None]
+    features[:, :, 1] = np.array([0.0, 1.0])
+    outer = (1.0 + peak).astype(np.float32)
+    point_outer = np.stack([outer, np.zeros_like(outer)], axis=1)
+    zeros = np.zeros((samples, carriers), dtype=np.float32)
+    objective = {
+        "target": {"base": np.ones(samples, np.float32), "point": zeros},
+        "outer": {"base": outer, "point": point_outer},
+        "boundary": {"base": outer, "point": point_outer},
+    }
+    guard = {
+        "target": {"base": np.ones(samples, np.float32), "point": zeros},
+        "outer": {"base": outer, "point": point_outer},
+        "boundary": {"base": outer, "point": point_outer},
+    }
+    contract = {
+        "hidden_dimensions": [8],
+        "minimum_gate": 0.9,
+        "maximum_gate": 1.0,
+        "initial_minimum_gate": 0.999,
+        "proxy_target_response": 0.995,
+        "selection_threshold": 0.2,
+        "training_target_response": 0.995,
+        "training_epochs": 60,
+        "learning_rate": 0.01,
+        "weight_decay": 0.0,
+        "outer_loss_weight": 1.0,
+        "boundary_loss_weight": 1.0,
+        "target_hinge_weight": 100.0,
+        "soft_iou_hinge_weight": 100.0,
+        "gate_jump_hinge_weight": 0.0,
+        "damping_regularizer_weight": 0.0,
+        "maximum_selection_soft_iou_drop": 0.005,
+        "maximum_adjacent_gate_change": 0.02,
+        "teacher_gate_loss_weight": 0.0,
+        "random_seed": 7,
+        "frame_stride": 5,
+        "paper_test_eligible": False,
+    }
+    summary = train_one(
+        name="synthetic",
+        train_mask=np.ones(samples, bool),
+        features=features,
+        runtime_mass=np.tile(
+            np.array([[0.0, 1.0]], np.float32), (samples, 1)
+        ),
+        a5_weight=np.array([0.8, 0.8], np.float32),
+        objective_streams=objective,
+        guard_streams=guard,
+        camera_index=np.zeros(samples, np.int16),
+        frame_index=np.arange(samples, dtype=np.int32) * 5,
+        block_ids=np.zeros(samples, np.int16),
+        contract=contract,
+        output_dir=tmp_path,
+        device="cpu",
+    )
+    with np.load(tmp_path / "synthetic" / "predictions.npz") as predictions:
+        raw = predictions["raw_gates"]
+        projected = predictions["projected_gates"]
+
+    assert summary["teacher_gate_loss_weight"] == 0.0
+    assert summary["training_sample_count"] == samples
+    assert summary["final_loss"] <= summary["initial_loss"]
+    assert raw.shape == projected.shape == (samples, carriers)
+    assert np.max(projected) <= 1.0
+    assert np.min(projected) >= 0.9
