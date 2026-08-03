@@ -314,3 +314,14 @@ def test_runner_is_held_block_only_and_restart_safe():
     assert "audit_a7c_r1_2a_quotient_compositor.py" in runner
     assert ".rejected" in runner
     assert ".failed" in runner
+
+
+def test_runner_disarms_error_trap_before_expected_audit_rejection():
+    runner = (
+        ROOT / "tools/run_a7c_r1_2a_quotient_377.sh"
+    ).read_text(encoding="utf-8")
+    audit_call = runner.index(
+        '"${PYTHON}" "${ROOT}/tools/audit_a7c_r1_2a_quotient_compositor.py"'
+    )
+
+    assert runner.index("trap - ERR") < audit_call

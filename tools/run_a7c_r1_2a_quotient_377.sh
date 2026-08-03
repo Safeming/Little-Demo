@@ -55,6 +55,7 @@ if [[ "${complete}" -eq 0 ]]; then
     --device cuda
 fi
 
+trap - ERR
 set +e
 "${PYTHON}" "${ROOT}/tools/audit_a7c_r1_2a_quotient_compositor.py" \
   --contract "${CONTRACT}" \
@@ -66,7 +67,6 @@ set +e
 audit_status=$?
 set -e
 
-trap - ERR
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUT}/ended_utc.txt"
 if [[ "${audit_status}" -eq 0 ]]; then
   touch "${OUT}/.done"
