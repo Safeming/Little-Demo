@@ -1,6 +1,7 @@
 import json
 import inspect
 from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ CONTRACT = (
 )
 PROJECTOR = ROOT / "tools/project_a7c_r1_3p_temporal_joint.py"
 AUDITOR = ROOT / "tools/audit_a7c_r1_3p_temporal_joint_projection.py"
+RUNNER = ROOT / "tools/run_a7c_r1_3p_temporal_joint_377.sh"
 
 
 def test_r1_3p_contract_freezes_runtime_and_oracle_boundaries():
@@ -253,3 +255,22 @@ def test_projection_summary_includes_every_source_prediction_fingerprint():
     assert set(summary["prediction_fingerprints"]) == {
         f"fold_{index}_prediction" for index in range(6)
     }
+
+
+def test_r1_3p_runner_is_restart_safe_and_camera_isolated():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "/opt/miniconda3/envs/ictrl/bin/python" in source
+    for camera in ("c17", "c18", "c19", "c20", "c21", "c22", "c23"):
+        assert re.search(rf"\b{camera}\b", source) is None
+    assert "check_sha" in source
+    projection = source.index("project_a7c_r1_3p_temporal_joint.py")
+    audit = source.index("audit_a7c_r1_3p_temporal_joint_projection.py")
+    oracle = source.index("evaluate_a7c_r1_3p_feasibility_oracle.py")
+    assert projection < audit < oracle
+    assert "audit_status" in source
+    assert "trap - ERR" in source
+    assert "started_utc.txt" in source
+    assert "ended_utc.txt" in source
+    for marker in ("completed", "rejected", "failed"):
+        assert f".{marker}" in source
