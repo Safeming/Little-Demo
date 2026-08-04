@@ -1,4 +1,9 @@
 import numpy as np
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ORACLE_TOOL = ROOT / "tools/evaluate_a7c_r1_3p_feasibility_oracle.py"
 
 
 def _synthetic_streams():
@@ -135,3 +140,20 @@ def test_oracle_classification_has_three_rigorous_verdicts():
         )
         == "UNRESOLVED"
     )
+
+
+def test_oracle_workflow_exposes_registered_searches_and_summary_fields():
+    source = ORACLE_TOOL.read_text(encoding="utf-8")
+
+    for required in (
+        '"balanced"',
+        '"boundary_conditioned"',
+        '"independent_outer"',
+        '"independent_boundary"',
+        '"sufficient_witness"',
+        '"optimistic_summary"',
+        '"sufficient_witness_summary"',
+        '"execution_status"',
+        '"paper_test_eligible"',
+    ):
+        assert required in source
