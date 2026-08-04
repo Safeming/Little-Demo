@@ -272,5 +272,6 @@ def test_r1_3p_runner_is_restart_safe_and_camera_isolated():
     assert "trap - ERR" in source
     assert "started_utc.txt" in source
     assert "ended_utc.txt" in source
+    assert "runner.pid" in source
     for marker in ("completed", "rejected", "failed"):
         assert f".{marker}" in source

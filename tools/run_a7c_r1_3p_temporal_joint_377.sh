@@ -18,6 +18,7 @@ AUDIT="${PROJECTION}/audit"
 ORACLE="${OUT}/oracle"
 
 mkdir -p "${OUT}"
+printf '%s\n' "$$" > "${OUT}/runner.pid"
 
 mark_terminal() {
   local marker="$1"
@@ -38,6 +39,7 @@ required_outputs_complete() {
   [[ -f "${ORACLE}/summary.json" ]] || return 1
   [[ -f "${OUT}/started_utc.txt" ]] || return 1
   [[ -f "${OUT}/ended_utc.txt" ]] || return 1
+  [[ -f "${OUT}/runner.pid" ]] || return 1
   for fold in 0 1 2 3 4 5; do
     [[ -f "${PROJECTION}/fold_${fold}/predictions.npz" ]] || return 1
     [[ -f "${PROJECTION}/fold_${fold}/segment_certificates.json" ]] || return 1
