@@ -11,6 +11,8 @@ CONTRACT = (
     ROOT
     / "configs/semantic/a7c_r1_3p_temporal_joint_projection_377_v1.json"
 )
+PROJECTOR = ROOT / "tools/project_a7c_r1_3p_temporal_joint.py"
+AUDITOR = ROOT / "tools/audit_a7c_r1_3p_temporal_joint_projection.py"
 
 
 def test_r1_3p_contract_freezes_runtime_and_oracle_boundaries():
@@ -179,3 +181,75 @@ def test_joint_projection_is_deterministic():
         first["certificate"]["stage_two_objective"]
         == second["certificate"]["stage_two_objective"]
     )
+
+
+def test_projection_cli_has_no_renderer_evidence_access():
+    source = PROJECTOR.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "_build_streams",
+        "evidence",
+        "point_outer",
+        "point_boundary",
+    ):
+        assert forbidden not in source
+    assert "solve_temporal_joint_projection" in source
+
+    audit_source = AUDITOR.read_text(encoding="utf-8")
+    assert "_build_streams" in audit_source
+    assert "summarize_records" in audit_source
+
+
+def test_project_fold_writes_only_four_held_camera_segments():
+    from tools.project_a7c_r1_3p_temporal_joint import (
+        project_fold_predictions,
+    )
+
+    camera_index = np.repeat(np.arange(5), 2)
+    frame_index = np.tile(np.array([0, 5]), 5)
+    block_ids = np.zeros(10, dtype=np.int16)
+    projection_mask = camera_index < 4
+    raw = np.full((10, 1), 0.95)
+    result = project_fold_predictions(
+        raw_gates=raw,
+        runtime_mass=np.zeros_like(raw),
+        a5_weight=np.array([0.8]),
+        projection_mask=projection_mask,
+        camera_index=camera_index,
+        frame_index=frame_index,
+        block_ids=block_ids,
+        fit_camera_indices=(0, 1, 2, 3),
+        contract={
+            "frame_stride": 5,
+            "minimum_gate": 0.9,
+            "maximum_gate": 1.0,
+            "selection_threshold": 0.2,
+            "proxy_target_response": 0.995,
+            "maximum_projection_gate_jump": 0.015,
+            "lexicographic_rho_tolerance": 1.0e-9,
+            "solver_primal_tolerance": 1.0e-9,
+            "solver_residual_tolerance": 1.0e-7,
+        },
+    )
+
+    assert np.isfinite(result["projected_gates"][projection_mask]).all()
+    assert np.isnan(result["projected_gates"][~projection_mask]).all()
+    assert len(result["certificates"]) == 4
+
+
+def test_projection_summary_includes_every_source_prediction_fingerprint():
+    from tools.project_a7c_r1_3p_temporal_joint import summarize_projection
+
+    summary = summarize_projection(
+        experiment_id="synthetic",
+        fold_summaries=[{"fold": index, "segment_count": 4} for index in range(6)],
+        source_fingerprints={"probe": "a" * 64},
+        prediction_fingerprints={
+            f"fold_{index}_prediction": str(index) * 64 for index in range(6)
+        },
+    )
+
+    assert summary["segment_count"] == 24
+    assert set(summary["prediction_fingerprints"]) == {
+        f"fold_{index}_prediction" for index in range(6)
+    }
