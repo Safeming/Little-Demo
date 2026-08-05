@@ -63,6 +63,9 @@ def test_teacher_capacity_and_anchor_are_feasible_and_deterministic():
     )
     certificate = first["certificate"]
     assert certificate["maximum_primal_violation"] <= 1.0e-7
+    assert certificate["stage_one_presolve"] is True
+    assert certificate["stage_two_presolve"] is True
+    assert certificate["stage_three_presolve"] is False
     assert certificate["stage_one_maximum_deviation"] >= 0.0
     assert certificate["stage_two_total_deviation"] >= 0.0
     assert certificate["stage_three_total_gate_change"] >= 0.0
@@ -121,3 +124,44 @@ def test_insert_teacher_segment_rejects_bad_certificate():
             solved,
             residual_tolerance=1.0e-7,
         )
+
+
+def test_teacher_artifact_has_exact_fold_local_masks_and_eligibility(tmp_path):
+    from tools.build_a7c_r1_4vp_fit_teachers import write_fold_teacher
+
+    camera = np.repeat(np.arange(4), 6)
+    frame = np.tile(np.arange(6) * 5, 4)
+    block = np.tile(np.arange(6), 4)
+    fit_mask = block != 2
+    gates = np.full((24, 2), np.nan)
+    gates[fit_mask] = 0.97
+    certificates = [
+        {
+            "fold": 2,
+            "camera_index": camera,
+            "block_id": block_id,
+            "maximum_primal_violation": 1.0e-9,
+        }
+        for camera in range(4)
+        for block_id in (0, 1, 3, 4, 5)
+    ]
+    write_fold_teacher(
+        output_dir=tmp_path,
+        fold=2,
+        gates=gates,
+        teacher_mask=fit_mask,
+        camera_index=camera,
+        frame_index=frame,
+        block_ids=block,
+        carrier_ids=np.array([3, 7]),
+        certificates=certificates,
+        source_fingerprints={"probe": "abc"},
+    )
+    with np.load(tmp_path / "fold_2/teacher.npz", allow_pickle=False) as saved:
+        np.testing.assert_array_equal(saved["teacher_mask"], fit_mask)
+        assert np.isnan(saved["teacher_gates"][~fit_mask]).all()
+        assert np.isfinite(saved["teacher_gates"][fit_mask]).all()
+        assert int(saved["deployment_eligible"]) == 0
+        assert int(saved["teacher_eligible"]) == 0
+        assert int(saved["paper_test_eligible"]) == 0
+    assert (tmp_path / "fold_2/certificates.json").is_file()

@@ -278,14 +278,24 @@ def _augment_problem(matrix, upper, variable_count: int, extra_rows):
     return output, np.asarray(bounds, dtype=np.float64)
 
 
-def _solve_stage(objective, matrix, upper, bounds, primal_tolerance: float):
+def _solve_stage(
+    objective,
+    matrix,
+    upper,
+    bounds,
+    primal_tolerance: float,
+    *,
+    presolve: bool = True,
+):
+    options = _solver_options(primal_tolerance)
+    options["presolve"] = bool(presolve)
     result = linprog(
         np.asarray(objective, dtype=np.float64),
         A_ub=matrix,
         b_ub=upper,
         bounds=bounds,
         method="highs",
-        options=_solver_options(primal_tolerance),
+        options=options,
     )
     if not result.success or not np.isfinite(result.fun):
         raise RuntimeError(f"teacher linear program failed: {result.message}")
@@ -436,6 +446,7 @@ def solve_lexicographic_fixed_gain_oracle(
         + [(0.0, None)] * gate_count
         + [(0.0, None)] * change_count,
         primal_tolerance,
+        presolve=False,
     )
     gates = stage_three.x[:gate_count].reshape(frames, carriers)
     metrics = evaluate_oracle_gates(gates, streams)
@@ -470,6 +481,9 @@ def solve_lexicographic_fixed_gain_oracle(
             "stage_one_status": int(stage_one.status),
             "stage_two_status": int(stage_two.status),
             "stage_three_status": int(stage_three.status),
+            "stage_one_presolve": True,
+            "stage_two_presolve": True,
+            "stage_three_presolve": False,
             "stage_one_maximum_deviation": rho_star,
             "stage_two_total_deviation": total_deviation_star,
             "stage_three_total_gate_change": float(
