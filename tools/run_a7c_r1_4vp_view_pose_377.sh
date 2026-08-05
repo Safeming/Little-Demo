@@ -109,15 +109,16 @@ for key, value in contract.items():
             raise ValueError(f"source fingerprint mismatch: {relative}")
 PY
 
-"${PYTHON}" - "${ROOT}" "${POSE}" "${CONTRACT}" <<'PY'
+"${PYTHON}" - "${ROOT}" "${POSE}" "${CONTRACT}" "${TEACHER}" <<'PY'
 import json
 import sys
+import numpy as np
 from pathlib import Path
 from utils.a7c_view_pose_compositor import pose_manifest_sha256
-root, pose, contract_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+root, pose, contract_path, teacher_path = map(Path, sys.argv[1:5])
 contract = json.loads(contract_path.read_text(encoding="utf-8"))
-frames = range(int(contract["frame_start"]), int(contract["frame_end"]) + 1,
-               int(contract["frame_stride"]))
+with np.load(teacher_path, allow_pickle=False) as source:
+    frames = np.unique(source["frame_index"])
 observed = pose_manifest_sha256(pose, frames, root)
 if observed != contract["source_pose_manifest_sha256"]:
     raise ValueError(f"pose manifest fingerprint mismatch: {observed}")
