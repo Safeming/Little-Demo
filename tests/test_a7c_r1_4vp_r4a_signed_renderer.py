@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tools.train_a7c_r1_4vp_r4a_signed_renderer import train_fold
 from utils.a7c_r1_4vp_r4a import (
     freeze_initial_scales,
     mean_normalized_trajectory,
@@ -15,6 +16,7 @@ from utils.a7c_r1_4vp_r4a import (
     signed_renderer_trajectory_loss,
     signed_trajectory_component,
 )
+from utils.a7c_r1_4vp_r2_runtime import ViewPoseResidualCompositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -311,3 +313,106 @@ def test_action_diagnostics_define_zero_mae_share_as_zero():
     )
 
     assert result["false_maximum_mae_share"] == 0.0
+
+
+def test_train_fold_uses_only_fit_teacher_and_renderer_rows(tmp_path, monkeypatch):
+    samples, carriers = 8, 2
+    fit_mask = np.array([True] * 4 + [False] * 4)
+    teacher = np.full((samples, carriers), np.nan, np.float32)
+    teacher[:4] = np.array(
+        [[0.93, 0.95], [0.94, 0.92], [0.92, 0.94], [0.95, 0.93]],
+        np.float32,
+    )
+    streams = {}
+    for signal, level in (("target", 20.0), ("outer", 8.0), ("boundary", 5.0)):
+        stream_base = np.full(samples, np.nan, np.float32)
+        stream_point = np.full((samples, carriers), np.nan, np.float32)
+        stream_base[:4] = level + np.array([0.0, 1.0, -0.5, 0.5])
+        stream_point[:4] = np.array(
+            [[1.0, 0.5], [0.5, 1.0], [1.0, 0.25], [0.25, 1.0]]
+        )
+        streams[signal] = {"base": stream_base, "point": stream_point}
+    features = np.linspace(-1.0, 1.0, samples * carriers * 3).reshape(
+        samples, carriers, 3
+    )
+    pose = np.linspace(-1.0, 1.0, samples * 36).reshape(samples, 36)
+    adjacency = np.repeat(np.eye(carriers)[None], samples, axis=0)
+    visibility = np.ones((samples, carriers), np.float32)
+    base = np.full((samples, carriers), 0.97, np.float32)
+    camera = np.zeros(samples, np.int64)
+    frames = np.tile(np.arange(4), 2)
+    blocks = np.repeat([0, 1], 4)
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    contract.update(
+        {
+            "training_epochs": 4,
+            "frame_stride": 1,
+            "view_embedding_dimension": 4,
+            "pose_embedding_dimension": 4,
+            "gru_hidden_dimension": 4,
+            "maximum_fit_teacher_mae": 0.1,
+        }
+    )
+
+    def fake_projection(raw, prediction_mask, *args, **kwargs):
+        projected = np.full_like(raw, np.nan, dtype=np.float64)
+        projected[prediction_mask] = raw[prediction_mask]
+        return projected, [{"maximum_primal_violation": 0.0}]
+
+    monkeypatch.setattr(
+        "tools.train_a7c_r1_4vp_r4a_signed_renderer._project_segments",
+        fake_projection,
+    )
+    summary = train_fold(
+        fold=0,
+        features=features,
+        pose=pose,
+        adjacency=adjacency,
+        visibility=visibility,
+        base_gates=base,
+        teacher_gates=teacher,
+        renderer_streams=streams,
+        teacher_mask=fit_mask,
+        prediction_mask=np.ones(8, bool),
+        camera_index=camera,
+        frame_index=frames,
+        block_ids=blocks,
+        runtime_mass=np.ones((samples, carriers), dtype=np.float32),
+        a5_weight=np.ones(carriers, dtype=np.float32),
+        contract=contract,
+        output_dir=tmp_path,
+        device="cpu",
+    )
+
+    assert summary["checkpoint_epoch"] == 4
+    assert summary["final_components"]["loss"] < summary["initial_components"]["loss"]
+    assert summary["held_teacher_values_accessed"] is False
+    assert summary["held_renderer_values_accessed"] is False
+    assert len(summary["segment_initial_scales"]) == 1
+    assert set(summary["segment_initial_scales"][0]["scales"]) == {
+        "outer",
+        "boundary",
+        "target",
+        "gate_aux",
+    }
+    assert (tmp_path / "model.pt").is_file()
+    assert (tmp_path / "predictions.npz").is_file()
+
+
+def test_r4a_keeps_the_r3_model_signature_and_budget():
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    model = ViewPoseResidualCompositor(
+        view_dimension=49,
+        view_embedding_dimension=16,
+        pose_dimension=36,
+        pose_embedding_dimension=16,
+        gru_hidden_dimension=16,
+        residual_gate_scale=0.1,
+        minimum_gate=0.9,
+        maximum_gate=1.0,
+    )
+
+    assert sum(value.numel() for value in model.parameters()) == 9073
+    assert contract["attention"] is False
+    assert contract["carrier_embedding"] is False
+    assert contract["maximum_projection_gate_jump"] == 0.015
