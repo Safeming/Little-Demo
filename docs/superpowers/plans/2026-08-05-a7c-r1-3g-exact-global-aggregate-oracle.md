@@ -707,9 +707,10 @@ Expected: no whitespace errors; only R1.3-G files from this plan plus pre-existi
 Run:
 
 ```bash
-nohup bash tools/run_a7c_r1_3g_exact_aggregate_oracle_377.sh \
-  exp/acceptdata/a7c_r1_3g_exact_aggregate_oracle_377_v1 \
-  >/tmp/a7c_r1_3g_launcher.log 2>&1 &
+setsid -f bash -c \
+  'exec bash tools/run_a7c_r1_3g_exact_aggregate_oracle_377.sh \
+  /remote-home/ming/3dgs-avatar-release-main/exp/acceptdata/a7c_r1_3g_exact_aggregate_oracle_377_v1' \
+  >/tmp/a7c_r1_3g_launcher.log 2>&1 < /dev/null
 ```
 
 Expected: the process starts, `runner.pid`, `runner.log`, and `started_utc.txt` appear, and no training process is launched.
