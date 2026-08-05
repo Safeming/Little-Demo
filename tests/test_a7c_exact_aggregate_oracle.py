@@ -304,3 +304,152 @@ def test_write_fold_witness_persists_only_replay_mask(tmp_path):
     assert json.loads(
         (tmp_path / "certificates.json").read_text(encoding="utf-8")
     ) == [{"camera_index": 0, "fold": 0}]
+
+
+def _promotion_contract():
+    return {
+        "minimum_outer_gain": 0.005,
+        "minimum_boundary_gain": 0.005,
+        "minimum_positive_block_fraction": 0.9,
+        "block_gain_quantile": 0.1,
+        "minimum_block_gain_quantile": 0.0,
+        "maximum_worst_block_regression": 0.005,
+        "minimum_target_response": 0.99,
+        "maximum_selection_soft_iou_drop": 0.005,
+        "maximum_adjacent_gate_change": 0.02,
+        "r1_1_f1_outer_gain": -0.00012761059760764496,
+        "r1_1_f1_boundary_gain": 0.023481874880317264,
+    }
+
+
+def test_exact_aggregate_accepts_compensation_below_r1_1_boundary_mean():
+    from tools.audit_a7c_r1_2a_quotient_compositor import summarize_records
+
+    records = [
+        {
+            "outer_gain": 0.006,
+            "boundary_gain": 0.02 if index < 3 else 0.03,
+            "minimum_target_response": 0.995,
+            "maximum_soft_iou_drop": 0.001,
+            "maximum_adjacent_gate_change": 0.015,
+        }
+        for index in range(24)
+    ]
+
+    summary = summarize_records(records, _promotion_contract())
+
+    assert (
+        min(row["boundary_gain"] for row in records)
+        < 0.023481874880317264
+    )
+    assert summary["boundary_gain"] > 0.023481874880317264
+    assert summary["passed"] is True
+
+
+def test_classify_exact_replay_never_claims_infeasibility():
+    from utils.a7c_exact_aggregate_oracle import classify_exact_replay
+
+    assert (
+        classify_exact_replay(replay_complete=True, audit_passed=True)
+        == "CERTIFIED_FEASIBLE"
+    )
+    assert (
+        classify_exact_replay(replay_complete=True, audit_passed=False)
+        == "UNRESOLVED"
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        classify_exact_replay(replay_complete=False, audit_passed=False)
+
+
+def test_validate_saved_manifest_rejects_order_or_eligibility_change():
+    from utils.a7c_exact_aggregate_oracle import validate_saved_manifest
+
+    expected = {
+        "camera_index": np.array([0, 0, 1, 1]),
+        "frame_index": np.array([0, 5, 0, 5]),
+        "block_ids": np.array([0, 0, 0, 0]),
+        "carrier_ids": np.array([10, 11]),
+    }
+    saved = {
+        **expected,
+        "deployment_eligible": np.array(0),
+        "teacher_eligible": np.array(0),
+        "paper_test_eligible": np.array(0),
+    }
+    validate_saved_manifest(saved, expected)
+
+    broken = dict(saved)
+    broken["frame_index"] = np.array([5, 0, 0, 5])
+    with pytest.raises(ValueError, match="frame_index"):
+        validate_saved_manifest(broken, expected)
+
+    broken = dict(saved)
+    broken["teacher_eligible"] = np.array(1)
+    with pytest.raises(ValueError, match="teacher_eligible"):
+        validate_saved_manifest(broken, expected)
+
+
+def test_load_fold_witness_revalidates_disk_isolation(tmp_path):
+    from tools.audit_a7c_r1_3g_exact_aggregate_oracle import (
+        load_fold_witness,
+    )
+    from tools.evaluate_a7c_r1_3g_exact_aggregate_oracle import (
+        _array_fingerprint,
+        write_fold_witness,
+    )
+
+    expected = {
+        "camera_index": np.array([0, 0, 1, 1]),
+        "frame_index": np.array([0, 5, 0, 5]),
+        "block_ids": np.array([0, 0, 0, 0]),
+        "carrier_ids": np.array([10]),
+    }
+    mask = np.array([True, True, False, False])
+    request_arrays = {
+        "requested_outer_gain": np.array([0.005, 0.005, np.nan, np.nan]),
+        "requested_boundary_gain": np.array([0.03, 0.03, np.nan, np.nan]),
+        "source_feasible_lower": np.array([0.03002, 0.03002, np.nan, np.nan]),
+        "source_infeasible_upper": np.array(
+            [0.030029, 0.030029, np.nan, np.nan]
+        ),
+    }
+    sample_fingerprint = _array_fingerprint(
+        expected["camera_index"],
+        expected["frame_index"],
+        expected["block_ids"],
+    )
+    carrier_fingerprint = _array_fingerprint(expected["carrier_ids"])
+    write_fold_witness(
+        output_dir=tmp_path,
+        replay_gates=np.array([[0.99], [0.98], [np.nan], [np.nan]]),
+        replay_mask=mask,
+        request_arrays=request_arrays,
+        certificates=[],
+        source_fingerprints={"probe": "a" * 64},
+        sample_order_fingerprint=sample_fingerprint,
+        carrier_order_fingerprint=carrier_fingerprint,
+        **expected,
+    )
+
+    loaded = load_fold_witness(
+        tmp_path / "predictions.npz",
+        expected_manifest=expected,
+        expected_mask=mask,
+        expected_sample_fingerprint=sample_fingerprint,
+        expected_carrier_fingerprint=carrier_fingerprint,
+    )
+    np.testing.assert_array_equal(loaded["replay_gates"][mask], [[0.99], [0.98]])
+
+    with np.load(tmp_path / "predictions.npz", allow_pickle=False) as source:
+        tampered = {key: source[key] for key in source.files}
+    tampered["replay_gates"] = tampered["replay_gates"].copy()
+    tampered["replay_gates"][2] = 0.95
+    np.savez_compressed(tmp_path / "predictions.npz", **tampered)
+    with pytest.raises(ValueError, match="cross replay mask"):
+        load_fold_witness(
+            tmp_path / "predictions.npz",
+            expected_manifest=expected,
+            expected_mask=mask,
+            expected_sample_fingerprint=sample_fingerprint,
+            expected_carrier_fingerprint=carrier_fingerprint,
+        )

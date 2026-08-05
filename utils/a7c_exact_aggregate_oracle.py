@@ -139,3 +139,26 @@ def insert_replay_segment(
     output_gates[mask] = values
     output_mask[mask] = True
     return record
+
+
+def classify_exact_replay(*, replay_complete: bool, audit_passed: bool) -> str:
+    if not bool(replay_complete):
+        raise ValueError("incomplete replay cannot be classified")
+    if bool(audit_passed):
+        return "CERTIFIED_FEASIBLE"
+    return "UNRESOLVED"
+
+
+def validate_saved_manifest(saved: dict, expected: dict) -> None:
+    for key in ("camera_index", "frame_index", "block_ids", "carrier_ids"):
+        if not np.array_equal(
+            np.asarray(saved[key]), np.asarray(expected[key])
+        ):
+            raise ValueError(f"saved {key} differs from frozen manifest")
+    for key in (
+        "deployment_eligible",
+        "teacher_eligible",
+        "paper_test_eligible",
+    ):
+        if int(np.asarray(saved[key]).item()) != 0:
+            raise ValueError(f"saved {key} must be false")
