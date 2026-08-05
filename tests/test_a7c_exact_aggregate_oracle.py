@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = (
     ROOT / "configs/semantic/a7c_r1_3g_exact_aggregate_oracle_377_v1.json"
 )
+RUNNER = ROOT / "tools/run_a7c_r1_3g_exact_aggregate_oracle_377.sh"
 
 
 def test_r1_3g_contract_freezes_constructive_replay_and_isolation():
@@ -453,3 +455,31 @@ def test_load_fold_witness_revalidates_disk_isolation(tmp_path):
             expected_sample_fingerprint=sample_fingerprint,
             expected_carrier_fingerprint=carrier_fingerprint,
         )
+
+
+def test_r1_3g_runner_is_restart_safe_isolated_and_audit_gated():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "/opt/miniconda3/envs/ictrl/bin/python" in source
+    assert 'cd "${ROOT}"' in source
+    assert "evaluate_a7c_r1_3g_exact_aggregate_oracle.py" in source
+    assert "audit_a7c_r1_3g_exact_aggregate_oracle.py" in source
+    assert source.index("evaluate_a7c_r1_3g") < source.index(
+        "audit_a7c_r1_3g"
+    )
+    assert "audit_status" in source
+    assert "CERTIFIED_FEASIBLE" in source
+    assert "UNRESOLVED" in source
+    assert "ORACLE_ERROR" in source
+    assert "check_sha" in source
+    for camera in ("c17", "c18", "c19", "c20", "c21", "c22", "c23"):
+        assert re.search(rf"\b{camera}\b", source) is None
+    for artifact in (
+        "runner.pid",
+        "runner.log",
+        "started_utc.txt",
+        "ended_utc.txt",
+    ):
+        assert artifact in source
+    for marker in (".completed", ".rejected", ".failed"):
+        assert marker in source
