@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -113,3 +114,193 @@ def test_extract_replay_requests_rejects_invalid_sources(case, message):
             replay_margin=2.0e-5,
             maximum_interval_width=1.0e-5,
         )
+
+
+def _solved_segment(maximum_primal_violation=1.0e-9):
+    return {
+        "gates": np.array([[0.99, 1.0], [0.98, 0.99]]),
+        "metrics": {
+            "outer_gain": 0.006,
+            "boundary_gain": 0.03,
+            "minimum_target_response": 0.995,
+            "maximum_soft_iou_drop": 0.001,
+            "maximum_adjacent_gate_change": 0.01,
+        },
+        "certificate": {
+            "solver": "scipy.optimize.linprog:highs",
+            "scipy_version": "1.13.1",
+            "status": 0,
+            "message": "optimal",
+            "iterations": 3,
+            "maximum_matrix_violation": 0.0,
+            "maximum_primal_violation": maximum_primal_violation,
+        },
+        "slack": {
+            "minimum_topology_slack": 0.08,
+            "minimum_bound_slack": 0.0,
+            "minimum_proxy_target_slack": 0.0,
+        },
+        "locations": {
+            "maximum_adjacent_gate_change_frame": 5,
+            "maximum_adjacent_gate_change_carrier_id": 10,
+        },
+        "source_fingerprints": {"probe": "a" * 64},
+        "sample_order_fingerprint": "sample-order",
+        "carrier_order_fingerprint": "carrier-order",
+    }
+
+
+def _replay_request():
+    return {
+        "fold": 0,
+        "camera_index": 0,
+        "source_feasible_lower": 0.03002,
+        "source_infeasible_upper": 0.030029,
+        "source_interval_width": 9.0e-6,
+        "minimum_outer_gain": 0.005,
+        "minimum_boundary_gain": 0.03,
+    }
+
+
+def test_insert_replay_segment_isolates_nonheld_samples_and_checks_certificate():
+    from utils.a7c_exact_aggregate_oracle import insert_replay_segment
+
+    gates = np.full((8, 2), np.nan)
+    replay_mask = np.zeros(8, dtype=bool)
+    selected = np.array(
+        [True, True, False, False, False, False, False, False]
+    )
+
+    row = insert_replay_segment(
+        replay_gates=gates,
+        replay_mask=replay_mask,
+        selected=selected,
+        solved=_solved_segment(),
+        request=_replay_request(),
+        frame_index=np.array([0, 5, 0, 5, 0, 5, 0, 5]),
+        block_ids=np.zeros(8, dtype=np.int16),
+        carrier_ids=np.array([10, 11]),
+        residual_tolerance=1.0e-7,
+    )
+
+    assert np.isfinite(gates[selected]).all()
+    assert np.isnan(gates[~selected]).all()
+    assert replay_mask.tolist() == selected.tolist()
+    assert row["minimum_topology_slack"] == 0.08
+    assert row["maximum_primal_violation"] <= 1.0e-7
+    assert row["sample_order_fingerprint"] == "sample-order"
+    assert row["source_fingerprints"] == {"probe": "a" * 64}
+
+
+def test_insert_replay_segment_rejects_overlap_and_bad_residual():
+    from utils.a7c_exact_aggregate_oracle import insert_replay_segment
+
+    kwargs = {
+        "replay_gates": np.full((2, 2), np.nan),
+        "replay_mask": np.zeros(2, dtype=bool),
+        "selected": np.ones(2, dtype=bool),
+        "solved": _solved_segment(),
+        "request": _replay_request(),
+        "frame_index": np.array([0, 5]),
+        "block_ids": np.zeros(2, dtype=np.int16),
+        "carrier_ids": np.array([10, 11]),
+        "residual_tolerance": 1.0e-7,
+    }
+    insert_replay_segment(**kwargs)
+    with pytest.raises(ValueError, match="overlap"):
+        insert_replay_segment(**kwargs)
+
+    kwargs["replay_gates"] = np.full((2, 2), np.nan)
+    kwargs["replay_mask"] = np.zeros(2, dtype=bool)
+    kwargs["solved"] = _solved_segment(maximum_primal_violation=2.0e-7)
+    with pytest.raises(RuntimeError, match="certificate"):
+        insert_replay_segment(**kwargs)
+
+
+def test_fixed_gain_replay_is_deterministic():
+    from utils.a7c_feasibility_oracle import solve_fixed_gain_oracle
+
+    base = np.array([1.0, 2.0, 1.0, 2.0, 1.0])
+    point = base[:, None]
+    streams = {
+        "objective": {
+            "outer": {"base": base, "point": point},
+            "boundary": {"base": base, "point": point},
+        },
+        "guard": {
+            "target": {
+                "base": np.ones(5),
+                "point": np.zeros((5, 1)),
+            },
+            "outer": {"base": base, "point": point},
+        },
+    }
+    kwargs = {
+        "runtime_mass": np.zeros((5, 1)),
+        "a5_weight": np.array([0.8]),
+        "streams": streams,
+        "minimum_gate": 0.9,
+        "maximum_gate": 1.0,
+        "selection_threshold": 0.2,
+        "proxy_target_response": 0.995,
+        "maximum_gate_jump": 0.015,
+        "minimum_target_response": 0.99,
+        "maximum_soft_iou_drop": 0.005,
+        "minimum_outer_gain": 0.005,
+        "minimum_boundary_gain": 0.005,
+    }
+
+    first = solve_fixed_gain_oracle(**kwargs)
+    second = solve_fixed_gain_oracle(**kwargs)
+
+    np.testing.assert_array_equal(first["gates"], second["gates"])
+    assert first["metrics"] == second["metrics"]
+
+
+def test_write_fold_witness_persists_only_replay_mask(tmp_path):
+    from tools.evaluate_a7c_r1_3g_exact_aggregate_oracle import (
+        write_fold_witness,
+    )
+
+    mask = np.array([True, True, False, False])
+    gates = np.array([[0.99], [0.98], [np.nan], [np.nan]])
+    request_arrays = {
+        "requested_outer_gain": np.array([0.005, 0.005, np.nan, np.nan]),
+        "requested_boundary_gain": np.array([0.03, 0.03, np.nan, np.nan]),
+        "source_feasible_lower": np.array([0.03002, 0.03002, np.nan, np.nan]),
+        "source_infeasible_upper": np.array(
+            [0.030029, 0.030029, np.nan, np.nan]
+        ),
+    }
+
+    write_fold_witness(
+        output_dir=tmp_path,
+        replay_gates=gates,
+        replay_mask=mask,
+        request_arrays=request_arrays,
+        camera_index=np.array([0, 0, 1, 1]),
+        frame_index=np.array([0, 5, 0, 5]),
+        block_ids=np.zeros(4, dtype=np.int16),
+        carrier_ids=np.array([10]),
+        certificates=[{"fold": 0, "camera_index": 0}],
+        source_fingerprints={"probe": "a" * 64},
+        sample_order_fingerprint="sample-order",
+        carrier_order_fingerprint="carrier-order",
+    )
+
+    with np.load(tmp_path / "predictions.npz", allow_pickle=False) as saved:
+        assert np.array_equal(saved["replay_mask"], mask)
+        assert np.isfinite(saved["replay_gates"][mask]).all()
+        assert np.isnan(saved["replay_gates"][~mask]).all()
+        for key in request_arrays:
+            assert np.isfinite(saved[key][mask]).all()
+            assert np.isnan(saved[key][~mask]).all()
+        for key in (
+            "deployment_eligible",
+            "teacher_eligible",
+            "paper_test_eligible",
+        ):
+            assert int(saved[key]) == 0
+    assert json.loads(
+        (tmp_path / "certificates.json").read_text(encoding="utf-8")
+    ) == [{"camera_index": 0, "fold": 0}]
