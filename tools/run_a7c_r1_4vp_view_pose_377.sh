@@ -109,6 +109,20 @@ for key, value in contract.items():
             raise ValueError(f"source fingerprint mismatch: {relative}")
 PY
 
+"${PYTHON}" - "${ROOT}" "${POSE}" "${CONTRACT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+from utils.a7c_view_pose_compositor import pose_manifest_sha256
+root, pose, contract_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+contract = json.loads(contract_path.read_text(encoding="utf-8"))
+frames = range(int(contract["frame_start"]), int(contract["frame_end"]) + 1,
+               int(contract["frame_stride"]))
+observed = pose_manifest_sha256(pose, frames, root)
+if observed != contract["source_pose_manifest_sha256"]:
+    raise ValueError(f"pose manifest fingerprint mismatch: {observed}")
+PY
+
 if [[ ! -f "${TEACHERS}/summary.json" ]] || ! rg -q '"execution_status": "TEACHERS_COMPLETED"' "${TEACHERS}/summary.json"; then
   "${PYTHON}" "${ROOT}/tools/build_a7c_r1_4vp_fit_teachers.py" \
     --contract "${CONTRACT}" --probe "${PROBE}" --evidence "${EVIDENCE}" \

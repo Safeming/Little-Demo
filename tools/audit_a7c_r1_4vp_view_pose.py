@@ -185,6 +185,16 @@ def _run(args) -> tuple[dict, int]:
         "A5 bank": verify_source_file(args.a5_bank, contract["source_a5_bank_sha256"], "A5 bank"),
         "teacher": verify_source_file(args.teacher, contract["source_teacher_sha256"], "teacher"),
     }
+    for fold, (relative, expected) in enumerate(zip(
+        contract["source_r1_3g_witness_predictions"],
+        contract["source_r1_3g_witness_prediction_sha256"],
+    )):
+        path = REPO_ROOT / relative
+        if path.resolve() != (args.witness_dir / f"fold_{fold}/predictions.npz").resolve():
+            raise ValueError("R1.3-G witness directory differs from contract")
+        source_hashes[f"R1.3-G witness {fold}"] = verify_source_file(
+            path, expected, f"R1.3-G witness {fold}"
+        )
     teacher = _load_teacher_manifest(args.teacher)
     cameras = np.asarray(teacher["camera_index"])
     frames = np.asarray(teacher["frame_index"])
