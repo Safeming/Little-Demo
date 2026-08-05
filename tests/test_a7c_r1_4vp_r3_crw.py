@@ -7,7 +7,9 @@ import torch
 
 from utils.a7c_r1_4vp_r3_crw import (
     build_contribution_weights,
+    classify_fit_entry_failure,
     contribution_weighted_distillation_loss,
+    evaluate_fit_renderer_entry,
     temporal_segment_weights,
 )
 
@@ -181,3 +183,83 @@ def test_weighted_loss_rejects_nonfinite_weights_and_wrong_residual_scale():
             temporal_loss_weight=0.25,
             residual_loss_weight=0.00001,
         )
+
+
+def test_fit_renderer_entry_requires_recovery_and_positive_fractions():
+    result = evaluate_fit_renderer_entry(
+        learned_outer=[0.007, 0.008],
+        teacher_outer=[0.010, 0.010],
+        learned_boundary=[0.021, 0.022],
+        teacher_boundary=[0.030, 0.030],
+        minimum_outer_recovery=0.70,
+        minimum_boundary_recovery=0.70,
+        minimum_positive_fraction=0.90,
+    )
+
+    assert result["passed"] is True
+    assert result["outer_recovery"] == pytest.approx(0.75)
+    assert result["boundary_recovery"] == pytest.approx(0.0215 / 0.03)
+    assert result["outer_positive_fraction"] == pytest.approx(1.0)
+    assert result["boundary_positive_fraction"] == pytest.approx(1.0)
+    assert result["failed_conditions"] == []
+
+
+@pytest.mark.parametrize(
+    "override,failed_condition",
+    [
+        ({"learned_outer": [0.006, 0.006]}, "outer_recovery"),
+        ({"learned_boundary": [0.020, 0.020]}, "boundary_recovery"),
+        ({"learned_outer": [0.010, -0.001]}, "outer_positive_fraction"),
+        ({"learned_boundary": [0.030, -0.001]}, "boundary_positive_fraction"),
+    ],
+)
+def test_fit_renderer_entry_reports_each_negative_condition(
+    override, failed_condition
+):
+    arguments = {
+        "learned_outer": [0.008, 0.008],
+        "teacher_outer": [0.010, 0.010],
+        "learned_boundary": [0.024, 0.024],
+        "teacher_boundary": [0.030, 0.030],
+        "minimum_outer_recovery": 0.70,
+        "minimum_boundary_recovery": 0.70,
+        "minimum_positive_fraction": 0.90,
+    }
+    arguments.update(override)
+
+    result = evaluate_fit_renderer_entry(**arguments)
+
+    assert result["passed"] is False
+    assert failed_condition in result["failed_conditions"]
+
+
+@pytest.mark.parametrize(
+    "override,match",
+    [
+        ({"teacher_outer": [0.0, 0.0]}, "teacher_outer mean"),
+        ({"teacher_boundary": [-0.1, -0.1]}, "teacher_boundary mean"),
+        ({"learned_outer": [0.1, np.nan]}, "learned_outer"),
+        ({"learned_boundary": [0.1]}, "same length"),
+    ],
+)
+def test_fit_renderer_entry_rejects_invalid_inputs(override, match):
+    arguments = {
+        "learned_outer": [0.008, 0.008],
+        "teacher_outer": [0.010, 0.010],
+        "learned_boundary": [0.024, 0.024],
+        "teacher_boundary": [0.030, 0.030],
+        "minimum_outer_recovery": 0.70,
+        "minimum_boundary_recovery": 0.70,
+        "minimum_positive_fraction": 0.90,
+    }
+    arguments.update(override)
+
+    with pytest.raises(ValueError, match=match):
+        evaluate_fit_renderer_entry(**arguments)
+
+
+def test_fit_renderer_entry_failure_has_fold_specific_terminal_status():
+    assert classify_fit_entry_failure(0) == "FIT_RENDERER_ENTRY_NEGATIVE"
+    assert classify_fit_entry_failure(1) == "TRAINING_ERROR"
+    with pytest.raises(ValueError, match="fold_index"):
+        classify_fit_entry_failure(-1)

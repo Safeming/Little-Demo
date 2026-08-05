@@ -167,3 +167,85 @@ def contribution_weighted_distillation_loss(
         + float(residual_loss_weight) * latent
     )
     return {"loss": loss, "gate": gate, "temporal": temporal, "residual": latent}
+
+
+def _finite_vector(name: str, value: Iterable[float]) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim != 1 or array.size == 0:
+        raise ValueError(f"{name} must be a nonempty vector")
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must be finite")
+    return array
+
+
+def evaluate_fit_renderer_entry(
+    *,
+    learned_outer: Iterable[float],
+    teacher_outer: Iterable[float],
+    learned_boundary: Iterable[float],
+    teacher_boundary: Iterable[float],
+    minimum_outer_recovery: float,
+    minimum_boundary_recovery: float,
+    minimum_positive_fraction: float,
+) -> Dict[str, object]:
+    vectors = {
+        "learned_outer": _finite_vector("learned_outer", learned_outer),
+        "teacher_outer": _finite_vector("teacher_outer", teacher_outer),
+        "learned_boundary": _finite_vector("learned_boundary", learned_boundary),
+        "teacher_boundary": _finite_vector("teacher_boundary", teacher_boundary),
+    }
+    lengths = {vector.size for vector in vectors.values()}
+    if len(lengths) != 1:
+        raise ValueError("fit renderer vectors must have the same length")
+    for name, value in (
+        ("minimum_outer_recovery", minimum_outer_recovery),
+        ("minimum_boundary_recovery", minimum_boundary_recovery),
+        ("minimum_positive_fraction", minimum_positive_fraction),
+    ):
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be finite and nonnegative")
+    if minimum_positive_fraction > 1.0:
+        raise ValueError("minimum_positive_fraction must not exceed one")
+
+    teacher_outer_mean = float(vectors["teacher_outer"].mean())
+    teacher_boundary_mean = float(vectors["teacher_boundary"].mean())
+    if teacher_outer_mean <= 0.0:
+        raise ValueError("teacher_outer mean must be positive")
+    if teacher_boundary_mean <= 0.0:
+        raise ValueError("teacher_boundary mean must be positive")
+
+    learned_outer_mean = float(vectors["learned_outer"].mean())
+    learned_boundary_mean = float(vectors["learned_boundary"].mean())
+    outer_recovery = learned_outer_mean / teacher_outer_mean
+    boundary_recovery = learned_boundary_mean / teacher_boundary_mean
+    outer_positive_fraction = float(np.mean(vectors["learned_outer"] > 0.0))
+    boundary_positive_fraction = float(
+        np.mean(vectors["learned_boundary"] > 0.0)
+    )
+    checks = {
+        "outer_recovery": outer_recovery >= float(minimum_outer_recovery),
+        "boundary_recovery": boundary_recovery >= float(minimum_boundary_recovery),
+        "outer_positive_fraction": outer_positive_fraction
+        >= float(minimum_positive_fraction),
+        "boundary_positive_fraction": boundary_positive_fraction
+        >= float(minimum_positive_fraction),
+    }
+    return {
+        "passed": bool(all(checks.values())),
+        "outer_recovery": outer_recovery,
+        "boundary_recovery": boundary_recovery,
+        "outer_positive_fraction": outer_positive_fraction,
+        "boundary_positive_fraction": boundary_positive_fraction,
+        "learned_outer_mean": learned_outer_mean,
+        "teacher_outer_mean": teacher_outer_mean,
+        "learned_boundary_mean": learned_boundary_mean,
+        "teacher_boundary_mean": teacher_boundary_mean,
+        "checks": checks,
+        "failed_conditions": [name for name, passed in checks.items() if not passed],
+    }
+
+
+def classify_fit_entry_failure(fold_index: int) -> str:
+    if not isinstance(fold_index, (int, np.integer)) or fold_index < 0:
+        raise ValueError("fold_index must be a nonnegative integer")
+    return "FIT_RENDERER_ENTRY_NEGATIVE" if fold_index == 0 else "TRAINING_ERROR"
