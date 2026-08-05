@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
 
+from tools.audit_a7c_r1_4vp_r4a_signed_renderer import _run as run_r4a_audit
 from tools.train_a7c_r1_4vp_r4a_signed_renderer import train_fold
 from utils.a7c_r1_4vp_r4a import (
     freeze_initial_scales,
@@ -24,6 +26,7 @@ CONTRACT = (
     ROOT
     / "configs/semantic/a7c_r1_4vp_r4a_signed_renderer_trajectory_377_v1.json"
 )
+RUNNER = ROOT / "tools/run_a7c_r1_4vp_r4a_signed_renderer_377.sh"
 
 
 def test_r4a_contract_changes_only_the_registered_training_objective():
@@ -416,3 +419,33 @@ def test_r4a_keeps_the_r3_model_signature_and_budget():
     assert contract["attention"] is False
     assert contract["carrier_embedding"] is False
     assert contract["maximum_projection_gate_jump"] == 0.015
+
+
+def test_r4a_audit_wrapper_preserves_negative_status(monkeypatch):
+    monkeypatch.setattr(
+        "tools.audit_a7c_r1_4vp_r4a_signed_renderer.r3_audit._run",
+        lambda args: (
+            {
+                "stage": "r1_4vp_r3_crw_held_canary",
+                "verdict": "CANARY_NEGATIVE",
+            },
+            2,
+        ),
+    )
+
+    payload, status = run_r4a_audit(SimpleNamespace())
+
+    assert payload["stage"] == "r1_4vp_r4a_signed_renderer_held_canary"
+    assert status == 2
+
+
+def test_r4a_runner_maps_fit_rejection_without_opening_audit():
+    source = RUNNER.read_text(encoding="utf-8")
+    assert "FIT_RENDERER_ENTRY_NEGATIVE) mark_terminal fit_rejected" in source
+    assert "CANARY_NEGATIVE) mark_terminal rejected" in source
+    assert "CANARY_PROMOTED) mark_terminal completed" in source
+    assert (
+        'if "${PYTHON}" "${ROOT}/tools/audit_a7c_r1_4vp_r4a_signed_renderer.py"'
+        in source
+    )
+    assert "for marker in completed rejected fit_rejected failed" in source
