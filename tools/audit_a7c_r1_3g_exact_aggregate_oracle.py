@@ -154,6 +154,11 @@ def _run(args) -> tuple[dict, int]:
             contract["source_r1_3g_design_sha256"],
             "R1.3-G design",
         ),
+        (
+            REPO_ROOT / contract["source_probe"],
+            contract["source_probe_sha256"],
+            "probe",
+        ),
         (args.evidence, contract["source_evidence_sha256"], "evidence"),
         (args.a5_bank, contract["source_a5_bank_sha256"], "A5 bank"),
         (args.teacher, contract["source_teacher_sha256"], "teacher"),

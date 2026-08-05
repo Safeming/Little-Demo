@@ -11,6 +11,7 @@ CONTRACT = (
     ROOT / "configs/semantic/a7c_r1_3g_exact_aggregate_oracle_377_v1.json"
 )
 RUNNER = ROOT / "tools/run_a7c_r1_3g_exact_aggregate_oracle_377.sh"
+AUDITOR = ROOT / "tools/audit_a7c_r1_3g_exact_aggregate_oracle.py"
 
 
 def test_r1_3g_contract_freezes_constructive_replay_and_isolation():
@@ -483,3 +484,10 @@ def test_r1_3g_runner_is_restart_safe_isolated_and_audit_gated():
         assert artifact in source
     for marker in (".completed", ".rejected", ".failed"):
         assert marker in source
+
+
+def test_r1_3g_auditor_reverifies_probe_in_witness_source_fingerprints():
+    source = AUDITOR.read_text(encoding="utf-8")
+
+    assert 'contract["source_probe"]' in source
+    assert 'contract["source_probe_sha256"]' in source
