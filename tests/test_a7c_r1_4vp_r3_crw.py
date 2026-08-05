@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 
+from tools.audit_a7c_r1_4vp_r3_crw import _run as run_r3_audit
 from tools.train_a7c_r1_4vp_r3_crw import train_fold
 from utils.a7c_r1_4vp_r3_crw import (
     build_contribution_weights,
@@ -17,6 +19,7 @@ from utils.a7c_r1_4vp_r3_crw import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "configs/semantic/a7c_r1_4vp_r3_crw_contribution_weighted_377_v1.json"
+RUNNER = ROOT / "tools/run_a7c_r1_4vp_r3_crw_377.sh"
 
 
 def test_r3_contract_changes_only_contribution_reduction_and_entry_gate():
@@ -325,3 +328,30 @@ def test_train_fold_uses_only_fit_teacher_and_contribution_rows(tmp_path, monkey
     assert summary["contribution_weight_mean"] == pytest.approx(1.0)
     assert (tmp_path / "model.pt").is_file()
     assert (tmp_path / "predictions.npz").is_file()
+
+
+def test_audit_wrapper_changes_stage_and_preserves_negative_status(monkeypatch):
+    monkeypatch.setattr(
+        "tools.audit_a7c_r1_4vp_r3_crw.r2_audit._run",
+        lambda args: ({"stage": "r1_4vp_r2_held_canary", "verdict": "CANARY_NEGATIVE"}, 2),
+    )
+
+    payload, status = run_r3_audit(SimpleNamespace())
+
+    assert payload["stage"] == "r1_4vp_r3_crw_held_canary"
+    assert payload["verdict"] == "CANARY_NEGATIVE"
+    assert status == 2
+
+
+def test_runner_maps_all_terminal_states_and_guards_audit_command():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "FIT_RENDERER_ENTRY_NEGATIVE) mark_terminal fit_rejected" in source
+    assert "CANARY_NEGATIVE) mark_terminal rejected" in source
+    assert "CANARY_PROMOTED) mark_terminal completed" in source
+    assert "TRAINING_ERROR) mark_terminal failed" in source
+    assert 'if "${PYTHON}" "${ROOT}/tools/audit_a7c_r1_4vp_r3_crw.py"' in source
+    assert 'for marker in completed rejected fit_rejected failed' in source
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    assert "r1_1_f1_outer_gain" in contract
+    assert "r1_1_f1_boundary_gain" in contract
