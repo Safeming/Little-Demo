@@ -287,18 +287,26 @@ def _solve_stage(
     *,
     presolve: bool = True,
 ):
-    options = _solver_options(primal_tolerance)
-    options["presolve"] = bool(presolve)
-    result = linprog(
-        np.asarray(objective, dtype=np.float64),
-        A_ub=matrix,
-        b_ub=upper,
-        bounds=bounds,
-        method="highs",
-        options=options,
-    )
+    def run(use_presolve: bool):
+        options = _solver_options(primal_tolerance)
+        options["presolve"] = bool(use_presolve)
+        return linprog(
+            np.asarray(objective, dtype=np.float64),
+            A_ub=matrix,
+            b_ub=upper,
+            bounds=bounds,
+            method="highs",
+            options=options,
+        )
+
+    used_presolve = bool(presolve)
+    result = run(used_presolve)
+    if (not result.success or not np.isfinite(result.fun)) and used_presolve:
+        used_presolve = False
+        result = run(used_presolve)
     if not result.success or not np.isfinite(result.fun):
         raise RuntimeError(f"teacher linear program failed: {result.message}")
+    result["a7c_presolve"] = used_presolve
     violation = float(max(np.max(matrix @ result.x - upper), 0.0))
     return result, violation
 
@@ -516,9 +524,13 @@ def solve_lexicographic_fixed_gain_oracle(
             "stage_one_status": int(stage_one.status),
             "stage_two_status": int(stage_two.status),
             "stage_three_status": stage_three_status,
-            "stage_one_presolve": True,
-            "stage_two_presolve": True,
-            "stage_three_presolve": False,
+            "stage_one_presolve": bool(stage_one["a7c_presolve"]),
+            "stage_two_presolve": bool(stage_two["a7c_presolve"]),
+            "stage_three_presolve": (
+                False
+                if stage_three_status < 0
+                else bool(stage_three["a7c_presolve"])
+            ),
             "stage_three_formulation": "epsilon_lexicographic",
             "stage_three_temporal_epsilon": temporal_epsilon,
             "stage_three_total_deviation": stage_three_total_deviation,
