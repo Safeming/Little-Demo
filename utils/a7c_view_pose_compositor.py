@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from torch import nn
+from torch.nn import functional as F
 
 from utils.a7c_overlap_set_compositor import dense_overlap_adjacency
 from utils.a7c_quotient_compositor import runtime_target_mass
@@ -235,6 +236,115 @@ def build_runtime_inputs(
     }
 
 
+def distillation_loss(
+    prediction: torch.Tensor,
+    teacher: torch.Tensor,
+    residual: torch.Tensor,
+    *,
+    gate_delta: float,
+    temporal_delta: float,
+    temporal_weight: float,
+    residual_weight: float,
+) -> dict[str, torch.Tensor]:
+    if prediction.shape != teacher.shape or residual.shape != prediction.shape:
+        raise ValueError("distillation tensors must share shape")
+    if prediction.ndim != 2 or prediction.shape[0] < 2:
+        raise ValueError("distillation tensors need [frames, carriers]")
+    if min(gate_delta, temporal_delta) <= 0.0 or min(
+        temporal_weight, residual_weight
+    ) < 0.0:
+        raise ValueError("distillation weights and deltas are invalid")
+    for name, value in (
+        ("prediction", prediction),
+        ("teacher", teacher),
+        ("residual", residual),
+    ):
+        if not torch.isfinite(value).all():
+            raise ValueError(f"{name} must be finite")
+    gate = F.huber_loss(
+        prediction, teacher, reduction="mean", delta=float(gate_delta)
+    )
+    temporal = F.huber_loss(
+        torch.diff(prediction, dim=0),
+        torch.diff(teacher, dim=0),
+        reduction="mean",
+        delta=float(temporal_delta),
+    )
+    residual_term = torch.mean(torch.abs(residual))
+    return {
+        "loss": gate
+        + float(temporal_weight) * temporal
+        + float(residual_weight) * residual_term,
+        "gate": gate,
+        "temporal": temporal,
+        "residual": residual_term,
+    }
+
+
+def build_nearest_neighbor_keys(features, feature_names, pose) -> np.ndarray:
+    values = _finite_array("nearest-neighbor features", features)
+    names = list(map(str, feature_names))
+    poses = _finite_array("nearest-neighbor pose", pose)
+    if values.ndim != 3 or poses.ndim != 2 or values.shape[0] != poses.shape[0]:
+        raise ValueError("nearest-neighbor features and pose are not aligned")
+    if poses.shape[1] != 36:
+        raise ValueError("nearest-neighbor pose must have 36 fields")
+    requested = (
+        "visibility",
+        "view_dir_x",
+        "view_dir_y",
+        "view_dir_z",
+        "log_depth",
+        "alpha_transmittance_mass",
+        "semantic_support_mean",
+    )
+    missing = [name for name in requested if name not in names]
+    if missing:
+        raise ValueError(f"missing nearest-neighbor fields: {missing}")
+    visibility = np.clip(values[:, :, names.index("visibility")], 0.0, 1.0)
+    denominator = visibility.sum(axis=1, keepdims=True)
+    means = []
+    for name in requested[1:]:
+        field = values[:, :, names.index(name)]
+        numerator = np.sum(field * visibility, axis=1, keepdims=True)
+        means.append(
+            np.divide(
+                numerator,
+                denominator,
+                out=np.zeros_like(numerator),
+                where=denominator > 0.0,
+            )
+        )
+    return np.concatenate((poses, *means), axis=1)
+
+
+def nearest_neighbor_predict(fit_keys, fit_gates, query_keys, *, k: int) -> np.ndarray:
+    keys = _finite_array("fit nearest-neighbor keys", fit_keys)
+    gates = _finite_array("fit nearest-neighbor gates", fit_gates)
+    query = _finite_array("query nearest-neighbor keys", query_keys)
+    if keys.ndim != 2 or query.ndim != 2 or keys.shape[1] != query.shape[1]:
+        raise ValueError("nearest-neighbor key dimensions differ")
+    if gates.ndim != 2 or gates.shape[0] != keys.shape[0]:
+        raise ValueError("nearest-neighbor gates differ from fit keys")
+    if int(k) <= 0 or keys.shape[0] < int(k):
+        raise ValueError("nearest-neighbor k exceeds fit sample count")
+    stats = fit_normalization(keys, np.ones(keys.shape[0], dtype=bool))
+    fit = apply_normalization(keys, stats)
+    normalized_query = apply_normalization(query, stats)
+    output = np.empty((query.shape[0], gates.shape[1]), dtype=np.float64)
+    for index, row in enumerate(normalized_query):
+        distances = np.linalg.norm(fit - row[None, :], axis=1)
+        exact = np.flatnonzero(distances <= 1.0e-12)
+        if exact.size:
+            output[index] = np.mean(gates[exact], axis=0)
+            continue
+        neighbors = np.argsort(distances, kind="stable")[: int(k)]
+        weights = 1.0 / distances[neighbors]
+        weights = weights / weights.sum()
+        output[index] = np.sum(gates[neighbors] * weights[:, None], axis=0)
+    return output
+
+
 class ViewPoseResidualCompositor(nn.Module):
     def __init__(
         self,
@@ -299,6 +409,19 @@ class ViewPoseResidualCompositor(nn.Module):
         visibility: torch.Tensor,
         base_gates: torch.Tensor,
     ) -> torch.Tensor:
+        gates, _ = self.predict_with_residual(
+            view, pose, adjacency, visibility, base_gates
+        )
+        return gates
+
+    def predict_with_residual(
+        self,
+        view: torch.Tensor,
+        pose: torch.Tensor,
+        adjacency: torch.Tensor,
+        visibility: torch.Tensor,
+        base_gates: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if view.ndim != 3:
             raise ValueError("view must have shape [frames, carriers, fields]")
         frames, carriers = view.shape[:2]
@@ -339,8 +462,9 @@ class ViewPoseResidualCompositor(nn.Module):
         ).transpose(0, 1)
         sequence, _ = self.temporal(sequence_input)
         residual = self.residual_head(sequence).squeeze(-1).transpose(0, 1)
-        return torch.clamp(
+        gates = torch.clamp(
             base_gates + self.residual_gate_scale * torch.tanh(residual),
             min=self.minimum_gate,
             max=self.maximum_gate,
         )
+        return gates, residual
