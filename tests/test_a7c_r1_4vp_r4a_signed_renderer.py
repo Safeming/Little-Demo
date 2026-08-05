@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -9,6 +10,7 @@ from utils.a7c_r1_4vp_r4a import (
     freeze_initial_scales,
     mean_normalized_trajectory,
     reconstruct_renderer_sequence,
+    summarize_action_recovery,
     signed_renderer_trajectory_components,
     signed_renderer_trajectory_loss,
     signed_trajectory_component,
@@ -252,3 +254,60 @@ def test_total_loss_rejects_missing_component_and_wrong_residual_weight():
             gate_aux_weight=0.1,
             residual_weight=0.001,
         )
+
+
+def test_action_diagnostics_report_rank_overlap_and_false_maximum():
+    base = np.ones((4, 3))
+    teacher = np.array(
+        [
+            [0.9, 1.0, 1.0],
+            [0.9, 0.95, 1.0],
+            [0.95, 0.9, 1.0],
+            [1.0, 0.9, 0.95],
+        ]
+    )
+    learned = teacher.copy()
+    learned[0, 0] = 1.0
+
+    result = summarize_action_recovery(
+        learned, teacher, base, top_k=2, suppression_tolerance=0.001
+    )
+
+    assert result["missed_teacher_suppression_count"] == 1
+    assert result["missed_teacher_suppression_fraction"] == pytest.approx(1.0 / 7.0)
+    assert 0.0 <= result["top_k_suppression_overlap"] <= 1.0
+    assert result["action_rank_90"] >= 1
+    assert result["action_rank_95"] >= result["action_rank_90"]
+
+
+def test_action_diagnostics_reject_undefined_or_invalid_inputs():
+    base = np.ones((3, 2))
+    with pytest.raises(ValueError, match="teacher action"):
+        summarize_action_recovery(
+            base, base, base, top_k=1, suppression_tolerance=0.001
+        )
+    with pytest.raises(ValueError, match="top_k"):
+        summarize_action_recovery(
+            base - 0.1,
+            base - 0.2,
+            base,
+            top_k=3,
+            suppression_tolerance=0.001,
+        )
+    bad = base.copy()
+    bad[0, 0] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        summarize_action_recovery(
+            bad, base - 0.1, base, top_k=1, suppression_tolerance=0.001
+        )
+
+
+def test_action_diagnostics_define_zero_mae_share_as_zero():
+    base = np.ones((3, 2))
+    teacher = base - np.array([[0.1, 0.0], [0.1, 0.0], [0.1, 0.0]])
+
+    result = summarize_action_recovery(
+        teacher, teacher, base, top_k=1, suppression_tolerance=0.001
+    )
+
+    assert result["false_maximum_mae_share"] == 0.0

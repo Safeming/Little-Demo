@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -220,3 +221,72 @@ def signed_renderer_trajectory_loss(
         + residual_weight * torch.mean(torch.abs(residual))
     )
     return {"loss": total, **{f"normalized_{k}": v for k, v in normalized.items()}}
+
+
+def summarize_action_recovery(
+    learned, teacher, base, *, top_k, suppression_tolerance
+):
+    arrays = [np.asarray(value, dtype=np.float64) for value in (learned, teacher, base)]
+    learned, teacher, base = arrays
+    if learned.ndim != 2 or teacher.shape != learned.shape or base.shape != learned.shape:
+        raise ValueError("action diagnostic arrays must be aligned two-dimensional matrices")
+    if learned.shape[0] < 1 or learned.shape[1] < 1:
+        raise ValueError("action diagnostic arrays must be nonempty")
+    if not all(np.isfinite(value).all() for value in arrays):
+        raise ValueError("action diagnostic arrays must be finite")
+    if not isinstance(top_k, (int, np.integer)) or not 1 <= int(top_k) <= learned.shape[1]:
+        raise ValueError("top_k must be between one and the carrier count")
+    tolerance = float(suppression_tolerance)
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("suppression_tolerance must be finite and positive")
+
+    learned_action = learned - base
+    teacher_action = teacher - base
+    teacher_norm = float(np.linalg.norm(teacher_action))
+    if teacher_norm <= 0.0:
+        raise ValueError("teacher action must have nonzero norm")
+    learned_norm = float(np.linalg.norm(learned_action))
+    action_cosine = 0.0
+    if learned_norm > 0.0:
+        action_cosine = float(
+            np.sum(learned_action * teacher_action) / (learned_norm * teacher_norm)
+        )
+
+    learned_suppression = base - learned
+    teacher_suppression = base - teacher
+    overlaps = []
+    for learned_row, teacher_row in zip(learned_suppression, teacher_suppression):
+        learned_top = np.argpartition(-learned_row, int(top_k) - 1)[: int(top_k)]
+        teacher_top = np.argpartition(-teacher_row, int(top_k) - 1)[: int(top_k)]
+        overlaps.append(len(set(learned_top) & set(teacher_top)) / int(top_k))
+
+    singular_values = np.linalg.svd(learned_action, compute_uv=False)
+    energy = np.square(singular_values)
+    total_energy = float(energy.sum())
+
+    def energy_rank(fraction):
+        if total_energy == 0.0:
+            return 0
+        return int(np.searchsorted(np.cumsum(energy) / total_energy, fraction) + 1)
+
+    teacher_mask = teacher < base - tolerance
+    teacher_count = int(teacher_mask.sum())
+    missed_mask = teacher_mask & (learned >= base - tolerance)
+    missed_count = int(missed_mask.sum())
+
+    absolute_error = np.abs(learned - teacher)
+    total_mae = float(absolute_error.sum())
+    false_maximum_mask = (learned >= base - tolerance) & teacher_mask
+    false_maximum_error = float(absolute_error[false_maximum_mask].sum())
+
+    return {
+        "action_cosine": action_cosine,
+        "top_k_suppression_overlap": float(np.mean(overlaps)),
+        "action_rank_90": energy_rank(0.90),
+        "action_rank_95": energy_rank(0.95),
+        "missed_teacher_suppression_count": missed_count,
+        "missed_teacher_suppression_fraction": missed_count / teacher_count,
+        "false_maximum_mae_share": (
+            false_maximum_error / total_mae if total_mae > 0.0 else 0.0
+        ),
+    }
