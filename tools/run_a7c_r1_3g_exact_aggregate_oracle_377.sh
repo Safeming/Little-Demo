@@ -136,6 +136,10 @@ check_sha "${TEACHER}" "698f61e195a78849c72be14b8cf9073f281b94124d804013988e7bf6
 replay_complete=1
 [[ -f "${OUT}/records.json" ]] || replay_complete=0
 [[ -f "${WITNESS}/summary.json" ]] || replay_complete=0
+[[ -f "${OUT}/summary.json" ]] || replay_complete=0
+if [[ -f "${OUT}/summary.json" ]]; then
+  rg -q '"execution_status": "REPLAY_COMPLETED"' "${OUT}/summary.json" || replay_complete=0
+fi
 for fold in 0 1 2 3 4 5; do
   [[ -f "${WITNESS}/fold_${fold}/predictions.npz" ]] || replay_complete=0
   [[ -f "${WITNESS}/fold_${fold}/certificates.json" ]] || replay_complete=0

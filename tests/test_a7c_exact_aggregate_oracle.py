@@ -473,6 +473,9 @@ def test_r1_3g_runner_is_restart_safe_isolated_and_audit_gated():
     assert "UNRESOLVED" in source
     assert "ORACLE_ERROR" in source
     assert "check_sha" in source
+    assert re.search(
+        r"rg -q .*REPLAY_COMPLETED.*summary\.json", source
+    )
     for camera in ("c17", "c18", "c19", "c20", "c21", "c22", "c23"):
         assert re.search(rf"\b{camera}\b", source) is None
     for artifact in (
