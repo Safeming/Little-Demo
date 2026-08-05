@@ -407,14 +407,6 @@ def solve_lexicographic_fixed_gain_oracle(
     change_count = (frames - 1) * carriers
     change_offset = stage_two_count
     stage_three_rows = list(stage_two_rows)
-    stage_three_rows.append(
-        (
-            tuple(
-                (deviation_offset + index, 1.0) for index in range(gate_count)
-            ),
-            total_deviation_star + lexicographic_tolerance,
-        )
-    )
     for frame in range(1, frames):
         for carrier in range(carriers):
             current = frame * carriers + carrier
@@ -437,18 +429,60 @@ def solve_lexicographic_fixed_gain_oracle(
         base_matrix, base_upper, stage_three_count, stage_three_rows
     )
     stage_three_objective = np.zeros(stage_three_count)
-    stage_three_objective[change_offset:] = 1.0
-    stage_three, stage_three_violation = _solve_stage(
-        stage_three_objective,
-        stage_three_matrix,
-        stage_three_upper,
-        base_bounds
-        + [(0.0, None)] * gate_count
-        + [(0.0, None)] * change_count,
-        primal_tolerance,
-        presolve=False,
+    stage_three_objective[deviation_offset:stage_two_count] = 1.0
+    temporal_epsilon = float(lexicographic_tolerance) / max(
+        10.0 * float(maximum_gate_jump) * change_count, 1.0
     )
-    gates = stage_three.x[:gate_count].reshape(frames, carriers)
+    stage_three_objective[change_offset:] = temporal_epsilon
+    stage_two_gate_matrix = stage_two.x[:gate_count].reshape(frames, carriers)
+    feasible_fallback = np.concatenate(
+        (stage_two.x, np.abs(np.diff(stage_two_gate_matrix, axis=0)).reshape(-1))
+    )
+    fallback_violation = float(
+        max(np.max(stage_three_matrix @ feasible_fallback - stage_three_upper), 0.0)
+    )
+    if fallback_violation > residual_tolerance:
+        raise RuntimeError(
+            f"stage-two fallback residual {fallback_violation} exceeds tolerance"
+        )
+    stage_three_fallback = None
+    try:
+        stage_three, stage_three_violation = _solve_stage(
+            stage_three_objective,
+            stage_three_matrix,
+            stage_three_upper,
+            base_bounds
+            + [(0.0, None)] * gate_count
+            + [(0.0, None)] * change_count,
+            primal_tolerance,
+            presolve=False,
+        )
+        stage_three_x = stage_three.x
+        stage_three_status = int(stage_three.status)
+        if stage_three_violation > residual_tolerance:
+            stage_three_fallback = "solver_residual"
+    except RuntimeError:
+        stage_three_x = feasible_fallback
+        stage_three_violation = fallback_violation
+        stage_three_status = -1
+        stage_three_fallback = "solver_failure"
+    stage_three_total_deviation = float(
+        np.sum(stage_three_x[deviation_offset:stage_two_count])
+    )
+    lexicographic_violation = max(
+        stage_three_total_deviation
+        - total_deviation_star
+        - float(lexicographic_tolerance),
+        0.0,
+    )
+    if stage_three_fallback is not None or lexicographic_violation > residual_tolerance:
+        stage_three_x = feasible_fallback
+        stage_three_violation = fallback_violation
+        stage_three_status = -1
+        stage_three_fallback = stage_three_fallback or "lexicographic_residual"
+        stage_three_total_deviation = total_deviation_star
+        lexicographic_violation = 0.0
+    gates = stage_three_x[:gate_count].reshape(frames, carriers)
     metrics = evaluate_oracle_gates(gates, streams)
     achieved_proxy = np.sum(mass * gates, axis=1)
     required_proxy = float(proxy_target_response) * np.sum(mass, axis=1)
@@ -466,6 +500,7 @@ def solve_lexicographic_fixed_gain_oracle(
         stage_one_violation,
         stage_two_violation,
         stage_three_violation,
+        lexicographic_violation,
         *direct_violations,
     )
     if not np.isfinite(gates).all() or maximum_violation > residual_tolerance:
@@ -480,14 +515,18 @@ def solve_lexicographic_fixed_gain_oracle(
             "scipy_version": str(scipy.__version__),
             "stage_one_status": int(stage_one.status),
             "stage_two_status": int(stage_two.status),
-            "stage_three_status": int(stage_three.status),
+            "stage_three_status": stage_three_status,
             "stage_one_presolve": True,
             "stage_two_presolve": True,
             "stage_three_presolve": False,
+            "stage_three_formulation": "epsilon_lexicographic",
+            "stage_three_temporal_epsilon": temporal_epsilon,
+            "stage_three_total_deviation": stage_three_total_deviation,
+            "stage_three_fallback": stage_three_fallback,
             "stage_one_maximum_deviation": rho_star,
             "stage_two_total_deviation": total_deviation_star,
             "stage_three_total_gate_change": float(
-                np.sum(stage_three.x[change_offset:])
+                np.sum(stage_three_x[change_offset:])
             ),
             "maximum_primal_violation": float(maximum_violation),
         },
