@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -660,3 +661,56 @@ def test_r4b0_model_signature_remains_exactly_9073_parameters():
         maximum_gate=1.0,
     )
     assert sum(value.numel() for value in model.parameters()) == 9073
+
+
+def test_r4b0_audit_wrapper_preserves_inherited_status(monkeypatch):
+    from tools.audit_a7c_r1_4vp_r4b0_projection_aware import _run
+
+    monkeypatch.setattr(
+        "tools.audit_a7c_r1_4vp_r4b0_projection_aware.r4a_audit._run",
+        lambda args: (
+            {"stage": "r1_4vp_r4a_signed_renderer_held_canary",
+             "verdict": "CANARY_NEGATIVE"},
+            2,
+        ),
+    )
+    payload, status = _run(SimpleNamespace())
+    assert payload["stage"] == "r1_4vp_r4b0_projection_aware_held_canary"
+    assert payload["verdict"] == "CANARY_NEGATIVE"
+    assert status == 2
+
+
+def test_r4b0_runner_routes_fit_failures_without_opening_held_audit():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "FEATURE_OBSERVABILITY_NEGATIVE) mark_terminal observability_rejected" in source
+    assert "FIT_PROJECTED_ENTRY_NEGATIVE) mark_terminal fit_rejected" in source
+    assert "CANARY_NEGATIVE) mark_terminal rejected" in source
+    assert "CANARY_PROMOTED) mark_terminal completed" in source
+    assert "for marker in completed rejected observability_rejected fit_rejected failed" in source
+    assert "fit_projected_entry.json" in source
+    assert "observability.json" in source
+    assert "R4-B0 must freeze exactly 36 training artifacts" in (
+        ROOT / "tools/train_a7c_r1_4vp_r4b0_projection_aware.py"
+    ).read_text(encoding="utf-8")
+    trainer_offset = source.index("train_a7c_r1_4vp_r4b0_projection_aware.py")
+    audit_offset = source.index("audit_a7c_r1_4vp_r4b0_projection_aware.py")
+    frozen_guard_offset = source.index('[[ -f "${OUT}/models_frozen.json" ]]')
+    assert trainer_offset < frozen_guard_offset < audit_offset
+
+
+def test_r4b0_runner_uses_frozen_contract_and_mutually_exclusive_markers():
+    source = RUNNER.read_text(encoding="utf-8")
+    assert (
+        "configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json"
+        in source
+    )
+    assert (
+        "a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1" in source
+    )
+    assert (
+        'rm -f "${OUT}/.completed" "${OUT}/.rejected" '
+        '"${OUT}/.observability_rejected" "${OUT}/.fit_rejected" '
+        '"${OUT}/.failed"'
+        in source
+    )
