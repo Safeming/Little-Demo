@@ -293,8 +293,7 @@ def test_global_median_scales_and_grouped_total_follow_registered_formula():
     assert float(result["loss"]) == pytest.approx(2.25002)
 
 
-@pytest.mark.parametrize("bad", [0.0, float("nan")])
-def test_global_median_scales_reject_zero_or_nonfinite_values(bad):
+def test_global_median_scales_reject_nonfinite_segment_values():
     from utils.a7c_r1_4vp_r4b0 import freeze_global_median_scales
 
     names = [
@@ -302,9 +301,35 @@ def test_global_median_scales_reject_zero_or_nonfinite_values(bad):
         "gain_boundary", "target", "gate", "action"
     ]
     rows = [{name: torch.tensor(1.0) for name in names} for _ in range(3)]
-    rows[1]["gain_outer"] = torch.tensor(bad)
+    rows[1]["gain_outer"] = torch.tensor(float("nan"))
     with pytest.raises(ValueError, match="scale"):
         freeze_global_median_scales(rows, minimum=1e-12)
+
+
+def test_global_median_scales_reject_nonpositive_global_median():
+    from utils.a7c_r1_4vp_r4b0 import freeze_global_median_scales
+
+    names = [
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action"
+    ]
+    rows = [{name: torch.tensor(0.0) for name in names} for _ in range(3)]
+    with pytest.raises(ValueError, match="median scale"):
+        freeze_global_median_scales(rows, minimum=1e-12)
+
+
+def test_global_median_scales_allow_finite_zero_segments_when_median_is_positive():
+    from utils.a7c_r1_4vp_r4b0 import freeze_global_median_scales
+
+    names = [
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action"
+    ]
+    rows = [{name: torch.tensor(value) for name in names} for value in (0.0, 2.0, 4.0)]
+
+    scales = freeze_global_median_scales(rows, minimum=1e-12)
+
+    assert scales == {name: 2.0 for name in names}
 
 
 def test_projection_diagnostics_and_fit_entry_are_fail_closed():

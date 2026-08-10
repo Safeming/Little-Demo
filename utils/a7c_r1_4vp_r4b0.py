@@ -218,12 +218,12 @@ def freeze_global_median_scales(segment_components, *, minimum):
                     raise ValueError(f"scale component {name} must be scalar")
                 value = value.detach().cpu().item()
             value = float(value)
-            if not np.isfinite(value) or value < minimum:
-                raise ValueError(f"scale component {name} must be finite and positive")
+            if not np.isfinite(value):
+                raise ValueError(f"scale component {name} must be finite")
             row.append(value)
         rows.append(row)
     medians = np.median(np.asarray(rows, dtype=np.float64), axis=0)
-    if not np.isfinite(medians).all() or np.any(medians < minimum):
+    if not np.isfinite(medians).all() or np.any(medians <= minimum):
         raise ValueError("global median scales must be finite and positive")
     return {name: float(value) for name, value in zip(_SCALE_COMPONENTS, medians)}
 
