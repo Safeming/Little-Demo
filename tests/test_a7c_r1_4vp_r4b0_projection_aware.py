@@ -79,6 +79,9 @@ def test_r4b0_contract_freezes_projection_aware_training_only():
     assert contract["projection_changed_threshold"] == 1e-12
 
     assert contract["fit_cameras"] == ["c01", "c05", "c09", "c13"]
+    assert contract["fit_camera_indices"] == [0, 1, 2, 3]
+    assert contract["fit_only_expected_sample_count"] == 456
+    assert contract["source_expected_sample_count"] == 912
     assert contract["audit_cameras"] == []
     assert contract["forbidden_cameras"] == [
         "c17", "c18", "c19", "c20", "c21", "c22", "c23"
@@ -592,6 +595,8 @@ def _tiny_fold_inputs(tmp_path):
         "contract": contract,
         "output_dir": tmp_path,
         "device": "cpu",
+        "source_row_indices": np.arange(samples, dtype=np.int64),
+        "source_sample_count": samples + 4,
     }
 
 
@@ -644,6 +649,13 @@ def test_r4b0_trainer_uses_global_scales_and_saves_exact_deployed_gates(
         assert "projected_gates" in predictions.files
         np.testing.assert_array_equal(
             predictions["exact_gates"], predictions["projected_gates"]
+        )
+        assert predictions["raw_gates"].shape == (12, 2)
+        assert np.isnan(predictions["raw_gates"][8:]).all()
+        assert np.isnan(predictions["exact_gates"][8:]).all()
+        np.testing.assert_array_equal(
+            predictions["prediction_mask"],
+            np.array([True] * 8 + [False] * 4),
         )
     certificates = json.loads(
         (tmp_path / "projection_certificates.json").read_text(encoding="utf-8")
@@ -793,3 +805,181 @@ def test_r4b0_runner_uses_frozen_contract_and_mutually_exclusive_markers():
         '"${OUT}/.failed"'
         in source
     )
+
+
+def _sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _make_tiny_full_input_tree(root):
+    from utils.a7c_oracle_capacity import _artifact_fingerprint
+
+    cameras = np.arange(8, dtype=np.int16)
+    frames = np.zeros(8, dtype=np.int32)
+    carriers = np.array([2, 5], dtype=np.int64)
+    probe = {
+        "schema_version": np.array(1, np.int64),
+        "features": np.arange(16, dtype=np.float32).reshape(8, 2, 1),
+        "feature_names": np.array(["visibility"]),
+        "carrier_ids": carriers,
+        "camera_index": cameras,
+        "frame_index": frames,
+        "source_teacher_fingerprint": np.array("parent"),
+        "paper_test_eligible": np.array(0, np.uint8),
+    }
+    probe["output_fingerprint"] = np.array(_artifact_fingerprint(probe))
+    probe_path = root / "probe.npz"
+    np.savez_compressed(probe_path, **probe)
+    teacher_path = root / "teacher.npz"
+    np.savez_compressed(
+        teacher_path,
+        carrier_ids=carriers,
+        camera_index=cameras,
+        frame_index=frames,
+        output_fingerprint=np.array("parent"),
+    )
+    evidence_path = root / "evidence.npz"
+    evidence = {
+        "renderer_sequence_camera_index": cameras,
+        "renderer_sequence_frame_index": frames,
+    }
+    for signal_index, signal in enumerate(("target", "outer", "boundary")):
+        evidence[f"renderer_{signal}_contribution_sequence"] = (
+            np.arange(8 * 6, dtype=np.float32).reshape(8, 3, 2) + signal_index
+        )
+    np.savez_compressed(evidence_path, **evidence)
+    base_root = root / "base"
+    teachers_root = root / "teachers"
+    base_hashes = []
+    teacher_artifacts = {}
+    for fold in range(6):
+        base_path = base_root / f"fold_{fold}/predictions.npz"
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            base_path, raw_gates=np.full((8, 2), 0.99 - fold * 0.001)
+        )
+        base_hashes.append(_sha256(base_path))
+        fold_path = teachers_root / f"fold_{fold}/teacher.npz"
+        fold_path.parent.mkdir(parents=True, exist_ok=True)
+        gates = np.full((8, 2), np.nan)
+        gates[:4] = 0.995
+        np.savez_compressed(
+            fold_path,
+            teacher_gates=gates,
+            teacher_mask=np.isfinite(gates).all(axis=1),
+            camera_index=cameras,
+            frame_index=frames,
+            block_ids=np.zeros(8, np.int16),
+            carrier_ids=carriers,
+        )
+        teacher_artifacts[f"fold_{fold}/teacher.npz"] = _sha256(fold_path)
+    contract = {
+        "fit_camera_indices": [0, 1, 2, 3],
+        "fit_only_expected_sample_count": 4,
+        "source_expected_sample_count": 8,
+        "source_probe_sha256": _sha256(probe_path),
+        "source_teacher_sha256": _sha256(teacher_path),
+        "source_evidence_sha256": _sha256(evidence_path),
+        "source_r1_2b_prediction_sha256": base_hashes,
+        "source_teacher_artifacts": teacher_artifacts,
+    }
+    return contract, probe_path, teacher_path, evidence_path, base_root, teachers_root
+
+
+def test_fit_only_staging_is_deterministic_and_contains_no_forbidden_camera(tmp_path):
+    from tools.stage_a7c_r1_4vp_r4b0_fit_inputs import stage_fit_only_inputs
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    values = _make_tiny_full_input_tree(source_root)
+    contract, probe, teacher, evidence, base, teachers = values
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    arguments = dict(
+        contract=contract,
+        probe_path=probe,
+        teacher_path=teacher,
+        evidence_path=evidence,
+        r1_2b_training_dir=base,
+        teachers_dir=teachers,
+    )
+
+    manifest_a = stage_fit_only_inputs(output_dir=first, **arguments)
+    manifest_b = stage_fit_only_inputs(output_dir=second, **arguments)
+
+    assert manifest_a["artifact_sha256"] == manifest_b["artifact_sha256"]
+    assert manifest_a["source_row_indices"] == [0, 1, 2, 3]
+    assert manifest_a["fit_camera_indices"] == [0, 1, 2, 3]
+    with np.load(first / "probe/probe.npz", allow_pickle=False) as staged:
+        assert staged["features"].shape[0] == 4
+        assert set(map(int, np.unique(staged["camera_index"]))) == {0, 1, 2, 3}
+    with np.load(first / "evidence/evidence.npz", allow_pickle=False) as staged:
+        assert set(map(int, np.unique(staged["renderer_sequence_camera_index"]))) == {
+            0, 1, 2, 3
+        }
+        assert all(
+            staged[key].shape[0] == 4
+            for key in staged.files
+            if key.startswith("renderer_") and key.endswith("_sequence")
+        )
+
+
+def test_trainer_rejects_a_forbidden_camera_in_fit_only_manifest():
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import (
+        validate_fit_only_training_manifest,
+    )
+
+    with pytest.raises(ValueError, match="fit-only camera"):
+        validate_fit_only_training_manifest(
+            np.array([0, 1, 2, 4]),
+            fit_camera_indices=[0, 1, 2, 3],
+            expected_sample_count=4,
+        )
+
+
+def test_fit_predictions_expand_to_source_order_without_held_values():
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import (
+        expand_fit_predictions,
+    )
+
+    values = np.array([[0.91, 0.92], [0.93, 0.94]])
+    expanded, mask = expand_fit_predictions(
+        values, source_row_indices=np.array([0, 2]), source_sample_count=4
+    )
+
+    np.testing.assert_array_equal(expanded[[0, 2]], values)
+    assert np.isnan(expanded[[1, 3]]).all()
+    np.testing.assert_array_equal(mask, np.array([True, False, True, False]))
+
+
+def test_trainer_verifies_fit_only_manifest_and_every_staged_artifact(tmp_path):
+    from tools.stage_a7c_r1_4vp_r4b0_fit_inputs import stage_fit_only_inputs
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import verify_fit_only_bundle
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    contract, probe, teacher, evidence, base, teachers = _make_tiny_full_input_tree(
+        source_root
+    )
+    staged = tmp_path / "staged"
+    manifest = stage_fit_only_inputs(
+        contract=contract,
+        probe_path=probe,
+        teacher_path=teacher,
+        evidence_path=evidence,
+        r1_2b_training_dir=base,
+        teachers_dir=teachers,
+        output_dir=staged,
+    )
+    contract.update({
+        "source_fit_only_manifest_sha256": _sha256(staged / "manifest.json"),
+        "source_fit_only_artifact_sha256": manifest["artifact_sha256"],
+    })
+
+    verified = verify_fit_only_bundle(staged / "manifest.json", contract)
+    assert verified["source_row_indices"] == [0, 1, 2, 3]
+
+    first = staged / next(iter(manifest["artifact_sha256"]))
+    first.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="fit-only artifact"):
+        verify_fit_only_bundle(staged / "manifest.json", contract)

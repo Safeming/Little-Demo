@@ -14,7 +14,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.train_a7c_r1_2a_quotient_compositor import (
-    _build_streams,
     _load_probe,
     _load_teacher_manifest,
     sample_block_ids,
@@ -24,7 +23,6 @@ from tools.train_a7c_r1_4vp_r2_loss_repair import (
     _jsonable,
     _project_segments,
     _sha256,
-    _verify_frozen_inputs,
     _write_json,
 )
 from tools.train_a7c_r1_4vp_r3_crw import _evaluate_segment_gains
@@ -75,6 +73,68 @@ def _validate_renderer_streams(streams, fit_mask, samples, carriers):
     return validated
 
 
+def validate_fit_only_training_manifest(
+    camera_index, *, fit_camera_indices, expected_sample_count
+):
+    cameras = np.asarray(camera_index).reshape(-1)
+    expected = tuple(map(int, fit_camera_indices))
+    if cameras.size != int(expected_sample_count):
+        raise ValueError("fit-only sample count differs from the frozen contract")
+    if set(map(int, np.unique(cameras))) != set(expected):
+        raise ValueError("fit-only camera set contains a forbidden or missing camera")
+    return cameras
+
+
+def expand_fit_predictions(values, *, source_row_indices, source_sample_count):
+    fit = np.asarray(values)
+    rows = np.asarray(source_row_indices, dtype=np.int64).reshape(-1)
+    total = int(source_sample_count)
+    if fit.ndim < 1 or fit.shape[0] != rows.size:
+        raise ValueError("fit predictions and source row indices must align")
+    if total <= 0 or np.any(rows < 0) or np.any(rows >= total):
+        raise ValueError("source row indices are out of bounds")
+    if np.unique(rows).size != rows.size:
+        raise ValueError("source row indices must be unique")
+    expanded = np.full((total, *fit.shape[1:]), np.nan, dtype=fit.dtype)
+    expanded[rows] = fit
+    mask = np.zeros(total, dtype=bool)
+    mask[rows] = True
+    return expanded, mask
+
+
+def verify_fit_only_bundle(manifest_path, contract):
+    path = Path(manifest_path)
+    verify_source_file(
+        path,
+        contract["source_fit_only_manifest_sha256"],
+        "R4-B0 fit-only manifest",
+    )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    expected_artifacts = contract["source_fit_only_artifact_sha256"]
+    if manifest.get("artifact_sha256") != expected_artifacts:
+        raise ValueError("fit-only artifact manifest differs from the contract")
+    if manifest.get("fit_camera_indices") != list(contract["fit_camera_indices"]):
+        raise ValueError("fit-only camera manifest differs from the contract")
+    if int(manifest.get("fit_sample_count", -1)) != int(
+        contract["fit_only_expected_sample_count"]
+    ):
+        raise ValueError("fit-only sample count differs from the contract")
+    if int(manifest.get("source_sample_count", -1)) != int(
+        contract["source_expected_sample_count"]
+    ):
+        raise ValueError("fit-only source sample count differs from the contract")
+    rows = np.asarray(manifest.get("source_row_indices", []), dtype=np.int64)
+    if rows.shape != (int(contract["fit_only_expected_sample_count"]),):
+        raise ValueError("fit-only source row map differs from the contract")
+    for relative, expected in expected_artifacts.items():
+        artifact = path.parent / relative
+        try:
+            verify_source_file(artifact, expected, f"fit-only artifact {relative}")
+        except (FileNotFoundError, ValueError) as error:
+            raise ValueError(f"fit-only artifact verification failed: {relative}") from error
+    return manifest
+
+
 def train_fold(
     *,
     fold,
@@ -95,6 +155,8 @@ def train_fold(
     contract,
     output_dir,
     device,
+    source_row_indices=None,
+    source_sample_count=None,
 ) -> dict:
     output = Path(output_dir)
     values = np.asarray(features, dtype=np.float32)
@@ -108,6 +170,19 @@ def train_fold(
     if values.ndim != 3:
         raise ValueError("features must have shape [samples, carriers, channels]")
     samples, carriers, channels = values.shape
+    source_rows = (
+        np.arange(samples, dtype=np.int64)
+        if source_row_indices is None
+        else np.asarray(source_row_indices, dtype=np.int64).reshape(-1)
+    )
+    source_count = samples if source_sample_count is None else int(source_sample_count)
+    if source_rows.shape != (samples,):
+        raise ValueError("source row indices must match fit-only samples")
+    expand_fit_predictions(
+        np.zeros((samples, 1), dtype=np.float32),
+        source_row_indices=source_rows,
+        source_sample_count=source_count,
+    )
     if poses.shape != (samples, 36) or base.shape != (samples, carriers):
         raise ValueError("training tensors do not align")
     if teachers.shape != base.shape or mass.shape != base.shape:
@@ -380,17 +455,40 @@ def train_fold(
         "paper_test_eligible": False,
     }
     torch.save(checkpoint, output / "model.pt")
+    saved_raw, _ = expand_fit_predictions(
+        raw, source_row_indices=source_rows, source_sample_count=source_count
+    )
+    saved_exact, _ = expand_fit_predictions(
+        exact, source_row_indices=source_rows, source_sample_count=source_count
+    )
+    saved_residual, _ = expand_fit_predictions(
+        residual_values,
+        source_row_indices=source_rows,
+        source_sample_count=source_count,
+    )
+    saved_prediction_mask = np.zeros(source_count, dtype=bool)
+    saved_prediction_mask[source_rows] = predict_mask
+    saved_teacher_mask = np.zeros(source_count, dtype=bool)
+    saved_teacher_mask[source_rows] = fit_mask
+    saved_camera = np.full(source_count, -1, dtype=np.int64)
+    saved_frame = np.full(source_count, -1, dtype=np.int64)
+    saved_blocks = np.full(source_count, -1, dtype=np.int64)
+    saved_camera[source_rows] = np.asarray(camera_index)
+    saved_frame[source_rows] = np.asarray(frame_index)
+    saved_blocks[source_rows] = np.asarray(block_ids)
     np.savez_compressed(
         output / "predictions.npz",
-        raw_gates=raw,
-        exact_gates=exact,
-        projected_gates=exact,
-        raw_residual=residual_values,
-        prediction_mask=predict_mask,
-        teacher_mask=fit_mask,
-        camera_index=np.asarray(camera_index),
-        frame_index=np.asarray(frame_index),
-        block_ids=np.asarray(block_ids),
+        raw_gates=saved_raw,
+        exact_gates=saved_exact,
+        projected_gates=saved_exact,
+        raw_residual=saved_residual,
+        prediction_mask=saved_prediction_mask,
+        teacher_mask=saved_teacher_mask,
+        camera_index=saved_camera,
+        frame_index=saved_frame,
+        block_ids=saved_blocks,
+        source_row_indices=source_rows,
+        source_sample_count=np.asarray(source_count, np.int64),
         feature_mean=feature_stats["mean"],
         feature_scale=feature_stats["scale"],
         pose_mean=pose_stats["mean"],
@@ -513,6 +611,7 @@ def parse_args(argv=None):
     parser.add_argument("--teacher", type=Path, required=True)
     parser.add_argument("--teachers-dir", type=Path, required=True)
     parser.add_argument("--r1-2b-training-dir", type=Path, required=True)
+    parser.add_argument("--fit-input-manifest", type=Path, required=True)
     parser.add_argument("--pose-model-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
@@ -525,14 +624,10 @@ def main(argv=None) -> int:
     if float(contract["residual_loss_weight"]) != 0.00001:
         raise ValueError("R4-B0 contract residual loss weight differs")
     _verify_r4a_sources(contract)
-    for path, expected, name in (
-        (args.probe, contract["source_probe_sha256"], "probe"),
-        (args.evidence, contract["source_evidence_sha256"], "evidence"),
-        (args.a5_bank, contract["source_a5_bank_sha256"], "A5 bank"),
-        (args.teacher, contract["source_teacher_sha256"], "teacher"),
-    ):
-        verify_source_file(path, expected, name)
-    _verify_frozen_inputs(contract, args.teachers_dir)
+    fit_manifest = verify_fit_only_bundle(args.fit_input_manifest, contract)
+    verify_source_file(
+        args.a5_bank, contract["source_a5_bank_sha256"], "A5 bank"
+    )
     probe = _load_probe(args.probe)
     manifest = _load_teacher_manifest(args.teacher)
     for key in ("carrier_ids", "camera_index", "frame_index"):
@@ -540,6 +635,13 @@ def main(argv=None) -> int:
             raise ValueError(f"probe and teacher {key} differ")
     cameras = np.asarray(manifest["camera_index"])
     frames = np.asarray(manifest["frame_index"])
+    validate_fit_only_training_manifest(
+        cameras,
+        fit_camera_indices=contract["fit_camera_indices"],
+        expected_sample_count=contract["fit_only_expected_sample_count"],
+    )
+    source_rows = np.asarray(fit_manifest["source_row_indices"], dtype=np.int64)
+    source_count = int(fit_manifest["source_sample_count"])
     carriers = np.asarray(manifest["carrier_ids"], dtype=np.int64)
     unique_frames = np.unique(frames)
     pose_values = load_pose_rotation_6d(
@@ -576,9 +678,16 @@ def main(argv=None) -> int:
         raise ValueError("evidence camera manifest differs")
     if not np.array_equal(evidence["renderer_sequence_frame_index"], frames):
         raise ValueError("evidence frame manifest differs")
-    objective_streams = _build_streams(evidence, all_weight, carriers, part_index)[
-        "objective"
-    ]
+    objective_streams = {}
+    for signal in ("target", "outer", "boundary"):
+        values = np.asarray(
+            evidence[f"renderer_{signal}_contribution_sequence"],
+            dtype=np.float32,
+        )[:, :, part_index]
+        objective_streams[signal] = {
+            "base": values @ all_weight,
+            "point": values[:, carriers] * all_weight[carriers][None, :],
+        }
     blocks = sample_block_ids(cameras, frames, int(contract["temporal_block_count"]))
     segments = pack_camera_block_segments(
         cameras, blocks, frames, frame_stride=int(contract["frame_stride"])
@@ -586,8 +695,8 @@ def main(argv=None) -> int:
     split = build_canary_splits(
         camera_index=cameras,
         frame_index=frames,
-        fit_camera_indices=(0, 1, 2, 3),
-        audit_camera_indices=(4, 5, 6, 7),
+        fit_camera_indices=tuple(contract["fit_camera_indices"]),
+        audit_camera_indices=(),
         block_count=int(contract["temporal_block_count"]),
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -629,6 +738,8 @@ def main(argv=None) -> int:
             contract=contract,
             output_dir=fold_root,
             device=args.device,
+            source_row_indices=source_rows,
+            source_sample_count=source_count,
         )
         learned.append(summary)
         if summary.get("execution_status") == contract["observability_negative_status"]:
