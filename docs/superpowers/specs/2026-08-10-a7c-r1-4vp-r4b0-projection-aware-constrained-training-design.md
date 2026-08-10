@@ -358,6 +358,60 @@ CANARY_PROMOTED
 No R4-B0 result automatically opens c17-c23, Task 12, LOSO, deployment, or
 paper claims. All eligibility flags remain false.
 
+## Launch-Blocking Isolation Amendment
+
+The pre-launch review found that the inherited R4-A loader materialized all
+912 camera rows before masking and that the inherited R3 auditor accepted only
+the old 30-file schema. R4-B0 therefore adds the following implementation
+boundary without changing its scientific hypothesis, model, objective,
+optimizer, split, thresholds, or held audit.
+
+Before formal training, a deterministic staging tool creates a SHA256-pinned
+fit-only bundle from the immutable parent inputs. The bundle contains exactly
+456 rows from camera indices `0,1,2,3` (`c01,c05,c09,c13`) and no renderer,
+probe, base-gate, or teacher value from camera indices `4,5,6,7`. It includes:
+
+```text
+probe/probe.npz
+teacher/teacher.npz
+evidence/evidence.npz
+training/fold_0..5/predictions.npz
+teachers/fold_0..5/teacher.npz
+manifest.json
+```
+
+The staging step is data-independent: it selects rows only by the immutable
+camera manifest, computes no renderer metric, trains no model, selects no
+checkpoint, and exposes no held value to the trainer or observability code.
+Its manifest records the source hashes, selected source-row indices, source
+sample count, fit sample count, fit camera IDs, and SHA256 of every derived
+artifact. Formal training may consume only this bundle. The full 912-row
+evidence, teacher manifest, witnesses, and nearest-neighbor artifacts remain
+unopened until six fit folds pass and the auditor starts.
+
+Each fold predicts only the 456 fit rows. For compatibility with the unchanged
+held auditor, the saved prediction artifact is deterministically expanded to
+the original 912-row order using the staged source-row indices; the remaining
+456 rows are NaN and their prediction mask is false. This expansion carries no
+held feature or renderer value into training.
+
+R4-B0 freezes 36 learned artifacts: six files per fold (`model.pt`,
+`predictions.npz`, `projection_certificates.json`, `observability.json`,
+`summary.json`, and `fit_projected_entry.json`). A dedicated R4-B0 verifier
+must validate exactly these paths and hashes before delegating to the unchanged
+R2 held metric implementation. The inherited 30-file R3 verifier is forbidden.
+
+Global scale validation applies to each of the seven medians, not to every
+individual segment value. Individual finite segment components may be zero;
+only a nonfinite segment value or a global median `<=1e-12` fails closed.
+
+The frozen contract pins the final R4-B0 policy, trainer, auditor, staging tool,
+and fit-only artifact hashes. At launch, the runner additionally requires all
+R4-B0-owned source paths to be clean relative to the current committed `HEAD`,
+then writes their SHA256 values, the commit ID, and the contract SHA256 to
+`source_fingerprints.json`. This launch manifest includes the runner itself and
+is required for every terminal state.
+
 ## Required Tests And Artifacts
 
 TDD must cover:
