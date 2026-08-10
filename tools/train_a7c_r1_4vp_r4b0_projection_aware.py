@@ -135,6 +135,17 @@ def verify_fit_only_bundle(manifest_path, contract):
     return manifest
 
 
+def fit_only_bundle_paths(manifest_path):
+    root = Path(manifest_path).parent
+    return {
+        "probe": root / "probe/probe.npz",
+        "teacher": root / "teacher/teacher.npz",
+        "evidence": root / "evidence/evidence.npz",
+        "r1_2b_training_dir": root / "training",
+        "teachers_dir": root / "teachers",
+    }
+
+
 def train_fold(
     *,
     fold,
@@ -594,12 +605,7 @@ def parse_args(argv=None):
         description="Train frozen R1.4-VP-R4-B0 projection-aware folds."
     )
     parser.add_argument("--contract", type=Path, required=True)
-    parser.add_argument("--probe", type=Path, required=True)
-    parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--a5-bank", type=Path, required=True)
-    parser.add_argument("--teacher", type=Path, required=True)
-    parser.add_argument("--teachers-dir", type=Path, required=True)
-    parser.add_argument("--r1-2b-training-dir", type=Path, required=True)
     parser.add_argument("--fit-input-manifest", type=Path, required=True)
     parser.add_argument("--pose-model-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -614,11 +620,12 @@ def main(argv=None) -> int:
         raise ValueError("R4-B0 contract residual loss weight differs")
     _verify_r4a_sources(contract)
     fit_manifest = verify_fit_only_bundle(args.fit_input_manifest, contract)
+    fit_paths = fit_only_bundle_paths(args.fit_input_manifest)
     verify_source_file(
         args.a5_bank, contract["source_a5_bank_sha256"], "A5 bank"
     )
-    probe = _load_probe(args.probe)
-    manifest = _load_teacher_manifest(args.teacher)
+    probe = _load_probe(fit_paths["probe"])
+    manifest = _load_teacher_manifest(fit_paths["teacher"])
     for key in ("carrier_ids", "camera_index", "frame_index"):
         if not np.array_equal(probe[key], manifest[key]):
             raise ValueError(f"probe and teacher {key} differ")
@@ -661,7 +668,7 @@ def main(argv=None) -> int:
         depth_scale=float(contract["depth_scale"]),
         edge_log_weight_minimum=float(contract["edge_log_weight_minimum"]),
     )
-    with np.load(args.evidence, allow_pickle=False) as source:
+    with np.load(fit_paths["evidence"], allow_pickle=False) as source:
         evidence = {key: source[key] for key in source.files}
     if not np.array_equal(evidence["renderer_sequence_camera_index"], cameras):
         raise ValueError("evidence camera manifest differs")
@@ -691,11 +698,11 @@ def main(argv=None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     learned, freeze_paths = [], []
     for fold in range(6):
-        teacher_path = args.teachers_dir / f"fold_{fold}/teacher.npz"
+        teacher_path = fit_paths["teachers_dir"] / f"fold_{fold}/teacher.npz"
         with np.load(teacher_path, allow_pickle=False) as source:
             teacher_gates = np.asarray(source["teacher_gates"], np.float32)
             teacher_mask = np.asarray(source["teacher_mask"], bool)
-        base_path = args.r1_2b_training_dir / f"fold_{fold}/predictions.npz"
+        base_path = fit_paths["r1_2b_training_dir"] / f"fold_{fold}/predictions.npz"
         with np.load(base_path, allow_pickle=False) as source:
             base = np.asarray(source["raw_gates"], np.float32)
         fit_segments = [segment for segment in segments if np.all(teacher_mask[segment])]

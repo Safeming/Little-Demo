@@ -121,7 +121,7 @@
   "source_r4b0_policy": "utils/a7c_r1_4vp_r4b0.py",
   "source_r4b0_policy_sha256": "6c876a5930a2d1a4d14f634f55a00cd9c5e1b369628f4f2a96989f28b16028e7",
   "source_r4b0_trainer": "tools/train_a7c_r1_4vp_r4b0_projection_aware.py",
-  "source_r4b0_trainer_sha256": "fca94d7f8c15a609fb28be0d9e29310ca74618e8fda3d0b59e377d97cf50a3c8",
+  "source_r4b0_trainer_sha256": "e4b7c4bdb6459f7d297ab483c3272a6270cbe5cd3e2e5531d917506604d1ffbe",
   "source_r4b0_auditor": "tools/audit_a7c_r1_4vp_r4b0_projection_aware.py",
   "source_r4b0_auditor_sha256": "6dd39410ed9780607849a1380711d60ef9b84bcbf15b44b9dc740052cc707ff8",
   "source_r4b0_stager": "tools/stage_a7c_r1_4vp_r4b0_fit_inputs.py",

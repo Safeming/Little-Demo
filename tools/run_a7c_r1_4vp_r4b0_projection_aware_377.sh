@@ -8,11 +8,7 @@ PYTHON="/opt/miniconda3/envs/ictrl/bin/python"
 CONTRACT="${ROOT}/configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json"
 FIT_ROOT="${ROOT}/exp/acceptdata/a7c_r1_4vp_r4b0_fit_only_inputs_377_v1"
 FIT_MANIFEST="${FIT_ROOT}/manifest.json"
-FIT_PROBE="${FIT_ROOT}/probe/probe.npz"
-FIT_EVIDENCE="${FIT_ROOT}/evidence/evidence.npz"
 FIT_TEACHER="${FIT_ROOT}/teacher/teacher.npz"
-FIT_R12B="${FIT_ROOT}/training"
-FIT_TEACHERS="${FIT_ROOT}/teachers"
 FULL_EVIDENCE="${ROOT}/exp/acceptdata/a7_dual_evidence_v5_3_canary_377/evidence/377/evidence.npz"
 A5_BANK="${ROOT}/exp/acceptdata/frozen_a5_five_subject_main_20260723/CoreView_377/banks/footprint_evidence_target/part_label_bank.npz"
 FULL_TEACHER="${ROOT}/exp/acceptdata/a7c_carrier_compositor_canary_377_v1/teacher/teacher.npz"
@@ -20,10 +16,6 @@ POSE="${ROOT}/data/ZJUMoCap/CoreView_377/models"
 WITNESS="${ROOT}/exp/acceptdata/a7c_r1_3g_exact_aggregate_oracle_377_v1/witness"
 NEAREST="${ROOT}/exp/acceptdata/a7c_r1_4vp_oracle_distilled_view_pose_377_v1/nearest_neighbor"
 AUDIT="${OUT}/audit"
-
-mkdir -p "${OUT}"
-exec > >(tee -a "${OUT}/runner.log") 2>&1
-printf '%s\n' "$$" > "${OUT}/runner.pid"
 
 mark_terminal() {
   local marker="$1"
@@ -94,13 +86,10 @@ required_outputs_complete() {
   done
 }
 
-if required_outputs_complete; then
-  exit 0
+if [[ -e "${OUT}" ]]; then
+  echo "formal R4-B0 output already exists: ${OUT}" >&2
+  exit 1
 fi
-
-mark_terminal failed
-trap on_error ERR
-[[ -f "${OUT}/started_utc.txt" ]] || date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUT}/started_utc.txt"
 
 SOURCE_PATHS=(
   configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json
@@ -112,34 +101,6 @@ SOURCE_PATHS=(
   tools/run_a7c_r1_4vp_r4b0_projection_aware_377.sh
 )
 git diff --quiet HEAD -- "${SOURCE_PATHS[@]}"
-"${PYTHON}" - "${ROOT}" "${OUT}" "${SOURCE_PATHS[@]}" <<'PY'
-import hashlib
-import json
-import subprocess
-import sys
-from pathlib import Path
-root, output = Path(sys.argv[1]), Path(sys.argv[2])
-paths = sys.argv[3:]
-def digest(path):
-    value = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            value.update(chunk)
-    return value.hexdigest()
-payload = {
-    "git_commit": subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
-    ).strip(),
-    "source_sha256": {relative: digest(root / relative) for relative in paths},
-    "deployment_eligible": False,
-    "teacher_eligible": False,
-    "paper_test_eligible": False,
-}
-path = output / "source_fingerprints.json"
-temporary = path.with_suffix(".json.tmp")
-temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-temporary.replace(path)
-PY
 
 "${PYTHON}" - "${ROOT}" "${CONTRACT}" <<'PY'
 import hashlib
@@ -158,7 +119,7 @@ def digest(path):
     return value.hexdigest()
 
 observed_contract = digest(contract_path)
-expected_contract = "ce5b6939bb050aa8d9efef41f599052a43e12f2171285ed32575967bcd24277b"
+expected_contract = "d3465e1faa01a2ce208adc00d5c7899d2c2c2ed0b570fe37d7a5302183b476e1"
 if observed_contract != expected_contract:
     raise ValueError(f"contract fingerprint mismatch: {observed_contract}")
 
@@ -223,12 +184,44 @@ if not torch.cuda.is_available():
 print(torch.cuda.get_device_name(0), flush=True)
 PY
 
+mkdir -p "${OUT}"
+exec > >(tee -a "${OUT}/runner.log") 2>&1
+printf '%s\n' "$$" > "${OUT}/runner.pid"
+date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUT}/started_utc.txt"
+"${PYTHON}" - "${ROOT}" "${OUT}" "${SOURCE_PATHS[@]}" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+root, output = Path(sys.argv[1]), Path(sys.argv[2])
+paths = sys.argv[3:]
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+payload = {
+    "git_commit": subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip(),
+    "source_sha256": {relative: digest(root / relative) for relative in paths},
+    "deployment_eligible": False,
+    "teacher_eligible": False,
+    "paper_test_eligible": False,
+}
+path = output / "source_fingerprints.json"
+temporary = path.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+temporary.replace(path)
+PY
+trap on_error ERR
+
 if [[ ! -f "${OUT}/models_frozen.json" ]]; then
   if "${PYTHON}" "${ROOT}/tools/train_a7c_r1_4vp_r4b0_projection_aware.py" \
-    --contract "${CONTRACT}" --probe "${FIT_PROBE}" --evidence "${FIT_EVIDENCE}" \
-    --a5-bank "${A5_BANK}" --teacher "${FIT_TEACHER}" --teachers-dir "${FIT_TEACHERS}" \
-    --r1-2b-training-dir "${FIT_R12B}" --fit-input-manifest "${FIT_MANIFEST}" \
-    --pose-model-dir "${POSE}" \
+    --contract "${CONTRACT}" --fit-input-manifest "${FIT_MANIFEST}" \
+    --a5-bank "${A5_BANK}" --pose-model-dir "${POSE}" \
     --output-dir "${OUT}" --device cuda; then
     training_status=0
   else

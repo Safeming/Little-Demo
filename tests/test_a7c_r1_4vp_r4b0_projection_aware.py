@@ -102,7 +102,7 @@ def test_r4b0_contract_freezes_projection_aware_training_only():
         "6c876a5930a2d1a4d14f634f55a00cd9c5e1b369628f4f2a96989f28b16028e7"
     )
     assert contract["source_r4b0_trainer_sha256"] == (
-        "fca94d7f8c15a609fb28be0d9e29310ca74618e8fda3d0b59e377d97cf50a3c8"
+        "e4b7c4bdb6459f7d297ab483c3272a6270cbe5cd3e2e5531d917506604d1ffbe"
     )
     assert contract["source_r4b0_auditor_sha256"] == (
         "6dd39410ed9780607849a1380711d60ef9b84bcbf15b44b9dc740052cc707ff8"
@@ -1010,3 +1010,41 @@ def test_trainer_verifies_fit_only_manifest_and_every_staged_artifact(tmp_path):
     first.write_bytes(b"tampered")
     with pytest.raises(ValueError, match="fit-only artifact"):
         verify_fit_only_bundle(staged / "manifest.json", contract)
+
+
+def test_trainer_derives_every_consumed_input_from_fit_manifest(tmp_path):
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import (
+        fit_only_bundle_paths,
+        parse_args,
+    )
+
+    manifest = tmp_path / "fit/manifest.json"
+    paths = fit_only_bundle_paths(manifest)
+    assert paths == {
+        "probe": tmp_path / "fit/probe/probe.npz",
+        "teacher": tmp_path / "fit/teacher/teacher.npz",
+        "evidence": tmp_path / "fit/evidence/evidence.npz",
+        "r1_2b_training_dir": tmp_path / "fit/training",
+        "teachers_dir": tmp_path / "fit/teachers",
+    }
+    args = parse_args([
+        "--contract", str(tmp_path / "contract.json"),
+        "--fit-input-manifest", str(manifest),
+        "--a5-bank", str(tmp_path / "bank.npz"),
+        "--pose-model-dir", str(tmp_path / "poses"),
+        "--output-dir", str(tmp_path / "output"),
+        "--device", "cpu",
+    ])
+    assert args.fit_input_manifest == manifest
+
+
+def test_runner_preflights_before_creating_output_and_never_marks_live_run_failed():
+    source = RUNNER.read_text(encoding="utf-8")
+    mkdir_offset = source.index('mkdir -p "${OUT}"')
+    prefix = source[:mkdir_offset]
+
+    assert "git diff --quiet HEAD" in prefix
+    assert "expected_contract =" in prefix
+    assert "pose_manifest_sha256" in prefix
+    assert "torch.cuda.is_available" in prefix
+    assert source.count("\nmark_terminal failed\n") == 0
