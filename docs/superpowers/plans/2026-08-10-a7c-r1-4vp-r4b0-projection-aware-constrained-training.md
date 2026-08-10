@@ -354,3 +354,78 @@ Re-run the focused R4-B0 tests, inspect terminal summaries directly, verify PID 
 ## Execution Choice
 
 The user explicitly selected current-session inline execution in the preceding workflow and has now approved training. Execute this plan in the current workspace with review checkpoints after each task; do not create a separate worktree and do not push remotely.
+
+## Pre-Launch Review Remediation
+
+The independent review after Task 5 found four launch blockers. The user
+approved the fit-only snapshot design recorded in the design's
+`Launch-Blocking Isolation Amendment`. Complete these checks before Task 6.
+
+### Task 5A: Correct global median validation
+
+**Files:**
+- Modify: `tests/test_a7c_r1_4vp_r4b0_projection_aware.py`
+- Modify: `utils/a7c_r1_4vp_r4b0.py`
+
+1. Add a failing test with finite per-segment zeros but a positive global
+   median. Assert that the scale freezes successfully.
+2. Run the focused test and confirm the existing per-element check rejects it.
+3. Permit finite values below the minimum before aggregation; reject only
+   nonfinite values and medians `<= initial_scale_minimum`.
+4. Run the full R4-B0 policy suite and commit.
+
+### Task 5B: Verify the 36-file R4-B0 schema
+
+**Files:**
+- Modify: `tests/test_a7c_r1_4vp_r4b0_projection_aware.py`
+- Modify: `tools/audit_a7c_r1_4vp_r4b0_projection_aware.py`
+
+1. Add a failing integration test that constructs and hashes all 36 expected
+   fold artifacts, then calls the real R4-B0 verifier.
+2. Confirm RED against the inherited R3 30-file verifier.
+3. Implement `verify_frozen_artifacts` for the six R4-B0 filenames and inject
+   it into the inherited audit chain only for the duration of `_run`.
+4. Test missing, extra, and changed artifacts fail closed; run auditor
+   regressions and commit.
+
+### Task 5C: Stage and enforce fit-only immutable inputs
+
+**Files:**
+- Create: `tools/stage_a7c_r1_4vp_r4b0_fit_inputs.py`
+- Modify: `tools/train_a7c_r1_4vp_r4b0_projection_aware.py`
+- Modify: `tests/test_a7c_r1_4vp_r4b0_projection_aware.py`
+- Generate: `exp/acceptdata/a7c_r1_4vp_r4b0_fit_only_inputs_377_v1/**`
+
+1. Add failing tests for deterministic camera-only staging, provenance hashes,
+   forbidden-camera rejection in the trainer, and NaN expansion from 456 fit
+   predictions back to the 912-row audit schema.
+2. Implement a staging tool that selects only camera indices `0..3`, writes the
+   minimal probe/evidence/manifest and six base/teacher files, and hashes every
+   output in `manifest.json`.
+3. Change the trainer to require exactly the staged four-camera manifest and
+   use no full evidence/base/teacher path. Build objective streams from the
+   three staged renderer sequences only.
+4. Save prediction bundles in original 912-row order by placing fit predictions
+   at staged source indices and leaving all other rows NaN/masked false.
+5. Generate the formal bundle once, verify its manifest independently, run
+   trainer and inherited regression tests, and commit source changes. Generated
+   experiment data remains uncommitted.
+
+### Task 5D: Freeze final sources and launch routing
+
+**Files:**
+- Modify: `configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json`
+- Modify: `tools/run_a7c_r1_4vp_r4b0_projection_aware_377.sh`
+- Modify: `tests/test_a7c_r1_4vp_r4b0_projection_aware.py`
+
+1. Add failing tests that require contract hashes for the policy, trainer,
+   auditor, staging tool, fit-only manifest/artifacts, and a runner-generated
+   `source_fingerprints.json` containing its own hash plus committed HEAD.
+2. Pin final hashes after Tasks 5A-5C and update the design hash.
+3. Point training arguments only at fit-only paths while leaving full 912-row
+   paths exclusively in the post-freeze auditor invocation.
+4. Require R4-B0-owned paths to be clean relative to HEAD, write the source
+   manifest before training, and include it in every terminal completeness
+   check.
+5. Run the complete verification suite, request a second independent review,
+   and only then perform Task 6 launch.
