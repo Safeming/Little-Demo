@@ -6,14 +6,18 @@ cd "${ROOT}"
 OUT="${1:-${ROOT}/exp/acceptdata/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1}"
 PYTHON="/opt/miniconda3/envs/ictrl/bin/python"
 CONTRACT="${ROOT}/configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json"
-PROBE="${ROOT}/exp/acceptdata/a7c_r1_1_transmittance_ray_context_377_v1/probe/probe.npz"
-EVIDENCE="${ROOT}/exp/acceptdata/a7_dual_evidence_v5_3_canary_377/evidence/377/evidence.npz"
+FIT_ROOT="${ROOT}/exp/acceptdata/a7c_r1_4vp_r4b0_fit_only_inputs_377_v1"
+FIT_MANIFEST="${FIT_ROOT}/manifest.json"
+FIT_PROBE="${FIT_ROOT}/probe/probe.npz"
+FIT_EVIDENCE="${FIT_ROOT}/evidence/evidence.npz"
+FIT_TEACHER="${FIT_ROOT}/teacher/teacher.npz"
+FIT_R12B="${FIT_ROOT}/training"
+FIT_TEACHERS="${FIT_ROOT}/teachers"
+FULL_EVIDENCE="${ROOT}/exp/acceptdata/a7_dual_evidence_v5_3_canary_377/evidence/377/evidence.npz"
 A5_BANK="${ROOT}/exp/acceptdata/frozen_a5_five_subject_main_20260723/CoreView_377/banks/footprint_evidence_target/part_label_bank.npz"
-TEACHER="${ROOT}/exp/acceptdata/a7c_carrier_compositor_canary_377_v1/teacher/teacher.npz"
-R12B="${ROOT}/exp/acceptdata/a7c_r1_2b_dense_overlap_set_377_v1/training"
+FULL_TEACHER="${ROOT}/exp/acceptdata/a7c_carrier_compositor_canary_377_v1/teacher/teacher.npz"
 POSE="${ROOT}/data/ZJUMoCap/CoreView_377/models"
 WITNESS="${ROOT}/exp/acceptdata/a7c_r1_3g_exact_aggregate_oracle_377_v1/witness"
-TEACHERS="${ROOT}/exp/acceptdata/a7c_r1_4vp_oracle_distilled_view_pose_377_v1/teachers"
 NEAREST="${ROOT}/exp/acceptdata/a7c_r1_4vp_oracle_distilled_view_pose_377_v1/nearest_neighbor"
 AUDIT="${OUT}/audit"
 
@@ -65,7 +69,7 @@ required_outputs_complete() {
     [[ -f "${OUT}/.${marker}" ]] && count=$((count + 1))
   done
   [[ "${count}" -eq 1 ]] || return 1
-  for path in summary.json training/summary.json started_utc.txt ended_utc.txt runner.pid runner.log; do
+  for path in summary.json training/summary.json source_fingerprints.json started_utc.txt ended_utc.txt runner.pid runner.log; do
     [[ -f "${OUT}/${path}" ]] || return 1
   done
   if [[ -f "${OUT}/.observability_rejected" ]]; then
@@ -98,6 +102,45 @@ mark_terminal failed
 trap on_error ERR
 [[ -f "${OUT}/started_utc.txt" ]] || date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUT}/started_utc.txt"
 
+SOURCE_PATHS=(
+  configs/semantic/a7c_r1_4vp_r4b0_projection_aware_constrained_377_v1.json
+  docs/superpowers/specs/2026-08-10-a7c-r1-4vp-r4b0-projection-aware-constrained-training-design.md
+  utils/a7c_r1_4vp_r4b0.py
+  tools/train_a7c_r1_4vp_r4b0_projection_aware.py
+  tools/audit_a7c_r1_4vp_r4b0_projection_aware.py
+  tools/stage_a7c_r1_4vp_r4b0_fit_inputs.py
+  tools/run_a7c_r1_4vp_r4b0_projection_aware_377.sh
+)
+git diff --quiet HEAD -- "${SOURCE_PATHS[@]}"
+"${PYTHON}" - "${ROOT}" "${OUT}" "${SOURCE_PATHS[@]}" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+root, output = Path(sys.argv[1]), Path(sys.argv[2])
+paths = sys.argv[3:]
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+payload = {
+    "git_commit": subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip(),
+    "source_sha256": {relative: digest(root / relative) for relative in paths},
+    "deployment_eligible": False,
+    "teacher_eligible": False,
+    "paper_test_eligible": False,
+}
+path = output / "source_fingerprints.json"
+temporary = path.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+temporary.replace(path)
+PY
+
 "${PYTHON}" - "${ROOT}" "${CONTRACT}" <<'PY'
 import hashlib
 import json
@@ -115,7 +158,7 @@ def digest(path):
     return value.hexdigest()
 
 observed_contract = digest(contract_path)
-expected_contract = "4f511a95422e5de935c511ab0796c0659eb0131965565f8fe8e8f01eae7ba4ad"
+expected_contract = "ce5b6939bb050aa8d9efef41f599052a43e12f2171285ed32575967bcd24277b"
 if observed_contract != expected_contract:
     raise ValueError(f"contract fingerprint mismatch: {observed_contract}")
 
@@ -127,6 +170,10 @@ def verify(relative, expected):
 
 for path_key, hash_key in (
     ("source_design", "source_design_sha256"),
+    ("source_r4b0_policy", "source_r4b0_policy_sha256"),
+    ("source_r4b0_trainer", "source_r4b0_trainer_sha256"),
+    ("source_r4b0_auditor", "source_r4b0_auditor_sha256"),
+    ("source_r4b0_stager", "source_r4b0_stager_sha256"),
     ("source_r4a_contract", "source_r4a_contract_sha256"),
     ("source_r4a_policy", "source_r4a_policy_sha256"),
     ("source_r4a_trainer", "source_r4a_trainer_sha256"),
@@ -144,29 +191,17 @@ for path_key, hash_key in (
     ("source_r2_auditor", "source_r2_auditor_sha256"),
     ("source_r2_trainer", "source_r2_trainer_sha256"),
     ("source_r1_1_contract", "source_r1_1_contract_sha256"),
-    ("source_probe", "source_probe_sha256"),
-    ("source_teacher", "source_teacher_sha256"),
-    ("source_evidence", "source_evidence_sha256"),
     ("source_a5_bank", "source_a5_bank_sha256"),
+    ("source_fit_only_manifest", "source_fit_only_manifest_sha256"),
 ):
     verify(contract[path_key], contract[hash_key])
-for paths_key, hashes_key in (
-    ("source_r1_2b_predictions", "source_r1_2b_prediction_sha256"),
-    ("source_r1_3g_witness_predictions", "source_r1_3g_witness_prediction_sha256"),
-):
-    for relative, expected in zip(contract[paths_key], contract[hashes_key]):
-        verify(relative, expected)
-teachers = root / contract["source_teachers_dir"]
-for relative, expected in contract["source_teacher_artifacts"].items():
-    if digest(teachers / relative) != expected:
-        raise ValueError(f"teacher fingerprint mismatch: {relative}")
-nearest = root / contract["source_nearest_neighbor_dir"]
-for fold, expected in enumerate(contract["source_nearest_neighbor_prediction_sha256"]):
-    if digest(nearest / f"fold_{fold}/predictions.npz") != expected:
-        raise ValueError(f"nearest-neighbor fingerprint mismatch: fold {fold}")
+fit_root = root / contract["source_fit_only_root"]
+for relative, expected in contract["source_fit_only_artifact_sha256"].items():
+    if digest(fit_root / relative) != expected:
+        raise ValueError(f"fit-only artifact fingerprint mismatch: {relative}")
 PY
 
-"${PYTHON}" - "${ROOT}" "${POSE}" "${CONTRACT}" "${TEACHER}" <<'PY'
+"${PYTHON}" - "${ROOT}" "${POSE}" "${CONTRACT}" "${FIT_TEACHER}" <<'PY'
 import json
 import sys
 import numpy as np
@@ -190,9 +225,10 @@ PY
 
 if [[ ! -f "${OUT}/models_frozen.json" ]]; then
   if "${PYTHON}" "${ROOT}/tools/train_a7c_r1_4vp_r4b0_projection_aware.py" \
-    --contract "${CONTRACT}" --probe "${PROBE}" --evidence "${EVIDENCE}" \
-    --a5-bank "${A5_BANK}" --teacher "${TEACHER}" --teachers-dir "${TEACHERS}" \
-    --r1-2b-training-dir "${R12B}" --pose-model-dir "${POSE}" \
+    --contract "${CONTRACT}" --probe "${FIT_PROBE}" --evidence "${FIT_EVIDENCE}" \
+    --a5-bank "${A5_BANK}" --teacher "${FIT_TEACHER}" --teachers-dir "${FIT_TEACHERS}" \
+    --r1-2b-training-dir "${FIT_R12B}" --fit-input-manifest "${FIT_MANIFEST}" \
+    --pose-model-dir "${POSE}" \
     --output-dir "${OUT}" --device cuda; then
     training_status=0
   else
@@ -219,8 +255,8 @@ fi
 [[ -f "${OUT}/models_frozen.json" ]]
 
 if "${PYTHON}" "${ROOT}/tools/audit_a7c_r1_4vp_r4b0_projection_aware.py" \
-  --contract "${CONTRACT}" --evidence "${EVIDENCE}" --a5-bank "${A5_BANK}" \
-  --teacher "${TEACHER}" --witness-dir "${WITNESS}" \
+  --contract "${CONTRACT}" --evidence "${FULL_EVIDENCE}" --a5-bank "${A5_BANK}" \
+  --teacher "${FULL_TEACHER}" --witness-dir "${WITNESS}" \
   --nearest-neighbor-dir "${NEAREST}" --frozen-root "${OUT}" \
   --output-dir "${AUDIT}"; then
   audit_status=0

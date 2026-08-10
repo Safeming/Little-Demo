@@ -96,8 +96,32 @@ def test_r4b0_contract_freezes_projection_aware_training_only():
     assert contract["paper_test_eligible"] is False
 
     assert contract["source_design_sha256"] == (
-        "3e71d92496e5d21d3ec2235c683857e260e162ba6e0923c64eb8c96aa907f704"
+        "d1f69c1fe6ddbb2c201ce29efd3998b61a406d02d80f64dc20b488525565023c"
     )
+    assert contract["source_r4b0_policy_sha256"] == (
+        "6c876a5930a2d1a4d14f634f55a00cd9c5e1b369628f4f2a96989f28b16028e7"
+    )
+    assert contract["source_r4b0_trainer_sha256"] == (
+        "fca94d7f8c15a609fb28be0d9e29310ca74618e8fda3d0b59e377d97cf50a3c8"
+    )
+    assert contract["source_r4b0_auditor_sha256"] == (
+        "6dd39410ed9780607849a1380711d60ef9b84bcbf15b44b9dc740052cc707ff8"
+    )
+    assert contract["source_r4b0_stager_sha256"] == (
+        "3b75c9889e7ebcf3dc12e0d0e9411602faf8c93de1cc3f9d30983b36d2d6ac21"
+    )
+    assert contract["source_fit_only_manifest_sha256"] == (
+        "f8688473ea442b1f5d2a93e85bca8d91e67cfff2395acad7df7af6b30f7c87f6"
+    )
+    fit_manifest = json.loads(
+        (
+            ROOT
+            / "exp/acceptdata/a7c_r1_4vp_r4b0_fit_only_inputs_377_v1/manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert contract["source_fit_only_artifact_sha256"] == fit_manifest[
+        "artifact_sha256"
+    ]
     assert contract["source_r4a_contract_sha256"] == (
         "d397642d86013eae446c5af1484cfb3f4d537dc79f417c3657fd1e9fc9ddd9e7"
     )
@@ -781,11 +805,14 @@ def test_r4b0_runner_routes_fit_failures_without_opening_held_audit():
     assert "for marker in completed rejected observability_rejected fit_rejected failed" in source
     assert "fit_projected_entry.json" in source
     assert "observability.json" in source
+    assert "source_fingerprints.json" in source
+    assert "--fit-input-manifest" in source
+    assert "a7c_r1_4vp_r4b0_fit_only_inputs_377_v1" in source
     assert "R4-B0 must freeze exactly 36 training artifacts" in (
         ROOT / "tools/train_a7c_r1_4vp_r4b0_projection_aware.py"
     ).read_text(encoding="utf-8")
-    trainer_offset = source.index("train_a7c_r1_4vp_r4b0_projection_aware.py")
-    audit_offset = source.index("audit_a7c_r1_4vp_r4b0_projection_aware.py")
+    trainer_offset = source.rindex("train_a7c_r1_4vp_r4b0_projection_aware.py")
+    audit_offset = source.rindex("audit_a7c_r1_4vp_r4b0_projection_aware.py")
     frozen_guard_offset = source.index('[[ -f "${OUT}/models_frozen.json" ]]')
     assert trainer_offset < frozen_guard_offset < audit_offset
 

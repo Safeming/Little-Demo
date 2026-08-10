@@ -565,6 +565,10 @@ def train_fold(
 def _verify_r4a_sources(contract):
     source_keys = (
         ("source_design", "R4-B0 design"),
+        ("source_r4b0_policy", "R4-B0 policy"),
+        ("source_r4b0_trainer", "R4-B0 trainer"),
+        ("source_r4b0_auditor", "R4-B0 auditor"),
+        ("source_r4b0_stager", "R4-B0 fit-only stager"),
         ("source_r4a_contract", "R4-A contract"),
         ("source_r4a_policy", "R4-A policy"),
         ("source_r4a_trainer", "R4-A trainer"),
@@ -585,21 +589,6 @@ def _verify_r4a_sources(contract):
     )
     for key, label in source_keys:
         verify_source_file(REPO_ROOT / contract[key], contract[f"{key}_sha256"], label)
-    for key, hashes, label in (
-        ("source_nearest_neighbor_dir", "source_nearest_neighbor_prediction_sha256", "NN"),
-        (None, "source_r1_3g_witness_prediction_sha256", "R1.3-G witness"),
-    ):
-        if key is not None:
-            paths = [
-                str(Path(contract[key]) / f"fold_{fold}/predictions.npz")
-                for fold in range(6)
-            ]
-        else:
-            paths = contract["source_r1_3g_witness_predictions"]
-        for path, expected in zip(paths, contract[hashes]):
-            verify_source_file(REPO_ROOT / path, expected, f"{label} {path}")
-
-
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Train frozen R1.4-VP-R4-B0 projection-aware folds."
