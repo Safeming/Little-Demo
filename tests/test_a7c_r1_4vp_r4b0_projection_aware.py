@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -703,6 +704,59 @@ def test_r4b0_audit_wrapper_preserves_inherited_status(monkeypatch):
     assert payload["stage"] == "r1_4vp_r4b0_projection_aware_held_canary"
     assert payload["verdict"] == "CANARY_NEGATIVE"
     assert status == 2
+
+
+def _write_r4b0_frozen_manifest(root):
+    names = (
+        "model.pt", "predictions.npz", "projection_certificates.json",
+        "observability.json", "summary.json", "fit_projected_entry.json",
+    )
+    artifacts = {}
+    for fold in range(6):
+        for name in names:
+            relative = Path("training") / f"fold_{fold}" / name
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"{fold}:{name}".encode("ascii"))
+            artifacts[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (root / "models_frozen.json").write_text(
+        json.dumps({"artifacts": artifacts}), encoding="utf-8"
+    )
+    return artifacts
+
+
+def test_r4b0_frozen_artifact_verifier_accepts_exact_36_file_schema(tmp_path):
+    from tools.audit_a7c_r1_4vp_r4b0_projection_aware import (
+        verify_frozen_artifacts,
+    )
+
+    expected = _write_r4b0_frozen_manifest(tmp_path)
+    assert verify_frozen_artifacts(tmp_path) == expected
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed", "extra"])
+def test_r4b0_frozen_artifact_verifier_rejects_schema_or_hash_changes(
+    tmp_path, mutation
+):
+    from tools.audit_a7c_r1_4vp_r4b0_projection_aware import (
+        verify_frozen_artifacts,
+    )
+
+    artifacts = _write_r4b0_frozen_manifest(tmp_path)
+    first = next(iter(artifacts))
+    if mutation == "missing":
+        del artifacts[first]
+    elif mutation == "changed":
+        (tmp_path / first).write_bytes(b"changed")
+    else:
+        artifacts["training/extra.json"] = hashlib.sha256(b"extra").hexdigest()
+    if mutation != "changed":
+        (tmp_path / "models_frozen.json").write_text(
+            json.dumps({"artifacts": artifacts}), encoding="utf-8"
+        )
+
+    with pytest.raises(ValueError, match="artifact|36"):
+        verify_frozen_artifacts(tmp_path)
 
 
 def test_r4b0_runner_routes_fit_failures_without_opening_held_audit():

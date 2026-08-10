@@ -12,8 +12,45 @@ if str(REPO_ROOT) not in sys.path:
 import tools.audit_a7c_r1_4vp_r4a_signed_renderer as r4a_audit
 
 
+def verify_frozen_artifacts(root: Path) -> dict[str, str]:
+    freeze_path = Path(root) / "models_frozen.json"
+    if not freeze_path.is_file():
+        raise ValueError("R4-B0 models_frozen manifest is missing")
+    manifest = json.loads(freeze_path.read_text(encoding="utf-8"))
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict) or len(artifacts) != 36:
+        raise ValueError("R4-B0 models_frozen must contain exactly 36 learned hashes")
+    names = (
+        "model.pt",
+        "predictions.npz",
+        "projection_certificates.json",
+        "observability.json",
+        "summary.json",
+        "fit_projected_entry.json",
+    )
+    expected_names = {
+        f"training/fold_{fold}/{name}"
+        for fold in range(6)
+        for name in names
+    }
+    if set(artifacts) != expected_names:
+        raise ValueError("R4-B0 frozen artifact paths differ from contract")
+    observed = {}
+    for relative, fingerprint in artifacts.items():
+        path = Path(root) / relative
+        if not path.is_file() or r4a_audit.r3_audit._sha256(path) != str(fingerprint):
+            raise ValueError(f"R4-B0 frozen artifact mismatch: {relative}")
+        observed[relative] = str(fingerprint)
+    return observed
+
+
 def _run(args) -> tuple[dict, int]:
-    payload, status = r4a_audit._run(args)
+    original_verifier = r4a_audit.r3_audit.verify_frozen_artifacts
+    r4a_audit.r3_audit.verify_frozen_artifacts = verify_frozen_artifacts
+    try:
+        payload, status = r4a_audit._run(args)
+    finally:
+        r4a_audit.r3_audit.verify_frozen_artifacts = original_verifier
     payload["stage"] = "r1_4vp_r4b0_projection_aware_held_canary"
     return payload, status
 
