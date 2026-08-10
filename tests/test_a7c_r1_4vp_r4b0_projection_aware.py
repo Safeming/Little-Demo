@@ -509,3 +509,154 @@ def test_observability_preflight_fails_closed(
     assert result["verdict"] == "FEATURE_OBSERVABILITY_NEGATIVE"
     assert result["passed"] is False
     assert reason in result["failure_reasons"]
+
+
+def _tiny_fold_inputs(tmp_path):
+    samples, carriers = 8, 2
+    fit_mask = np.array([True] * 4 + [False] * 4)
+    teacher = np.full((samples, carriers), np.nan, np.float32)
+    teacher[:4] = np.array(
+        [[0.996, 0.999], [0.998, 0.996], [0.997, 0.999], [0.999, 0.996]],
+        np.float32,
+    )
+    streams = {}
+    for signal, level, multiplier in (
+        ("target", 20.0, 0.8),
+        ("outer", 8.0, 1.0),
+        ("boundary", 5.0, 1.2),
+    ):
+        stream_base = np.full(samples, np.nan, np.float32)
+        stream_point = np.full((samples, carriers), np.nan, np.float32)
+        stream_base[:4] = level + np.array([0.0, 1.0, -0.6, 0.7])
+        stream_point[:4] = multiplier * np.array(
+            [[1.0, -0.4], [0.3, 1.1], [-0.8, 0.4], [0.6, -1.0]]
+        )
+        streams[signal] = {"base": stream_base, "point": stream_point}
+    features = np.linspace(-1.0, 1.0, samples * carriers * 3).reshape(
+        samples, carriers, 3
+    )
+    pose = np.linspace(-1.0, 1.0, samples * 36).reshape(samples, 36)
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    contract.update(
+        {
+            "training_epochs": 2,
+            "frame_stride": 1,
+            "view_embedding_dimension": 4,
+            "pose_embedding_dimension": 4,
+            "gru_hidden_dimension": 4,
+        }
+    )
+    return {
+        "fold": 0,
+        "features": features,
+        "pose": pose,
+        "adjacency": np.repeat(np.eye(carriers)[None], samples, axis=0),
+        "visibility": np.ones((samples, carriers), np.float32),
+        "base_gates": np.ones((samples, carriers), np.float32),
+        "teacher_gates": teacher,
+        "renderer_streams": streams,
+        "teacher_mask": fit_mask,
+        "prediction_mask": np.ones(samples, bool),
+        "camera_index": np.zeros(samples, np.int64),
+        "frame_index": np.tile(np.arange(4), 2),
+        "block_ids": np.repeat([0, 1], 4),
+        "runtime_mass": np.ones((samples, carriers), np.float32),
+        "a5_weight": np.ones(carriers, np.float32),
+        "contract": contract,
+        "output_dir": tmp_path,
+        "device": "cpu",
+    }
+
+
+def test_r4b0_trainer_uses_global_scales_and_saves_exact_deployed_gates(
+    tmp_path, monkeypatch
+):
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import train_fold
+
+    observed = {"calls": 0}
+
+    def positive_preflight(*args, **kwargs):
+        del args, kwargs
+        observed["calls"] += 1
+        return {
+            "verdict": "FEATURE_OBSERVABILITY_POSITIVE",
+            "passed": True,
+            "initial_loss": 2.0,
+            "final_loss": 1.9,
+            "gradient_norm": 1.0,
+            "checks": {},
+            "failure_reasons": [],
+            "held_teacher_values_accessed": False,
+            "held_renderer_values_accessed": False,
+        }
+
+    monkeypatch.setattr(
+        "tools.train_a7c_r1_4vp_r4b0_projection_aware."
+        "run_gradient_observability_preflight",
+        positive_preflight,
+    )
+    summary = train_fold(**_tiny_fold_inputs(tmp_path))
+
+    assert observed["calls"] == 1
+    assert summary["checkpoint_epoch"] == 2
+    assert summary["observability"]["passed"] is True
+    assert set(summary["global_initial_scales"]) == {
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action"
+    }
+    assert "segment_initial_scales" not in summary
+    assert summary["held_teacher_values_accessed"] is False
+    assert summary["held_renderer_values_accessed"] is False
+    assert summary["optimizer_signature"] == {
+        "name": "AdamW", "learning_rate": 0.001, "weight_decay": 0.0001
+    }
+    assert (tmp_path / "model.pt").is_file()
+    with np.load(tmp_path / "predictions.npz", allow_pickle=False) as predictions:
+        assert "raw_gates" in predictions.files
+        assert "exact_gates" in predictions.files
+        assert "projected_gates" in predictions.files
+        np.testing.assert_array_equal(
+            predictions["exact_gates"], predictions["projected_gates"]
+        )
+    certificates = json.loads(
+        (tmp_path / "projection_certificates.json").read_text(encoding="utf-8")
+    )
+    assert certificates
+
+
+def test_r4b0_trainer_stops_before_epoch_one_when_observability_is_negative(
+    tmp_path, monkeypatch
+):
+    from tools.train_a7c_r1_4vp_r4b0_projection_aware import train_fold
+
+    monkeypatch.setattr(
+        "tools.train_a7c_r1_4vp_r4b0_projection_aware."
+        "run_gradient_observability_preflight",
+        lambda *args, **kwargs: {
+            "verdict": "FEATURE_OBSERVABILITY_NEGATIVE",
+            "passed": False,
+            "failure_reasons": ["gradient_observable"],
+        },
+    )
+    summary = train_fold(**_tiny_fold_inputs(tmp_path))
+
+    assert summary["execution_status"] == "FEATURE_OBSERVABILITY_NEGATIVE"
+    assert not (tmp_path / "model.pt").exists()
+    assert not (tmp_path / "predictions.npz").exists()
+    assert (tmp_path / "observability.json").is_file()
+
+
+def test_r4b0_model_signature_remains_exactly_9073_parameters():
+    from utils.a7c_r1_4vp_r2_runtime import ViewPoseResidualCompositor
+
+    model = ViewPoseResidualCompositor(
+        view_dimension=49,
+        view_embedding_dimension=16,
+        pose_dimension=36,
+        pose_embedding_dimension=16,
+        gru_hidden_dimension=16,
+        residual_gate_scale=0.1,
+        minimum_gate=0.9,
+        maximum_gate=1.0,
+    )
+    assert sum(value.numel() for value in model.parameters()) == 9073
