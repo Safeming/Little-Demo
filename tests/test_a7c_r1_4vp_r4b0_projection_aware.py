@@ -358,3 +358,154 @@ def test_projection_diagnostics_and_fit_entry_are_fail_closed():
     rejected = evaluate_fit_projected_entry(rejected_summary, contract)
     assert rejected["passed"] is False
     assert "held_teacher_values_accessed" in rejected["failure_reasons"]
+
+
+class _ScalarModel(torch.nn.Module):
+    def __init__(self, value=0.2):
+        super().__init__()
+        self.value = torch.nn.Parameter(torch.tensor(float(value)))
+
+
+def _observability_rows(*, expose_held=False):
+    teacher = np.array([[0.98], [0.99], [np.nan], [np.nan]])
+    renderer = {
+        signal: {
+            "base": np.array([1.0, 1.0, np.nan, np.nan]),
+            "point": np.array([[0.1], [0.1], [np.nan], [np.nan]]),
+        }
+        for signal in ("target", "outer", "boundary")
+    }
+    if expose_held:
+        teacher[-1] = 1.0
+    return teacher, renderer, np.array([True, True, False, False])
+
+
+def _observable_loss(model, *, certificate=True, nonfinite_component=False):
+    loss = (model.value - 0.5).square()
+    component = loss
+    if nonfinite_component:
+        component = loss * torch.tensor(float("nan"))
+    return {
+        "loss": loss,
+        "components": {"registered": component},
+        "projection_certificates_passed": certificate,
+    }
+
+
+def test_observability_preflight_is_positive_and_does_not_mutate_source_model():
+    from utils.a7c_r1_4vp_r4b0 import run_gradient_observability_preflight
+
+    model = _ScalarModel()
+    before = {key: value.detach().clone() for key, value in model.state_dict().items()}
+    teacher, renderer, fit_mask = _observability_rows()
+
+    result = run_gradient_observability_preflight(
+        model,
+        lambda clone: _observable_loss(clone),
+        teacher_values=teacher,
+        renderer_streams=renderer,
+        fit_mask=fit_mask,
+        learning_rate=0.001,
+        weight_decay=0.0001,
+        minimum_gradient_norm=1e-12,
+        step_count=1,
+    )
+
+    assert result["verdict"] == "FEATURE_OBSERVABILITY_POSITIVE"
+    assert result["passed"] is True
+    assert result["final_loss"] < result["initial_loss"]
+    assert result["gradient_norm"] > 1e-12
+    assert result["failure_reasons"] == []
+    for key, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[key], rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "case,model_factory,closure_factory,expose_held,reason",
+    [
+        (
+            "certificate",
+            lambda: _ScalarModel(),
+            lambda: (lambda model: _observable_loss(model, certificate=False)),
+            False,
+            "projection_certificates_passed",
+        ),
+        (
+            "component",
+            lambda: _ScalarModel(),
+            lambda: (
+                lambda model: _observable_loss(model, nonfinite_component=True)
+            ),
+            False,
+            "components_finite",
+        ),
+        (
+            "gradient",
+            lambda: _ScalarModel(0.0),
+            lambda: (
+                lambda model: {
+                    "loss": torch.sqrt(model.value),
+                    "components": {"registered": model.value.square()},
+                    "projection_certificates_passed": True,
+                }
+            ),
+            False,
+            "gradients_finite",
+        ),
+        (
+            "zero_gradient",
+            lambda: _ScalarModel(0.2),
+            lambda: (
+                lambda model: {
+                    "loss": model.value * 0.0 + 1.0,
+                    "components": {"registered": model.value * 0.0 + 1.0},
+                    "projection_certificates_passed": True,
+                }
+            ),
+            False,
+            "gradient_observable",
+        ),
+        (
+            "no_decrease",
+            lambda: _ScalarModel(0.0001),
+            lambda: (
+                lambda model: {
+                    "loss": model.value.square(),
+                    "components": {"registered": model.value.square()},
+                    "projection_certificates_passed": True,
+                }
+            ),
+            False,
+            "ephemeral_step_decreased_loss",
+        ),
+        (
+            "held",
+            lambda: _ScalarModel(),
+            lambda: (lambda model: _observable_loss(model)),
+            True,
+            "held_rows_inaccessible",
+        ),
+    ],
+)
+def test_observability_preflight_fails_closed(
+    case, model_factory, closure_factory, expose_held, reason
+):
+    del case
+    from utils.a7c_r1_4vp_r4b0 import run_gradient_observability_preflight
+
+    teacher, renderer, fit_mask = _observability_rows(expose_held=expose_held)
+    result = run_gradient_observability_preflight(
+        model_factory(),
+        closure_factory(),
+        teacher_values=teacher,
+        renderer_streams=renderer,
+        fit_mask=fit_mask,
+        learning_rate=0.001,
+        weight_decay=0.0001,
+        minimum_gradient_norm=1e-12,
+        step_count=1,
+    )
+
+    assert result["verdict"] == "FEATURE_OBSERVABILITY_NEGATIVE"
+    assert result["passed"] is False
+    assert reason in result["failure_reasons"]

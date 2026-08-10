@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 
 import numpy as np
@@ -335,4 +336,184 @@ def evaluate_fit_projected_entry(summary, contract):
         ),
         "checks": checks,
         "failure_reasons": failure_reasons,
+    }
+
+
+def _held_rows_inaccessible(teacher_values, renderer_streams, fit_mask):
+    mask = np.asarray(fit_mask, dtype=bool).reshape(-1)
+    teacher = np.asarray(teacher_values)
+    if teacher.ndim < 1 or teacher.shape[0] != mask.size or not np.any(mask):
+        raise ValueError("teacher values and fit mask must align")
+    if not np.isfinite(teacher[mask]).all() or np.isfinite(teacher[~mask]).any():
+        return False
+    if not isinstance(renderer_streams, Mapping) or set(renderer_streams) != {
+        "target",
+        "outer",
+        "boundary",
+    }:
+        raise ValueError("observability renderer streams are incomplete")
+    for signal in ("target", "outer", "boundary"):
+        stream = renderer_streams[signal]
+        if not isinstance(stream, Mapping) or set(stream) != {"base", "point"}:
+            raise ValueError(f"observability {signal} stream is incomplete")
+        for values in stream.values():
+            array = np.asarray(values)
+            if array.ndim < 1 or array.shape[0] != mask.size:
+                raise ValueError("observability renderer rows must align with fit mask")
+            if not np.isfinite(array[mask]).all() or np.isfinite(array[~mask]).any():
+                return False
+    return True
+
+
+def _observability_payload_valid(payload):
+    if not isinstance(payload, Mapping):
+        raise ValueError("observability closure must return a mapping")
+    if set(payload) != {
+        "loss",
+        "components",
+        "projection_certificates_passed",
+    }:
+        raise ValueError("observability closure returned unexpected keys")
+    loss = payload["loss"]
+    if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
+        raise ValueError("observability loss must be a scalar tensor")
+    components = payload["components"]
+    if not isinstance(components, Mapping) or not components:
+        raise ValueError("observability components must be a nonempty mapping")
+    for value in components.values():
+        if not isinstance(value, torch.Tensor) or value.numel() != 1:
+            raise ValueError("observability components must be scalar tensors")
+    return loss, components
+
+
+def run_gradient_observability_preflight(
+    model,
+    deployed_loss_closure,
+    *,
+    teacher_values,
+    renderer_streams,
+    fit_mask,
+    learning_rate,
+    weight_decay,
+    minimum_gradient_norm,
+    step_count,
+):
+    if not isinstance(model, torch.nn.Module):
+        raise ValueError("observability model must be a torch module")
+    if not callable(deployed_loss_closure):
+        raise ValueError("observability loss closure must be callable")
+    learning_rate = _positive_finite(learning_rate, "learning rate")
+    weight_decay = float(weight_decay)
+    if not np.isfinite(weight_decay) or weight_decay < 0.0:
+        raise ValueError("weight decay must be finite and nonnegative")
+    minimum_gradient_norm = _positive_finite(
+        minimum_gradient_norm, "minimum gradient norm"
+    )
+    if int(step_count) != 1:
+        raise ValueError("observability must use exactly one ephemeral step")
+
+    source_state = {
+        name: value.detach().clone() for name, value in model.state_dict().items()
+    }
+    held_safe = _held_rows_inaccessible(
+        teacher_values, renderer_streams, fit_mask
+    )
+    clone = copy.deepcopy(model)
+    optimizer = torch.optim.AdamW(
+        clone.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+    optimizer.zero_grad(set_to_none=True)
+    initial_payload = deployed_loss_closure(clone)
+    initial_loss, initial_components = _observability_payload_valid(initial_payload)
+    loss_finite = bool(torch.isfinite(initial_loss).all())
+    components_finite = all(
+        bool(torch.isfinite(value).all()) for value in initial_components.values()
+    )
+    certificates_passed = bool(
+        initial_payload["projection_certificates_passed"]
+    )
+
+    gradients_finite = False
+    gradient_norm = 0.0
+    if loss_finite:
+        initial_loss.backward()
+        gradients = [
+            parameter.grad
+            for parameter in clone.parameters()
+            if parameter.requires_grad
+        ]
+        gradients_finite = bool(gradients) and all(
+            gradient is not None and bool(torch.isfinite(gradient).all())
+            for gradient in gradients
+        )
+        if gradients_finite:
+            gradient_norm = float(
+                torch.sqrt(
+                    torch.stack(
+                        [torch.sum(gradient.detach().square()) for gradient in gradients]
+                    ).sum()
+                ).cpu()
+            )
+
+    gradient_observable = gradients_finite and gradient_norm > minimum_gradient_norm
+    final_loss_value = None
+    final_certificates_passed = False
+    final_components_finite = False
+    step_decreased = False
+    if (
+        held_safe
+        and loss_finite
+        and components_finite
+        and certificates_passed
+        and gradient_observable
+    ):
+        optimizer.step()
+        final_payload = deployed_loss_closure(clone)
+        final_loss, final_components = _observability_payload_valid(final_payload)
+        final_certificates_passed = bool(
+            final_payload["projection_certificates_passed"]
+        )
+        final_components_finite = all(
+            bool(torch.isfinite(value).all()) for value in final_components.values()
+        )
+        if bool(torch.isfinite(final_loss).all()):
+            final_loss_value = float(final_loss.detach().cpu())
+            step_decreased = final_loss_value < float(initial_loss.detach().cpu())
+
+    source_unchanged = all(
+        torch.equal(value, source_state[name])
+        for name, value in model.state_dict().items()
+    )
+    checks = {
+        "held_rows_inaccessible": held_safe,
+        "initial_loss_finite": loss_finite,
+        "components_finite": components_finite and (
+            final_components_finite if final_loss_value is not None else True
+        ),
+        "projection_certificates_passed": certificates_passed and (
+            final_certificates_passed if final_loss_value is not None else True
+        ),
+        "gradients_finite": gradients_finite,
+        "gradient_observable": gradient_observable,
+        "ephemeral_step_decreased_loss": step_decreased,
+        "source_model_unchanged": source_unchanged,
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    passed = not failures
+    return {
+        "verdict": (
+            "FEATURE_OBSERVABILITY_POSITIVE"
+            if passed
+            else "FEATURE_OBSERVABILITY_NEGATIVE"
+        ),
+        "passed": passed,
+        "initial_loss": (
+            float(initial_loss.detach().cpu()) if loss_finite else None
+        ),
+        "final_loss": final_loss_value,
+        "gradient_norm": gradient_norm,
+        "checks": checks,
+        "failure_reasons": failures,
+        "held_teacher_values_accessed": not held_safe,
+        "held_renderer_values_accessed": not held_safe,
     }
