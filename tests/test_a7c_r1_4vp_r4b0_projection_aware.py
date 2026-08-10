@@ -1,6 +1,13 @@
 import json
 from pathlib import Path
 
+import numpy as np
+import pytest
+import torch
+
+from utils.a7c_renderer_compositor import normalized_flicker as numpy_flicker
+from utils.a7c_temporal_joint_projection import solve_temporal_joint_projection
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = (
@@ -101,3 +108,253 @@ def test_r4b0_contract_freezes_projection_aware_training_only():
     assert contract["source_r4a_runner_sha256"] == (
         "ab4d06f4401d50f8c1546fabd9cc033b338516cf141d77cc3bc4734e5292a9ff"
     )
+
+
+def _projection_contract():
+    return {
+        "minimum_gate": 0.9,
+        "maximum_gate": 1.0,
+        "selection_threshold": 0.2,
+        "proxy_target_response": 0.995,
+        "maximum_projection_gate_jump": 0.015,
+        "lexicographic_tolerance": 1e-9,
+        "solver_primal_tolerance": 1e-9,
+        "solver_residual_tolerance": 1e-7,
+    }
+
+
+def _streams(dtype=torch.float64):
+    return {
+        "target": {
+            "base": torch.tensor([10.0, 10.5, 9.5], dtype=dtype),
+            "point": torch.tensor(
+                [[1.0, -0.5], [0.5, -1.0], [1.5, -0.25]], dtype=dtype
+            ),
+        },
+        "outer": {
+            "base": torch.tensor([8.0, 10.0, 7.0], dtype=dtype),
+            "point": torch.tensor(
+                [[1.0, -2.0], [2.0, 1.0], [-1.0, 2.0]], dtype=dtype
+            ),
+        },
+        "boundary": {
+            "base": torch.tensor([7.0, 8.0, 6.0], dtype=dtype),
+            "point": torch.tensor(
+                [[0.5, -1.0], [1.5, 0.5], [-0.5, 1.0]], dtype=dtype
+            ),
+        },
+    }
+
+
+def test_exact_projection_straight_through_has_exact_forward_and_identity_backward():
+    from utils.a7c_r1_4vp_r4b0 import exact_projected_straight_through
+
+    raw = torch.tensor(
+        [[0.91, 0.99], [1.0, 0.90], [0.92, 0.98]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    mass = np.ones((3, 2), dtype=np.float64)
+    weight = np.ones(2, dtype=np.float64)
+    direct = solve_temporal_joint_projection(
+        raw_gates=raw.detach().numpy(),
+        runtime_mass=mass,
+        a5_weight=weight,
+        minimum_gate=0.9,
+        maximum_gate=1.0,
+        selection_threshold=0.2,
+        proxy_target_response=0.995,
+        maximum_gate_jump=0.015,
+        rho_tolerance=1e-9,
+        primal_tolerance=1e-9,
+        residual_tolerance=1e-7,
+    )
+
+    deployed, certificate = exact_projected_straight_through(
+        raw, mass, weight, _projection_contract()
+    )
+
+    torch.testing.assert_close(
+        deployed, torch.as_tensor(direct["gates"], dtype=torch.float64)
+    )
+    assert certificate == direct["certificate"]
+    deployed.sum().backward()
+    torch.testing.assert_close(raw.grad, torch.ones_like(raw))
+
+
+def test_differentiable_flicker_and_gain_match_exact_numpy_evaluator():
+    from utils.a7c_r1_4vp_r4b0 import normalized_flicker, renderer_gain
+
+    values = torch.tensor([2.0, 3.0, 2.5, 4.0], dtype=torch.float64)
+    edited = torch.tensor([2.0, 2.7, 2.6, 3.1], dtype=torch.float64)
+
+    assert float(normalized_flicker(values, epsilon=1e-12)) == pytest.approx(
+        numpy_flicker(values.numpy()), abs=1e-15
+    )
+    expected = 1.0 - numpy_flicker(edited.numpy()) / max(
+        numpy_flicker(values.numpy()), 1e-12
+    )
+    assert float(renderer_gain(values, edited, epsilon=1e-12)) == pytest.approx(
+        expected, abs=1e-15
+    )
+
+
+def test_projection_aware_components_use_deployed_gate_except_projection():
+    from utils.a7c_r1_4vp_r4b0 import projection_aware_components
+
+    teacher = torch.tensor(
+        [[0.99, 0.98], [0.98, 0.99], [0.99, 0.97]], dtype=torch.float64
+    )
+    deployed = torch.tensor(
+        [[0.98, 0.99], [0.99, 0.98], [0.98, 0.98]], dtype=torch.float64
+    )
+    base = torch.ones_like(teacher)
+    raw_a = deployed.clone()
+    raw_b = torch.full_like(deployed, 0.9)
+
+    first = projection_aware_components(
+        deployed, raw_a, teacher, base, _streams(),
+        trajectory_delta=0.005,
+        gain_delta=0.005,
+        target_delta=0.005,
+        gate_delta=0.01,
+        temporal_delta=0.005,
+        temporal_weight=0.25,
+        projection_scale=0.0002,
+        epsilon=1e-12,
+    )
+    second = projection_aware_components(
+        deployed, raw_b, teacher, base, _streams(),
+        trajectory_delta=0.005,
+        gain_delta=0.005,
+        target_delta=0.005,
+        gate_delta=0.01,
+        temporal_delta=0.005,
+        temporal_weight=0.25,
+        projection_scale=0.0002,
+        epsilon=1e-12,
+    )
+
+    assert set(first) == {
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action", "projection"
+    }
+    for name in set(first) - {"projection"}:
+        torch.testing.assert_close(first[name], second[name])
+    assert float(second["projection"]) > float(first["projection"])
+
+
+def test_action_component_is_one_for_zero_candidate_action():
+    from utils.a7c_r1_4vp_r4b0 import projection_aware_components
+
+    base = torch.ones((3, 2), dtype=torch.float64)
+    teacher = base - torch.tensor(
+        [[0.01, 0.02], [0.02, 0.01], [0.01, 0.03]], dtype=torch.float64
+    )
+    components = projection_aware_components(
+        base, base, teacher, base, _streams(),
+        trajectory_delta=0.005,
+        gain_delta=0.005,
+        target_delta=0.005,
+        gate_delta=0.01,
+        temporal_delta=0.005,
+        temporal_weight=0.25,
+        projection_scale=0.0002,
+        epsilon=1e-12,
+    )
+    assert float(components["action"]) == pytest.approx(1.0)
+
+
+def test_global_median_scales_and_grouped_total_follow_registered_formula():
+    from utils.a7c_r1_4vp_r4b0 import (
+        freeze_global_median_scales,
+        projection_aware_loss,
+    )
+
+    names = [
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action"
+    ]
+    rows = [
+        {name: torch.tensor(float(index + offset)) for name in names}
+        for index, offset in ((1, 0), (2, 1), (3, 2))
+    ]
+    scales = freeze_global_median_scales(rows, minimum=1e-12)
+    assert scales == {name: 3.0 for name in names}
+    components = {name: torch.tensor(3.0) for name in names}
+    components["projection"] = torch.tensor(2.0)
+    result = projection_aware_loss(
+        components, scales, torch.tensor([[2.0, -2.0]]),
+        residual_weight=1e-5,
+    )
+    assert float(result["renderer_loss"]) == pytest.approx(1.0)
+    assert float(result["preservation_loss"]) == pytest.approx(1.25)
+    assert float(result["loss"]) == pytest.approx(2.25002)
+
+
+@pytest.mark.parametrize("bad", [0.0, float("nan")])
+def test_global_median_scales_reject_zero_or_nonfinite_values(bad):
+    from utils.a7c_r1_4vp_r4b0 import freeze_global_median_scales
+
+    names = [
+        "trajectory_outer", "trajectory_boundary", "gain_outer",
+        "gain_boundary", "target", "gate", "action"
+    ]
+    rows = [{name: torch.tensor(1.0) for name in names} for _ in range(3)]
+    rows[1]["gain_outer"] = torch.tensor(bad)
+    with pytest.raises(ValueError, match="scale"):
+        freeze_global_median_scales(rows, minimum=1e-12)
+
+
+def test_projection_diagnostics_and_fit_entry_are_fail_closed():
+    from utils.a7c_r1_4vp_r4b0 import (
+        evaluate_fit_projected_entry,
+        projection_diagnostics,
+    )
+
+    diagnostics = projection_diagnostics(
+        np.ones((2, 2)), np.array([[1.0, 0.999], [1.0, 1.0]]),
+        changed_threshold=1e-12,
+    )
+    assert diagnostics["raw_to_exact_mean_absolute_displacement"] == pytest.approx(
+        0.00025
+    )
+    assert diagnostics["raw_to_exact_changed_fraction"] == pytest.approx(0.25)
+
+    summary = {
+        "fit_loss_improved": True,
+        "fit_projected_teacher_mae": 0.006,
+        "fit_outer_recovery": 0.80,
+        "fit_boundary_recovery": 0.80,
+        "fit_outer_positive_segment_fraction": 1.0,
+        "fit_boundary_positive_segment_fraction": 1.0,
+        "projected_action_diagnostics": {
+            "action_cosine": 0.95,
+            "top_k_suppression_overlap": 0.50,
+            "missed_teacher_suppression_fraction": 0.50,
+        },
+        "raw_to_exact_mean_absolute_displacement": 0.0001,
+        "raw_to_exact_changed_fraction": 0.04,
+        "projection_certificates_passed": True,
+        "held_teacher_values_accessed": False,
+        "held_renderer_values_accessed": False,
+    }
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    positive = evaluate_fit_projected_entry(summary, contract)
+    assert positive["passed"] is True
+    assert positive["failure_reasons"] == []
+
+    for key in (
+        "fit_loss_improved",
+        "projection_certificates_passed",
+    ):
+        rejected_summary = dict(summary)
+        rejected_summary[key] = False
+        rejected = evaluate_fit_projected_entry(rejected_summary, contract)
+        assert rejected["passed"] is False
+        assert key in rejected["failure_reasons"]
+    rejected_summary = dict(summary)
+    rejected_summary["held_teacher_values_accessed"] = True
+    rejected = evaluate_fit_projected_entry(rejected_summary, contract)
+    assert rejected["passed"] is False
+    assert "held_teacher_values_accessed" in rejected["failure_reasons"]
