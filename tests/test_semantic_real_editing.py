@@ -32,6 +32,49 @@ def test_resolve_method_weights_rejects_missing_a5_soft_weights():
         resolve_method_weights(raw, voting, {"part_label": raw["part_label"]}, method="a5", part="hair", threshold=0.2)
 
 
+def test_resolve_method_weights_recomputes_saga_b4_weights():
+    from utils.semantic_real_editing import resolve_method_weights
+
+    raw, voting, a5 = _banks()
+    probabilities = np.zeros((4, 6), dtype=np.float32)
+    probabilities[:, 0] = [0.9, 0.8, 0.7, 0.6]
+    saga = {
+        "part_label": np.array([0, 0, 0, 0], dtype=np.int16),
+        "semantic_probs": probabilities,
+        "confidence": np.array([1.0, 0.8, 0.9, 0.5], dtype=np.float32),
+        "semantic_margin": np.array([1.0, 0.9, 0.5, 1.0], dtype=np.float32),
+    }
+
+    weights = resolve_method_weights(
+        raw,
+        voting,
+        a5,
+        saga_bank=saga,
+        method="saga",
+        part="hair",
+        threshold=0.5,
+    )
+
+    assert np.allclose(weights, [0.9, 0.576, 0.0, 0.0])
+
+
+def test_resolve_method_weights_rejects_incomplete_saga_bank():
+    import pytest
+    from utils.semantic_real_editing import resolve_method_weights
+
+    raw, voting, a5 = _banks()
+    with pytest.raises(ValueError, match="SAGA bank must contain"):
+        resolve_method_weights(
+            raw,
+            voting,
+            a5,
+            saga_bank={"part_label": raw["part_label"]},
+            method="saga",
+            part="hair",
+            threshold=0.5,
+        )
+
+
 def test_canonical_stripe_colors_are_deterministic_and_point_aligned():
     from utils.semantic_real_editing import canonical_stripe_colors
 

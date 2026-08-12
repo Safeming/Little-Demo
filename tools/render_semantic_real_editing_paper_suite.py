@@ -41,6 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--a5-bank", required=True, type=Path)
     parser.add_argument("--a7-bank", type=Path, default=None)
     parser.add_argument("--a7-contract", type=Path, default=None)
+    parser.add_argument("--saga-bank", type=Path, default=None)
+    parser.add_argument("--saga-threshold", type=float, default=0.5)
     parser.add_argument("--loso-config", required=True, type=Path)
     parser.add_argument("--method-freeze", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -59,6 +61,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tasks", nargs="+", choices=list(REAL_EDIT_TASKS), default=list(REAL_EDIT_TASKS))
     parser.add_argument("--edit-strength", type=float, default=1.0)
     parser.add_argument("--edit-strengths", nargs="+", type=float, default=None)
+    parser.add_argument("--method-part-strengths", type=Path, default=None)
     parser.add_argument("--coverage-target-retention", type=float, default=0.5)
     parser.add_argument("--coverage-response-fraction", type=float, default=0.8)
     parser.add_argument("--metrics-only", action="store_true")
@@ -78,6 +81,27 @@ def resolve_edit_strengths(args) -> list[float]:
     if strengths != sorted(strengths) or len(set(strengths)) != len(strengths):
         raise ValueError("edit strength grid must be strictly increasing and unique")
     return strengths
+
+
+def resolve_strength_for_item(mapping, *, method: str, part: str, fallback) -> list[float]:
+    fallback_values = [float(value) for value in fallback]
+    if not mapping:
+        return fallback_values
+    value = (mapping.get(str(method)) or {}).get(str(part))
+    if value is None:
+        return fallback_values
+    strength = float(value)
+    if not 0.0 < strength <= 1.0:
+        raise ValueError(f"method-part strength must be in (0, 1], got {strength}")
+    return [strength]
+
+
+def validate_optional_method_banks(*, methods, saga_bank, a7_bank, a7_contract) -> None:
+    requested = {str(method) for method in methods}
+    if "saga" in requested and saga_bank is None:
+        raise ValueError("SAGA real editing requires --saga-bank")
+    if "a7" in requested and (a7_bank is None or a7_contract is None):
+        raise ValueError("A7 real editing requires --a7-bank and --a7-contract")
 
 
 def build_experiment_matrix(*, methods, tasks, parts) -> list[dict[str, str]]:
@@ -133,11 +157,14 @@ def _validate_bank_points(
     a5_bank: dict,
     *,
     a7_bank: dict | None = None,
+    saga_bank: dict | None = None,
 ) -> int:
     counts = []
     banks = [("raw", raw_bank), ("voting", voting_bank), ("a5", a5_bank)]
     if a7_bank is not None:
         banks.append(("a7", a7_bank))
+    if saga_bank is not None:
+        banks.append(("saga", saga_bank))
     for owner, bank in banks:
         labels = np.asarray(bank.get("editable_label", bank.get("part_label", []))).reshape(-1)
         if labels.size == 0:
@@ -153,6 +180,12 @@ def _validate_bank_points(
         if a7_weights.shape != (counts[0], len(PART_NAMES)):
             raise ValueError(
                 f"A7 soft_edit_weights must have shape ({counts[0]}, {len(PART_NAMES)})"
+            )
+    if saga_bank is not None:
+        probabilities = np.asarray(saga_bank.get("semantic_probs", []))
+        if probabilities.shape != (counts[0], len(PART_NAMES)):
+            raise ValueError(
+                f"SAGA semantic_probs must have shape ({counts[0]}, {len(PART_NAMES)})"
             )
     return counts[0]
 
@@ -290,9 +323,14 @@ def run_suite(args: argparse.Namespace) -> dict:
     raw_bank = load_part_label_bank(args.raw_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
     a5_bank = load_part_label_bank(args.a5_bank)
-    if "a7" in args.methods and (args.a7_bank is None or args.a7_contract is None):
-        raise ValueError("A7 real editing requires --a7-bank and --a7-contract")
+    validate_optional_method_banks(
+        methods=args.methods,
+        saga_bank=args.saga_bank,
+        a7_bank=args.a7_bank,
+        a7_contract=args.a7_contract,
+    )
     a7_bank = load_part_label_bank(args.a7_bank) if args.a7_bank is not None else None
+    saga_bank = load_part_label_bank(args.saga_bank) if args.saga_bank is not None else None
     a7_provenance = {}
     if a7_bank is not None:
         a7_contract = load_a7_temporal_contract(args.a7_contract, args.method_freeze)
@@ -302,7 +340,7 @@ def run_suite(args: argparse.Namespace) -> dict:
             a5_bank_path=args.a5_bank,
         )
     bank_point_count = _validate_bank_points(
-        raw_bank, voting_bank, a5_bank, a7_bank=a7_bank
+        raw_bank, voting_bank, a5_bank, a7_bank=a7_bank, saga_bank=saga_bank
     )
 
     asset_root = args.asset_root.resolve()
@@ -319,6 +357,11 @@ def run_suite(args: argparse.Namespace) -> dict:
     bg_color = [1, 1, 1] if bool(config.dataset.white_background) else [0, 0, 0]
     matrix = build_experiment_matrix(methods=args.methods, tasks=args.tasks, parts=args.parts)
     edit_strengths = resolve_edit_strengths(args)
+    method_part_strengths = {}
+    if args.method_part_strengths is not None:
+        method_part_strengths = json.loads(args.method_part_strengths.read_text(encoding="utf-8"))
+        if not isinstance(method_part_strengths, dict):
+            raise ValueError("method-part strengths must contain a JSON object")
     metric_rows: list[dict] = []
 
     with torch.no_grad():
@@ -344,9 +387,14 @@ def run_suite(args: argparse.Namespace) -> dict:
                 voting_bank,
                 a5_bank,
                 a7_bank=a7_bank,
+                saga_bank=saga_bank,
                 method=method,
                 part=part,
-                threshold=float(run_config["soft_threshold"]),
+                threshold=(
+                    float(args.saga_threshold)
+                    if method == "saga"
+                    else float(run_config["soft_threshold"])
+                ),
             )
             for method in args.methods
             for part in args.parts
@@ -384,7 +432,13 @@ def run_suite(args: argparse.Namespace) -> dict:
                 part = item["part"]
                 weights = weights_by_method_part[(method, part)]
                 target_rgb = np.asarray(EDIT_COLORS[part], dtype=np.float32) / 255.0
-                for edit_strength in edit_strengths:
+                item_strengths = resolve_strength_for_item(
+                    method_part_strengths,
+                    method=method,
+                    part=part,
+                    fallback=edit_strengths,
+                )
+                for edit_strength in item_strengths:
                     overrides = build_edit_overrides(
                         base_colors,
                         base_opacities,
@@ -415,7 +469,7 @@ def run_suite(args: argparse.Namespace) -> dict:
                     frame_path = ""
                     if not metrics_only:
                         strength_token = str(edit_strength).replace(".", "p")
-                        suffix = f"_s{strength_token}" if len(edit_strengths) > 1 else ""
+                        suffix = f"_s{strength_token}" if len(item_strengths) > 1 else ""
                         frame_output = frames_dir / task / method / f"{view_name}_{part}{suffix}.png"
                         frame_output.parent.mkdir(parents=True, exist_ok=True)
                         imageio.imwrite(frame_output, edited_rgb)
@@ -435,7 +489,11 @@ def run_suite(args: argparse.Namespace) -> dict:
                             "task": task,
                             "method": method,
                             "edit_strength": float(edit_strength),
-                            "soft_threshold": float(run_config["soft_threshold"]),
+                            "soft_threshold": (
+                                float(args.saga_threshold)
+                                if method == "saga"
+                                else float(run_config["soft_threshold"])
+                            ),
                             "selected_gaussian_count": int(np.sum(weights > 0.0)),
                             "edit_weight_sum": float(np.sum(weights)),
                             **metrics,
@@ -463,6 +521,9 @@ def run_suite(args: argparse.Namespace) -> dict:
         "a7_contract": (
             str(args.a7_contract.resolve()) if args.a7_contract is not None else ""
         ),
+        "saga_bank": str(args.saga_bank.resolve()) if args.saga_bank is not None else "",
+        "saga_bank_sha256": _file_sha256(args.saga_bank) if args.saga_bank is not None else "",
+        "saga_threshold": float(args.saga_threshold),
         "loso_config": str(args.loso_config.resolve()),
         "method_freeze": str(args.method_freeze.resolve()),
         "method_freeze_id": run_config["method_freeze_id"],
@@ -471,6 +532,7 @@ def run_suite(args: argparse.Namespace) -> dict:
         "boundary_radius": int(run_config["boundary_radius"]),
         "edit_strength": float(edit_strengths[0]) if len(edit_strengths) == 1 else None,
         "edit_strengths": edit_strengths,
+        "method_part_strengths": method_part_strengths,
         "metrics_only": metrics_only,
         "texture_frequency": float(args.texture_frequency),
         "methods": list(args.methods),

@@ -51,6 +51,32 @@ def test_parse_args_accepts_optional_a7_bank_and_contract():
     assert args.methods == ["a5", "a7"]
 
 
+def test_parse_args_accepts_saga_bank_and_method_part_strengths():
+    from tools.render_semantic_real_editing_paper_suite import parse_args
+
+    args = parse_args(
+        [
+            "--subject", "377",
+            "--raw-bank", "raw.npz",
+            "--voting-bank", "voting.npz",
+            "--a5-bank", "a5.npz",
+            "--saga-bank", "saga.npz",
+            "--loso-config", "loso.json",
+            "--method-freeze", "freeze.json",
+            "--checkpoint", "ckpt.pth",
+            "--asset-root", "assets",
+            "--output-dir", "out",
+            "--methods", "saga", "a5",
+            "--method-part-strengths", "strengths.json",
+        ]
+    )
+
+    assert args.saga_bank == Path("saga.npz")
+    assert args.method_part_strengths == Path("strengths.json")
+    assert args.saga_threshold == 0.5
+    assert args.methods == ["saga", "a5"]
+
+
 def test_build_experiment_matrix_contains_every_method_task_part():
     from tools.render_semantic_real_editing_paper_suite import build_experiment_matrix
 
@@ -156,6 +182,23 @@ def test_resolve_edit_strengths_preserves_single_strength_default():
     args = Namespace(edit_strength=0.75, edit_strengths=None)
 
     assert resolve_edit_strengths(args) == [0.75]
+
+
+def test_resolve_strength_for_item_uses_method_part_mapping_then_fallback():
+    from tools.render_semantic_real_editing_paper_suite import resolve_strength_for_item
+
+    mapping = {"saga": {"hair": 0.65}, "a5": {"hair": 0.55}}
+
+    assert resolve_strength_for_item(mapping, method="saga", part="hair", fallback=[0.2, 0.4]) == [0.65]
+    assert resolve_strength_for_item(mapping, method="a5", part="hair", fallback=[0.2, 0.4]) == [0.55]
+    assert resolve_strength_for_item(mapping, method="saga", part="shoes", fallback=[0.2, 0.4]) == [0.2, 0.4]
+
+
+def test_validate_optional_method_banks_rejects_missing_saga_bank():
+    from tools.render_semantic_real_editing_paper_suite import validate_optional_method_banks
+
+    with pytest.raises(ValueError, match="SAGA real editing requires"):
+        validate_optional_method_banks(methods=["saga", "a5"], saga_bank=None, a7_bank=None, a7_contract=None)
 
 
 @pytest.mark.parametrize(
