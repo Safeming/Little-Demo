@@ -96,6 +96,13 @@ def resolve_strength_for_item(mapping, *, method: str, part: str, fallback) -> l
     return [strength]
 
 
+def summary_edit_strength(edit_strengths, method_part_strengths):
+    values = [float(value) for value in edit_strengths]
+    if method_part_strengths or len(values) != 1:
+        return None
+    return values[0]
+
+
 def validate_optional_method_banks(*, methods, saga_bank, a7_bank, a7_contract) -> None:
     requested = {str(method) for method in methods}
     if "saga" in requested and saga_bank is None:
@@ -530,7 +537,7 @@ def run_suite(args: argparse.Namespace) -> dict:
         "method_freeze_fingerprint": run_config["method_freeze_fingerprint"],
         "soft_threshold": float(run_config["soft_threshold"]),
         "boundary_radius": int(run_config["boundary_radius"]),
-        "edit_strength": float(edit_strengths[0]) if len(edit_strengths) == 1 else None,
+        "edit_strength": summary_edit_strength(edit_strengths, method_part_strengths),
         "edit_strengths": edit_strengths,
         "method_part_strengths": method_part_strengths,
         "metrics_only": metrics_only,

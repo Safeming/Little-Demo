@@ -142,6 +142,7 @@ def compute_edit_delta_metrics(
     *,
     boundary_radius: int = 2,
     mask_threshold: float = 0.5,
+    edit_response_threshold: float = 1.0 / 255.0,
 ) -> dict[str, float | int]:
     base = np.asarray(base_image, dtype=np.float32)
     edited = np.asarray(edited_image, dtype=np.float32)
@@ -164,6 +165,9 @@ def compute_edit_delta_metrics(
     target_count, target_sum, target_mean = region_values(target_region)
     outer_count, outer_sum, outer_mean = region_values(outer_region)
     boundary_count, boundary_sum, boundary_mean = region_values(boundary_outer)
+    edit_response = (delta > float(edit_response_threshold)) & valid
+    edit_response_intersection = int(np.sum(edit_response & target_region))
+    edit_response_union = int(np.sum(edit_response | target_region))
     return {
         "target_pixel_count": target_count,
         "outer_pixel_count": outer_count,
@@ -175,4 +179,7 @@ def compute_edit_delta_metrics(
         "outer_delta_mean": outer_mean,
         "boundary_outer_delta_mean": boundary_mean,
         "outer_to_target_delta_ratio": outer_sum / max(target_sum, 1.0e-8),
+        "edit_response_intersection": edit_response_intersection,
+        "edit_response_union": edit_response_union,
+        "edit_response_iou": edit_response_intersection / max(edit_response_union, 1),
     }

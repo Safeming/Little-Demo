@@ -201,6 +201,14 @@ def test_validate_optional_method_banks_rejects_missing_saga_bank():
         validate_optional_method_banks(methods=["saga", "a5"], saga_bank=None, a7_bank=None, a7_contract=None)
 
 
+def test_summary_edit_strength_is_none_for_method_part_mapping():
+    from tools.render_semantic_real_editing_paper_suite import summary_edit_strength
+
+    assert summary_edit_strength([1.0], {"saga": {"hair": 0.6}}) is None
+    assert summary_edit_strength([0.6], {}) == 0.6
+    assert summary_edit_strength([0.2, 0.4], {}) is None
+
+
 @pytest.mark.parametrize(
     "values",
     [

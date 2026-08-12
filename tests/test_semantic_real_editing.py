@@ -128,3 +128,6 @@ def test_compute_edit_delta_metrics_separates_target_outer_and_boundary():
     assert metrics["outer_delta_sum"] == 2.25
     assert metrics["boundary_outer_delta_sum"] == 1.5
     assert metrics["outer_to_target_delta_ratio"] == 0.75
+    assert metrics["edit_response_intersection"] == 1
+    assert metrics["edit_response_union"] == 3
+    assert np.isclose(metrics["edit_response_iou"], 1.0 / 3.0)
