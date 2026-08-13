@@ -114,7 +114,7 @@ def _run_evaluator(
         "--checkpoint", str(paths["checkpoint"]),
         "--asset-root", str(paths[f"{split}_assets"]),
         "--config", str(paths["config"]),
-        "--dataset-root", "/remote-home/ming/dataSet",
+        "--dataset-root", str(paper_root / "data/ZJUMoCap"),
         "--subject", f"CoreView_{subject}",
         "--output-dir", str(output),
         "--baselines", "B1", "B4",

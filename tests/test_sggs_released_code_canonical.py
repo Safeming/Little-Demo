@@ -485,3 +485,10 @@ def test_build_sggs_comparison_row_marks_missing_60_percent_without_interpolatio
     assert row["actionable_leakage_at_0p6"] == ""
     assert row["max_reachable_retention"] == pytest.approx(0.4)
     assert row["actionable_leakage_at_0p4"] == pytest.approx(0.2)
+
+
+def test_sggs_evaluator_uses_avatar_dataset_root_for_scene_loading():
+    source = Path("tools/evaluate_sggs_released_code_canonical.py").read_text(encoding="utf-8")
+
+    assert '"--dataset-root", str(paper_root / "data/ZJUMoCap")' in source
+    assert '"--dataset-root", "/remote-home/ming/dataSet"' not in source
