@@ -79,6 +79,42 @@ def test_parse_args_accepts_saga_bank_and_method_part_strengths():
     assert args.methods == ["saga", "a5"]
 
 
+def test_parse_args_accepts_generic_external_banks_and_thresholds():
+    from tools.render_semantic_real_editing_paper_suite import parse_args
+
+    args = parse_args(
+        [
+            "--subject", "377",
+            "--raw-bank", "raw.npz",
+            "--voting-bank", "voting.npz",
+            "--a5-bank", "a5.npz",
+            "--external-bank", "gaussian_grouping=gg.npz",
+            "--external-bank", "sggs=sggs.npz",
+            "--external-threshold", "gaussian_grouping=0.35",
+            "--external-threshold", "sggs=0.1",
+            "--loso-config", "loso.json",
+            "--method-freeze", "freeze.json",
+            "--checkpoint", "ckpt.pth",
+            "--asset-root", "assets",
+            "--output-dir", "output",
+            "--methods", "gaussian_grouping", "sggs", "a5",
+        ]
+    )
+
+    assert args.external_bank == ["gaussian_grouping=gg.npz", "sggs=sggs.npz"]
+    assert args.external_threshold == ["gaussian_grouping=0.35", "sggs=0.1"]
+
+
+def test_parse_external_specs_rejects_duplicate_and_unknown_method():
+    import pytest
+    from tools.render_semantic_real_editing_paper_suite import parse_external_specs
+
+    with pytest.raises(ValueError, match="duplicate external method"):
+        parse_external_specs(["saga=a.npz", "saga=b.npz"], value_type=Path)
+    with pytest.raises(ValueError, match="unknown external method"):
+        parse_external_specs(["other=a.npz"], value_type=Path)
+
+
 def test_build_experiment_matrix_contains_every_method_task_part():
     from tools.render_semantic_real_editing_paper_suite import build_experiment_matrix
 

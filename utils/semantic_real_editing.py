@@ -8,7 +8,8 @@ from tools.analyze_projected_soft_edit_leakage import make_boundary_band
 from utils.part_label_bank import PART_NAMES, compute_soft_edit_weights
 
 
-REAL_EDIT_METHODS = ("raw_hard", "voting", "a5", "a7", "saga")
+EXTERNAL_EDIT_METHODS = ("saga", "gaussian_grouping", "sggs")
+REAL_EDIT_METHODS = ("raw_hard", "voting", "a5", "a7", *EXTERNAL_EDIT_METHODS)
 REAL_EDIT_TASKS = ("recolor", "removal", "texture")
 
 
@@ -27,6 +28,7 @@ def resolve_method_weights(
     *,
     a7_bank: Mapping | None = None,
     saga_bank: Mapping | None = None,
+    external_banks: Mapping[str, Mapping] | None = None,
     method: str,
     part: str,
     threshold: float,
@@ -41,19 +43,29 @@ def resolve_method_weights(
         labels = _hard_labels(raw_bank if method_name == "raw_hard" else voting_bank)
         return (labels == part_index).astype(np.float32)
 
-    if method_name == "saga":
+    if method_name in EXTERNAL_EDIT_METHODS:
+        external_bank = (external_banks or {}).get(method_name)
+        if external_bank is None and method_name == "saga":
+            external_bank = saga_bank
         required = ("semantic_probs", "confidence", "semantic_margin")
-        if saga_bank is None or any(field not in saga_bank for field in required):
-            raise ValueError("SAGA bank must contain semantic_probs, confidence, and semantic_margin")
-        probabilities = np.asarray(saga_bank["semantic_probs"], dtype=np.float32)
-        point_count = _hard_labels(saga_bank).shape[0]
+        if external_bank is None or any(field not in external_bank for field in required):
+            owner = {
+                "saga": "SAGA",
+                "gaussian_grouping": "Gaussian Grouping",
+                "sggs": "SG-GS",
+            }[method_name]
+            raise ValueError(
+                f"{owner} bank must contain semantic_probs, confidence, and semantic_margin"
+            )
+        probabilities = np.asarray(external_bank["semantic_probs"], dtype=np.float32)
+        point_count = _hard_labels(external_bank).shape[0]
         if probabilities.shape != (point_count, len(PART_NAMES)):
             raise ValueError(f"SAGA semantic_probs must have shape ({point_count}, {len(PART_NAMES)})")
         weights = compute_soft_edit_weights(
             semantic_probs=probabilities,
-            confidence=saga_bank["confidence"],
-            semantic_margin=saga_bank["semantic_margin"],
-            reliable_mask=saga_bank.get("reliable_mask"),
+            confidence=external_bank["confidence"],
+            semantic_margin=external_bank["semantic_margin"],
+            reliable_mask=external_bank.get("reliable_mask"),
         )[:, part_index]
         return np.where(weights >= float(threshold), weights, 0.0).astype(np.float32, copy=False)
 

@@ -24,6 +24,7 @@ from utils.frozen_semantic_method import (
 )
 from utils.part_label_bank import PART_NAMES, load_part_label_bank
 from utils.semantic_real_editing import (
+    EXTERNAL_EDIT_METHODS,
     REAL_EDIT_METHODS,
     REAL_EDIT_TASKS,
     build_edit_overrides,
@@ -44,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--a5-threshold", type=float, default=None)
     parser.add_argument("--saga-bank", type=Path, default=None)
     parser.add_argument("--saga-threshold", type=float, default=0.5)
+    parser.add_argument("--external-bank", action="append", default=[])
+    parser.add_argument("--external-threshold", action="append", default=[])
     parser.add_argument("--loso-config", required=True, type=Path)
     parser.add_argument("--method-freeze", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -70,6 +73,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset-root", default="")
     parser.add_argument("--explicit-binding-render-preset", default="none")
     return parser.parse_args(argv)
+
+
+def parse_external_specs(specs, *, value_type):
+    mapping = {}
+    for raw in specs or []:
+        text = str(raw)
+        if "=" not in text:
+            raise ValueError(f"external spec must use method=value: {text}")
+        method, value = text.split("=", 1)
+        method = method.strip().lower()
+        if method not in EXTERNAL_EDIT_METHODS:
+            raise ValueError(f"unknown external method: {method}")
+        if method in mapping:
+            raise ValueError(f"duplicate external method: {method}")
+        mapping[method] = value_type(value.strip())
+    return mapping
 
 
 def resolve_edit_strengths(args) -> list[float]:
@@ -110,7 +129,10 @@ def resolve_method_threshold(
     loso_threshold: float,
     saga_threshold: float,
     a5_threshold: float | None,
+    external_thresholds: dict[str, float] | None = None,
 ) -> float:
+    if str(method) in (external_thresholds or {}):
+        return float(external_thresholds[str(method)])
     if str(method) == "saga":
         return float(saga_threshold)
     if str(method) == "a5" and a5_threshold is not None:
@@ -118,10 +140,23 @@ def resolve_method_threshold(
     return float(loso_threshold)
 
 
-def validate_optional_method_banks(*, methods, saga_bank, a7_bank, a7_contract) -> None:
+def validate_optional_method_banks(
+    *, methods, saga_bank, a7_bank, a7_contract, external_banks=None, external_thresholds=None
+) -> None:
     requested = {str(method) for method in methods}
-    if "saga" in requested and saga_bank is None:
-        raise ValueError("SAGA real editing requires --saga-bank")
+    available = set((external_banks or {}).keys())
+    if saga_bank is not None:
+        available.add("saga")
+    for method in sorted(requested & set(EXTERNAL_EDIT_METHODS)):
+        if method not in available:
+            owner = {
+                "saga": "SAGA",
+                "gaussian_grouping": "Gaussian Grouping",
+                "sggs": "SG-GS",
+            }[method]
+            raise ValueError(f"{owner} real editing requires an external bank")
+        if method != "saga" and method not in (external_thresholds or {}):
+            raise ValueError(f"{method} real editing requires an external threshold")
     if "a7" in requested and (a7_bank is None or a7_contract is None):
         raise ValueError("A7 real editing requires --a7-bank and --a7-contract")
 
@@ -180,6 +215,7 @@ def _validate_bank_points(
     *,
     a7_bank: dict | None = None,
     saga_bank: dict | None = None,
+    external_banks: dict[str, dict] | None = None,
 ) -> int:
     counts = []
     banks = [("raw", raw_bank), ("voting", voting_bank), ("a5", a5_bank)]
@@ -187,6 +223,8 @@ def _validate_bank_points(
         banks.append(("a7", a7_bank))
     if saga_bank is not None:
         banks.append(("saga", saga_bank))
+    for method, bank in sorted((external_banks or {}).items()):
+        banks.append((method, bank))
     for owner, bank in banks:
         labels = np.asarray(bank.get("editable_label", bank.get("part_label", []))).reshape(-1)
         if labels.size == 0:
@@ -208,6 +246,12 @@ def _validate_bank_points(
         if probabilities.shape != (counts[0], len(PART_NAMES)):
             raise ValueError(
                 f"SAGA semantic_probs must have shape ({counts[0]}, {len(PART_NAMES)})"
+            )
+    for method, bank in sorted((external_banks or {}).items()):
+        probabilities = np.asarray(bank.get("semantic_probs", []))
+        if probabilities.shape != (counts[0], len(PART_NAMES)):
+            raise ValueError(
+                f"{method} semantic_probs must have shape ({counts[0]}, {len(PART_NAMES)})"
             )
     return counts[0]
 
@@ -345,11 +389,19 @@ def run_suite(args: argparse.Namespace) -> dict:
     raw_bank = load_part_label_bank(args.raw_bank)
     voting_bank = load_part_label_bank(args.voting_bank)
     a5_bank = load_part_label_bank(args.a5_bank)
+    external_bank_paths = parse_external_specs(args.external_bank, value_type=Path)
+    external_thresholds = parse_external_specs(args.external_threshold, value_type=float)
+    external_banks = {
+        method: load_part_label_bank(path)
+        for method, path in external_bank_paths.items()
+    }
     validate_optional_method_banks(
         methods=args.methods,
         saga_bank=args.saga_bank,
         a7_bank=args.a7_bank,
         a7_contract=args.a7_contract,
+        external_banks=external_banks,
+        external_thresholds=external_thresholds,
     )
     a7_bank = load_part_label_bank(args.a7_bank) if args.a7_bank is not None else None
     saga_bank = load_part_label_bank(args.saga_bank) if args.saga_bank is not None else None
@@ -362,7 +414,12 @@ def run_suite(args: argparse.Namespace) -> dict:
             a5_bank_path=args.a5_bank,
         )
     bank_point_count = _validate_bank_points(
-        raw_bank, voting_bank, a5_bank, a7_bank=a7_bank, saga_bank=saga_bank
+        raw_bank,
+        voting_bank,
+        a5_bank,
+        a7_bank=a7_bank,
+        saga_bank=saga_bank,
+        external_banks=external_banks,
     )
 
     asset_root = args.asset_root.resolve()
@@ -410,6 +467,7 @@ def run_suite(args: argparse.Namespace) -> dict:
                 a5_bank,
                 a7_bank=a7_bank,
                 saga_bank=saga_bank,
+                external_banks=external_banks,
                 method=method,
                 part=part,
                 threshold=resolve_method_threshold(
@@ -417,6 +475,7 @@ def run_suite(args: argparse.Namespace) -> dict:
                     loso_threshold=float(run_config["soft_threshold"]),
                     saga_threshold=float(args.saga_threshold),
                     a5_threshold=args.a5_threshold,
+                    external_thresholds=external_thresholds,
                 ),
             )
             for method in args.methods
@@ -517,6 +576,7 @@ def run_suite(args: argparse.Namespace) -> dict:
                                 loso_threshold=float(run_config["soft_threshold"]),
                                 saga_threshold=float(args.saga_threshold),
                                 a5_threshold=args.a5_threshold,
+                                external_thresholds=external_thresholds,
                             ),
                             "selected_gaussian_count": int(np.sum(weights > 0.0)),
                             "edit_weight_sum": float(np.sum(weights)),
@@ -548,6 +608,14 @@ def run_suite(args: argparse.Namespace) -> dict:
         "saga_bank": str(args.saga_bank.resolve()) if args.saga_bank is not None else "",
         "saga_bank_sha256": _file_sha256(args.saga_bank) if args.saga_bank is not None else "",
         "saga_threshold": float(args.saga_threshold),
+        "external_banks": {
+            method: {
+                "path": str(path.resolve()),
+                "sha256": _file_sha256(path),
+                "threshold": float(external_thresholds.get(method, args.saga_threshold)),
+            }
+            for method, path in sorted(external_bank_paths.items())
+        },
         "a5_threshold": (
             float(args.a5_threshold)
             if args.a5_threshold is not None

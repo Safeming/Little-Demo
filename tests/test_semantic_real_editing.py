@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 
 def _banks():
@@ -73,6 +74,34 @@ def test_resolve_method_weights_rejects_incomplete_saga_bank():
             part="hair",
             threshold=0.5,
         )
+
+
+@pytest.mark.parametrize("method", ["saga", "gaussian_grouping", "sggs"])
+def test_external_canonical_methods_share_soft_weight_contract(method):
+    from utils.semantic_real_editing import resolve_method_weights
+
+    raw, voting, a5 = _banks()
+    external = {
+        "part_label": raw["part_label"],
+        "semantic_probs": np.array(
+            [[0.8, 0.2, 0, 0, 0, 0], [0.2, 0.8, 0, 0, 0, 0], [0.7, 0.3, 0, 0, 0, 0], [0.1, 0.9, 0, 0, 0, 0]],
+            dtype=np.float32,
+        ),
+        "confidence": np.array([1.0, 1.0, 0.8, 0.8], dtype=np.float32),
+        "semantic_margin": np.array([0.6, 0.6, 0.4, 0.8], dtype=np.float32),
+    }
+    values = resolve_method_weights(
+        raw,
+        voting,
+        a5,
+        external_banks={method: external},
+        method=method,
+        part="hair",
+        threshold=0.2,
+    )
+
+    assert values.shape == (4,)
+    assert np.isfinite(values).all()
 
 
 def test_canonical_stripe_colors_are_deterministic_and_point_aligned():
