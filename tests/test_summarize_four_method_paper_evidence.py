@@ -1,9 +1,25 @@
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from PIL import Image
+
+
+def test_prepare_qualitative_cli_is_directly_executable():
+    script = Path(__file__).parents[1] / "tools/prepare_four_method_qualitative.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Prepare frozen four-method qualitative inputs" in result.stdout
 
 
 def _rows():
