@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pytest
@@ -152,3 +154,24 @@ def test_estimate_queue_seconds_uses_steady_canary_rate_and_buffer():
 
     assert estimate["steady_seconds_per_iteration"] == pytest.approx(0.2)
     assert estimate["estimated_seconds"] == pytest.approx(20700.0)
+
+
+def test_queue_dry_run_does_not_write_completion_or_state(tmp_path):
+    output = tmp_path / "dry-run"
+    env = {
+        **os.environ,
+        "DRY_RUN": "1",
+        "OUTPUT_ROOT": str(output),
+    }
+
+    subprocess.run(
+        ["bash", "tools/run_gaussian_grouping_canonical_three_subject.sh"],
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not (output / "COMPLETE").exists()
+    assert not (output / "queue_state.json").exists()

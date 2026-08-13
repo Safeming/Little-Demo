@@ -75,6 +75,18 @@ run_training() {
   "${command[@]}" 2>&1 | tee "$log"
 }
 
+if [[ "$DRY_RUN" == "1" ]]; then
+  if [[ "$SKIP_CANARY" != "1" ]]; then
+    run_training 377 "$CANARY_ITERATIONS" "$OUTPUT_ROOT/canary/CoreView_377" "$OUTPUT_ROOT/canary_377.log"
+  fi
+  if [[ "$CANARY_ONLY" != "1" ]]; then
+    for subject_id in $SUBJECTS; do
+      run_training "$subject_id" "$ITERATIONS" "$OUTPUT_ROOT/CoreView_${subject_id}/train_30k" "$OUTPUT_ROOT/CoreView_${subject_id}_train.log"
+    done
+  fi
+  exit 0
+fi
+
 if [[ "$SKIP_CANARY" != "1" ]]; then
   CURRENT_SUBJECT="CoreView_377"
   CURRENT_STAGE="canary"
