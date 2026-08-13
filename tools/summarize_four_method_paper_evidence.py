@@ -701,6 +701,75 @@ def write_qualitative(manifest: Path, output: Path) -> dict:
     return result
 
 
+def compose_temporal_contact_sheets(
+    *,
+    render_root: Path | str,
+    output_dir: Path | str,
+    subject: str = "386",
+    camera: int = 22,
+    anchor: int = 420,
+    radius: int = 10,
+    methods=METHOD_ORDER,
+    parts=("hair", "shoes"),
+) -> list[dict]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    render_root = Path(render_root)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames = list(range(int(anchor) - int(radius), int(anchor) + int(radius) + 1))
+    outputs = []
+    for method in methods:
+        for part in parts:
+            paths = [
+                render_root
+                / "frames/recolor"
+                / str(method)
+                / f"c{int(camera):02d}_f{frame:06d}_{part}.png"
+                for frame in frames
+            ]
+            for path in paths:
+                if not path.is_file():
+                    raise FileNotFoundError(path)
+            fig, axes = plt.subplots(3, 7, figsize=(12.6, 8.1), facecolor="white")
+            for axis, frame, path in zip(axes.flat, frames, paths):
+                with Image.open(path) as image:
+                    axis.imshow(np.asarray(image.convert("RGB")))
+                axis.set_title(f"f{frame}", fontsize=8)
+                axis.axis("off")
+            fig.suptitle(
+                f"CoreView {subject} | c{int(camera)} | {METHOD_LABELS[str(method)]} | {part.title()}",
+                fontsize=12,
+            )
+            fig.subplots_adjust(top=0.94, left=0.01, right=0.99, bottom=0.01, wspace=0.02, hspace=0.08)
+            stem = f"CoreView_{subject}_c{int(camera):02d}_a{int(anchor):06d}_{method}_{part}"
+            png = output_dir / f"{stem}.png"
+            pdf = output_dir / f"{stem}.pdf"
+            fig.savefig(png, dpi=200, facecolor="white")
+            fig.savefig(pdf, facecolor="white")
+            plt.close(fig)
+            outputs.append(
+                {
+                    "subject": str(subject),
+                    "camera": int(camera),
+                    "anchor": int(anchor),
+                    "method": str(method),
+                    "part": str(part),
+                    "frames": frames,
+                    "png": str(png),
+                    "pdf": str(pdf),
+                }
+            )
+    (output_dir / "contact_sheets.json").write_text(
+        json.dumps(outputs, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return outputs
+
+
 def _finite_row_metrics(rows, fields) -> bool:
     try:
         return all(
@@ -771,6 +840,9 @@ def verify_outputs(
                 errors.append(f"{name} feasibility mismatch for {row.get('subject')}/{row.get('method')}")
                 break
     if require_summaries:
+        frozen_protocol_path = output_root / "protocol/frozen_protocol.json"
+        if not frozen_protocol_path.is_file() or frozen_protocol_path.stat().st_size <= 0:
+            errors.append("missing frozen protocol")
         significance_path = output_root / "significance/significance.json"
         temporal_summary_path = output_root / "temporal/temporal_summary.json"
         if not significance_path.is_file():
@@ -805,6 +877,16 @@ def verify_outputs(
                     path = output_root / "qualitative" / set_name / f"{part}_three_subject_five_method.{suffix}"
                     if not path.is_file() or path.stat().st_size <= 0:
                         errors.append(f"missing qualitative figure: {path}")
+        for method in METHOD_ORDER:
+            for part in ("hair", "shoes"):
+                for suffix in ("png", "pdf"):
+                    path = (
+                        output_root
+                        / "temporal/contact_sheets"
+                        / f"CoreView_386_c22_a000420_{method}_{part}.{suffix}"
+                    )
+                    if not path.is_file() or path.stat().st_size <= 0:
+                        errors.append(f"missing temporal contact sheet: {path}")
     return {"status": "passed" if not errors else "failed", "errors": errors, "checks": checks}
 
 
@@ -827,6 +909,9 @@ def parse_args(argv=None):
     qualitative = subparsers.add_parser("qualitative")
     qualitative.add_argument("--manifest", required=True, type=Path)
     qualitative.add_argument("--output", required=True, type=Path)
+    contacts = subparsers.add_parser("contact-sheets")
+    contacts.add_argument("--render-root", required=True, type=Path)
+    contacts.add_argument("--output", required=True, type=Path)
     verify = subparsers.add_parser("verify")
     verify.add_argument("--output-root", required=True, type=Path)
     return parser.parse_args(argv)
@@ -854,6 +939,8 @@ def main(argv=None) -> int:
         concat_csv(args.input, args.output)
     elif args.command == "qualitative":
         write_qualitative(args.manifest, args.output)
+    elif args.command == "contact-sheets":
+        compose_temporal_contact_sheets(render_root=args.render_root, output_dir=args.output)
     elif args.command == "verify":
         result = verify_outputs(args.output_root)
         path = args.output_root / "integrity_report.json"

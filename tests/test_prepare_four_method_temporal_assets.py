@@ -130,3 +130,49 @@ def test_write_operating_point_selects_unique_method_retention(tmp_path):
     assert result["retention"] == 0.6
     assert result["edit_strength"] == 0.72
     assert result["reference_baseline"] == "B1"
+
+
+def test_write_frozen_protocol_records_inputs_and_fixed_statistics(tmp_path):
+    from tools.prepare_four_method_temporal_assets import write_frozen_protocol
+
+    root = tmp_path / "evidence"
+    protocol = root / "protocol"
+    protocol.mkdir(parents=True)
+    (protocol / "temporal_record_list.json").write_text(
+        json.dumps(["c21_f000170", "c23_f000550"]), encoding="utf-8"
+    )
+    for subject in ("377", "386", "394"):
+        (protocol / f"CoreView_{subject}_a5_shared40k_frozen.json").write_text(
+            json.dumps({"subject": subject}), encoding="utf-8"
+        )
+        for method in ("saga", "gaussian_grouping", "sggs", "a5"):
+            (protocol / f"CoreView_{subject}_{method}_operating_point.json").write_text(
+                json.dumps(
+                    {
+                        "subject": subject,
+                        "method": method,
+                        "retention": (
+                            0.4 if subject == "377" and method == "gaussian_grouping" else 0.6
+                        ),
+                        "target_retention_feasible": not (
+                            subject == "377" and method == "gaussian_grouping"
+                        ),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        asset = root / "temporal_assets" / f"CoreView_{subject}" / "merged"
+        asset.mkdir(parents=True)
+        (asset / "asset_manifest.json").write_text(
+            json.dumps({"record_count": 189}), encoding="utf-8"
+        )
+
+    output = protocol / "frozen_protocol.json"
+    result = write_frozen_protocol(output_root=root, output=output)
+
+    assert result["subjects"] == ["377", "386", "394"]
+    assert result["methods"] == ["saga", "gaussian_grouping", "sggs", "a5"]
+    assert result["statistics"] == {"bootstrap_iterations": 20000, "seed": 20260813}
+    assert len(result["inputs"]) == 19
+    assert all(len(row["sha256"]) == 64 for row in result["inputs"])
+    assert json.loads(output.read_text(encoding="utf-8")) == result

@@ -292,6 +292,38 @@ def test_qualitative_cli_composes_both_frozen_sets(tmp_path):
     assert len(payload["layouts"]) == 4
 
 
+def test_compose_temporal_contact_sheets_requires_all_ordered_frames(tmp_path):
+    from tools.summarize_four_method_paper_evidence import compose_temporal_contact_sheets
+
+    render_root = tmp_path / "render"
+    for method in ("saga", "gaussian_grouping", "sggs", "a5"):
+        for part in ("hair", "shoes"):
+            directory = render_root / "frames" / "recolor" / method
+            directory.mkdir(parents=True, exist_ok=True)
+            for frame in range(410, 431):
+                Image.new("RGB", (32, 48), (frame % 255, len(method) * 10, len(part) * 20)).save(
+                    directory / f"c22_f{frame:06d}_{part}.png"
+                )
+
+    result = compose_temporal_contact_sheets(
+        render_root=render_root,
+        output_dir=tmp_path / "contact_sheets",
+    )
+
+    assert len(result) == 8
+    assert all(row["frames"] == list(range(410, 431)) for row in result)
+    assert all(Path(row["png"]).stat().st_size > 0 for row in result)
+    assert all(Path(row["pdf"]).stat().st_size > 0 for row in result)
+
+    missing = render_root / "frames/recolor/a5/c22_f000420_hair.png"
+    missing.unlink()
+    with pytest.raises(FileNotFoundError, match="c22_f000420_hair"):
+        compose_temporal_contact_sheets(
+            render_root=render_root,
+            output_dir=tmp_path / "bad_contact_sheets",
+        )
+
+
 def test_rank_objective_views_uses_four_methods_and_both_parts():
     from tools.summarize_four_method_paper_evidence import rank_objective_views
 

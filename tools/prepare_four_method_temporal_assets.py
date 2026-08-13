@@ -20,6 +20,10 @@ from utils.four_method_paper_evidence import (
 from utils.semantic_eval_protocol import file_fingerprint
 
 
+SUBJECTS = ("377", "386", "394")
+METHODS = ("saga", "gaussian_grouping", "sggs", "a5")
+
+
 def build_record_names(windows) -> list[str]:
     names = [
         f"c{int(window['camera']):02d}_f{int(frame):06d}"
@@ -256,6 +260,57 @@ def write_operating_point(
     return point
 
 
+def write_frozen_protocol(*, output_root: Path | str, output: Path | str) -> dict:
+    output_root = Path(output_root).resolve()
+    output = Path(output)
+    paths = [output_root / "protocol/temporal_record_list.json"]
+    for subject in SUBJECTS:
+        paths.append(output_root / f"protocol/CoreView_{subject}_a5_shared40k_frozen.json")
+        paths.extend(
+            output_root / f"protocol/CoreView_{subject}_{method}_operating_point.json"
+            for method in METHODS
+        )
+        paths.append(
+            output_root / f"temporal_assets/CoreView_{subject}/merged/asset_manifest.json"
+        )
+    missing = [path for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("missing frozen protocol input: " + ", ".join(map(str, missing)))
+    inputs = [
+        {
+            "path": str(path.resolve()),
+            "relative_path": str(path.resolve().relative_to(output_root)),
+            "size_bytes": path.stat().st_size,
+            "sha256": _file_sha256(path),
+        }
+        for path in paths
+    ]
+    result = {
+        "schema_version": 1,
+        "subjects": list(SUBJECTS),
+        "methods": list(METHODS),
+        "strict_views": [
+            f"c{camera:02d}_f{frame:06d}"
+            for camera in (21, 22, 23)
+            for frame in (180, 420, 540)
+        ],
+        "temporal_windows": build_temporal_windows(),
+        "target_retention": 0.6,
+        "gg_377_retention": 0.4,
+        "statistics": {"bootstrap_iterations": 20_000, "seed": 20260813},
+        "qualitative": {
+            "fixed_view": "c22_f000420",
+            "contact_sheet_subject": "386",
+            "contact_sheet_camera": 22,
+            "contact_sheet_anchor": 420,
+        },
+        "inputs": inputs,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    return result
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Prepare frozen continuous temporal assets.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -280,6 +335,9 @@ def parse_args(argv=None):
     operating_point.add_argument("--method", required=True)
     operating_point.add_argument("--subject", required=True)
     operating_point.add_argument("--output", required=True, type=Path)
+    freeze = subparsers.add_parser("freeze-protocol")
+    freeze.add_argument("--output-root", required=True, type=Path)
+    freeze.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)
 
 
@@ -329,6 +387,8 @@ def main(argv=None) -> int:
             subject=args.subject,
             output=args.output,
         )
+    elif args.command == "freeze-protocol":
+        result = write_frozen_protocol(output_root=args.output_root, output=args.output)
     else:
         raise ValueError(f"unsupported command: {args.command}")
     print(json.dumps(result, indent=2, sort_keys=True))
