@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,18 +57,39 @@ def _native_launch_record(args, release, dependencies) -> dict:
     unavailable = [name for name, value in dependencies.items() if not value["available"]]
     missing_local = release["declared_missing_local_modules"]
     blockers = list(dict.fromkeys([*missing_inputs, *missing_local, *unavailable]))
-    first = blockers[0] if blockers else "native launch not attempted by read-only audit"
+    command = [str(args.python), str(Path(args.repo) / "train.py")]
+    environment = {**os.environ, "WANDB_MODE": "disabled", "CUDA_VISIBLE_DEVICES": ""}
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=args.repo,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        returncode = int(completed.returncode)
+        stderr = (completed.stderr or completed.stdout).strip()
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        returncode = 124
+        stderr = "\n".join(
+            value.decode(errors="replace") if isinstance(value, bytes) else str(value or "")
+            for value in (exc.stderr, exc.stdout)
+        ).strip() or "native launch timed out after 30 seconds"
+        timed_out = True
+    first_line = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), "")
+    first = first_line or (blockers[0] if blockers else "unknown native launch failure")
     return {
-        "status": "blocked",
+        "status": "blocked" if returncode != 0 else "unexpected_success",
+        "attempted": True,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "stderr": stderr,
         "first_blocker": first,
         "blockers": blockers,
-        "command": [
-            str(args.python),
-            str(Path(args.repo) / "train.py"),
-            "dataset=zjumocap_377_mono",
-            "opt.iterations=1",
-            "wandb_disable=true",
-        ],
+        "command": command,
         "mutated_official_repository": False,
     }
 

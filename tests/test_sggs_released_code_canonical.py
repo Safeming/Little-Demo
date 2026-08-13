@@ -104,6 +104,9 @@ def test_audit_cli_writes_required_schema_even_when_native_launch_is_blocked(tmp
     }
     assert report["native_launch"]["status"] == "blocked"
     assert report["native_launch"]["first_blocker"]
+    assert report["native_launch"]["attempted"] is True
+    assert isinstance(report["native_launch"]["returncode"], int)
+    assert report["native_launch"]["stderr"]
     assert len(report["record_sha256"]) == 64
 
 
