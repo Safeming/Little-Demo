@@ -12,6 +12,11 @@ VIEWS=(
   c22_f000180 c22_f000420 c22_f000540
   c23_f000180 c23_f000420 c23_f000540
 )
+CONTACT_VIEWS=(
+  c22_f000410 c22_f000411 c22_f000412 c22_f000413 c22_f000414 c22_f000415 c22_f000416
+  c22_f000417 c22_f000418 c22_f000419 c22_f000420 c22_f000421 c22_f000422 c22_f000423
+  c22_f000424 c22_f000425 c22_f000426 c22_f000427 c22_f000428 c22_f000429 c22_f000430
+)
 
 subject_root() {
   case "$1" in
@@ -65,3 +70,39 @@ for subject in "${SUBJECTS[@]}"; do
       --explicit-binding-render-preset none > "$output/render.log" 2>&1
   fi
 done
+
+subject=386
+source="$(subject_root "$subject")"
+protocol="$OUTPUT_ROOT/protocol"
+output="$OUTPUT_ROOT/temporal_contact_render/CoreView_386"
+strengths="$OUTPUT_ROOT/qualitative/renders/CoreView_386/method_part_strengths.json"
+saga_point="$protocol/CoreView_386_saga_operating_point.json"
+gg_point="$protocol/CoreView_386_gaussian_grouping_operating_point.json"
+sggs_point="$protocol/CoreView_386_sggs_operating_point.json"
+a5_point="$protocol/CoreView_386_a5_operating_point.json"
+mkdir -p "$output"
+if [[ ! -s "$output/summary.json" ]]; then
+  env CUDA_VISIBLE_DEVICES=0 BODY_MODELS_ROOT="$PAPER_ROOT/body_models" "$PYTHON_BIN" \
+    "$CODE_ROOT/tools/render_semantic_real_editing_paper_suite.py" \
+    --subject "$subject" \
+    --raw-bank "$source/banks/raw_trained/part_label_bank.npz" \
+    --voting-bank "$source/banks/multiview_voting/part_label_bank.npz" \
+    --a5-bank "$PAPER_ROOT/exp/acceptdata/frozen_a5_five_subject_main_20260723/CoreView_386/banks/footprint_evidence_target/part_label_bank.npz" \
+    --a5-threshold "$(json_value "$a5_point" threshold)" \
+    --saga-bank "$PAPER_ROOT/exp/external/saga_canonical_five_subject_20260812_120625_bjt/CoreView_386/train_30k/part_label_bank.npz" \
+    --saga-threshold "$(json_value "$saga_point" threshold)" \
+    --external-bank gaussian_grouping="$PAPER_ROOT/exp/external/gaussian_grouping_canonical_three_subject_20260813_0958_bjt/CoreView_386/train_30k/part_label_bank.npz" \
+    --external-threshold gaussian_grouping="$(json_value "$gg_point" threshold)" \
+    --external-bank sggs="$PAPER_ROOT/exp/external/sggs_released_code_canonical_three_subject_20260813_formal/CoreView_386/train_30k/part_label_bank.npz" \
+    --external-threshold sggs="$(json_value "$sggs_point" threshold)" \
+    --loso-config "$PAPER_ROOT/exp/acceptdata/frozen_a5_five_subject_loso_stats_20260723/CoreView_386/loso_frozen_config.json" \
+    --method-freeze "$PAPER_ROOT/configs/semantic/frozen_a5_main_method_v1.json" \
+    --checkpoint "$source/base_train_40k/ckpt40000.pth" \
+    --asset-root "$OUTPUT_ROOT/temporal_assets/CoreView_386/merged" \
+    --config "$PAPER_ROOT/exp/external/sggs_released_code_canonical_three_subject_20260813_formal/CoreView_386/evaluation/checkpoint_compat_config.yaml" \
+    --dataset-root "$PAPER_ROOT/data/ZJUMoCap" \
+    --output-dir "$output" --views "${CONTACT_VIEWS[@]}" --max-views 21 \
+    --methods "${METHODS[@]}" --tasks recolor --parts hair shoes \
+    --method-part-strengths "$strengths" --explicit-binding-render-preset none \
+    > "$output/render.log" 2>&1
+fi

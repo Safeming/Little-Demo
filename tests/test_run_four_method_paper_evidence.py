@@ -52,3 +52,7 @@ def test_qualitative_queue_uses_all_four_methods_and_nine_views():
     assert "--external-bank sggs=" in text
     assert "--method-part-strengths" in text
     assert "prepare_four_method_qualitative.py" in text
+    assert "CONTACT_VIEWS=(" in text
+    assert "c22_f000410" in text
+    assert "c22_f000430" in text
+    assert "temporal_contact_render/CoreView_386" in text
