@@ -177,6 +177,10 @@ def test_formal_provenance_marks_test_masks_as_evaluation_only():
     assert provenance["uses_test_parser_for_edit_selection"] is False
     assert provenance["uses_test_masks_for_metrics"] is True
     assert provenance["shared_rasterizer_across_methods"] is True
+    assert provenance["shared_task_and_edit_color_across_methods"] is True
+    assert provenance["matched_retention_target_across_methods"] is True
+    assert provenance["identical_edit_strength_across_methods"] is False
+    assert "shared_edit_parameters_across_methods" not in provenance
 
 
 def test_normalize_dataset_subject_converts_numeric_omegaconf_value_to_string():

@@ -173,7 +173,9 @@ def formal_provenance() -> dict[str, bool]:
         "uses_test_parser_for_edit_selection": False,
         "uses_test_masks_for_metrics": True,
         "shared_rasterizer_across_methods": True,
-        "shared_edit_parameters_across_methods": True,
+        "shared_task_and_edit_color_across_methods": True,
+        "matched_retention_target_across_methods": True,
+        "identical_edit_strength_across_methods": False,
     }
 
 
