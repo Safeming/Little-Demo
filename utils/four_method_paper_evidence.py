@@ -125,6 +125,9 @@ def aggregate_frame(rows: Iterable[Mapping]) -> dict:
     target_activation = float(sum(float(row["target_activation"]) for row in rows))
     outer_activation = float(sum(float(row["outer_activation"]) for row in rows))
     actionable = float(sum(float(row["actionable_outer_activation"]) for row in rows))
+    reference_target = float(
+        sum(float(row.get("reference_target_activation", row["target_activation"])) for row in rows)
+    )
     valid = [row for row in rows if not _as_bool(row.get("target_empty", False))]
     if not valid:
         raise ValueError("frame contains no valid target parts")
@@ -136,8 +139,12 @@ def aggregate_frame(rows: Iterable[Mapping]) -> dict:
         "target_activation": target_activation,
         "outer_activation": outer_activation,
         "actionable_outer_activation": actionable,
-        "raw_leakage": _safe_ratio(outer_activation, target_activation),
-        "actionable_leakage": _safe_ratio(actionable, target_activation),
+        "reference_target_activation": reference_target,
+        "view_retention": _safe_ratio(target_activation, reference_target),
+        "raw_leakage": _safe_ratio(outer_activation, reference_target),
+        "actionable_leakage": _safe_ratio(actionable, reference_target),
+        "raw_leakage_ratio": _safe_ratio(outer_activation, target_activation),
+        "actionable_leakage_ratio": _safe_ratio(actionable, target_activation),
         "macro_miou": float(iou.mean()),
         "mean_boundary_f1": float(boundary.mean()),
         "valid_part_count": int(len(valid)),
