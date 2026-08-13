@@ -54,7 +54,7 @@ def _native_launch_record(args, release, dependencies) -> dict:
             missing_inputs.append(name)
     unavailable = [name for name, value in dependencies.items() if not value["available"]]
     missing_local = release["declared_missing_local_modules"]
-    blockers = [*missing_inputs, *missing_local, *unavailable]
+    blockers = list(dict.fromkeys([*missing_inputs, *missing_local, *unavailable]))
     first = blockers[0] if blockers else "native launch not attempted by read-only audit"
     return {
         "status": "blocked",

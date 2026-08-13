@@ -11,6 +11,7 @@ def _make_release_tree(root: Path) -> Path:
     (repo / "train.py").write_text(
         "\n".join(
             [
+                "from utils.loss_utils import neighborhood_consistency_loss",
                 "pcd_path = './body_models/smpl/neutral/smpl_semantic.ply'",
                 "gaussians.frozen_labels = labels.cuda()",
                 "# lambda_semantic = C(iteration, 0.01)",
@@ -51,7 +52,7 @@ def test_scan_semantic_code_distinguishes_active_initialization_from_commented_l
     assert result["commented_semantic_loss"] is True
     assert result["active_neighborhood_consistency"] is False
     assert result["commented_neighborhood_consistency"] is True
-    assert result["evidence"]["smpl_label_initialization"] == [2]
+    assert result["evidence"]["smpl_label_initialization"] == [3]
 
 
 def test_probe_modules_records_success_and_failure(tmp_path):

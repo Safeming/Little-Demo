@@ -56,8 +56,8 @@ def scan_semantic_code(train_path: Path) -> dict:
     init_lines = _matching_lines(lines, "gaussians.frozen_labels = labels.cuda()", commented=False)
     active_semantic = _matching_lines(lines, "loss += semantic_loss", commented=False)
     commented_semantic = _matching_lines(lines, "loss += semantic_loss", commented=True)
-    active_neighborhood = _matching_lines(lines, "neighborhood_consistency_loss", commented=False)
-    commented_neighborhood = _matching_lines(lines, "neighborhood_consistency_loss", commented=True)
+    active_neighborhood = _matching_lines(lines, "loss_consistency = neighborhood_consistency_loss", commented=False)
+    commented_neighborhood = _matching_lines(lines, "loss_consistency = neighborhood_consistency_loss", commented=True)
     return {
         "train_path": str(train_path.resolve()),
         "train_sha256": _sha256(train_path),
