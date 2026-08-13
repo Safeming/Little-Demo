@@ -116,6 +116,7 @@ def test_compose_b_layout_writes_three_by_five_png_and_pdf(tmp_path: Path):
     assert pdf.stat().st_size > 0
     assert metadata["subjects"] == ["377", "386", "394"]
     assert metadata["columns"] == ["Input", "Hair / SAGA", "Hair / Ours", "Shoes / SAGA", "Shoes / Ours"]
+    assert metadata["left_margin"] >= metadata["max_row_label_width"] + 24
     with Image.open(png) as sheet:
         assert sheet.width > sheet.height
 

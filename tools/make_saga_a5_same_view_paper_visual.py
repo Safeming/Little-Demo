@@ -827,7 +827,15 @@ def compose_b_layout(
         for row in selected
     }
     tile_size = (220, 300)
-    left = 132
+    header_font = _font(17, bold=True)
+    row_font = _font(17, bold=True)
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    row_label_widths = [
+        measure.textbbox((0, 0), f"CoreView {subject}", font=row_font)[2]
+        for subject in subjects
+    ]
+    max_row_label_width = max(row_label_widths, default=0)
+    left = max(132, max_row_label_width + 24)
     top = 66
     gap = 10
     row_gap = 16
@@ -835,8 +843,6 @@ def compose_b_layout(
     height = top + len(subjects) * tile_size[1] + (len(subjects) - 1) * row_gap + 18
     sheet = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(sheet)
-    header_font = _font(17, bold=True)
-    row_font = _font(17, bold=True)
 
     for column, (label, _, _) in enumerate(COLUMNS):
         x = left + column * (tile_size[0] + gap)
@@ -883,6 +889,8 @@ def compose_b_layout(
         "png": str(output_png),
         "pdf": str(output_pdf),
         "size": [sheet.width, sheet.height],
+        "left_margin": left,
+        "max_row_label_width": max_row_label_width,
     }
 
 
