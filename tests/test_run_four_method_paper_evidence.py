@@ -33,6 +33,7 @@ def test_fixed_evaluation_queue_uses_shared_40k_and_external_raw_banks():
     assert "--raw-trained-bank \"$raw_bank\"" in text
     assert "--trained-bank \"$evidence_bank\"" in text
     assert "--projection-cache-input \"$cache\"" in text
+    assert "--record-list \"$OUTPUT_ROOT/protocol/temporal_record_list.json\"" in text
     assert "SUBJECTS=(377 386 394)" in text
     assert "strict" in text
     assert "temporal" in text

@@ -109,15 +109,21 @@ evaluate() {
   local subject="$1" frozen="$2" raw_bank="$3" asset_root="$4" output="$5" cache_mode="$6"
   local fixed_point="$7" baselines="$8"
   shift 8
-  local source checkpoint evidence_bank voting_bank cache
+  local source checkpoint evidence_bank voting_bank cache stage_root
   source="$(subject_root "$subject")"
   checkpoint="$source/base_train_40k/ckpt40000.pth"
   evidence_bank="$source/banks/voting_evidence_target_support/part_label_bank.npz"
   voting_bank="$source/banks/multiview_voting/part_label_bank.npz"
   cache="${output%/*}/projection_cache.pkl"
-  local cache_args fixed_args
+  stage_root="${output%/*}"
+  local cache_args fixed_args record_args
   if [[ "$cache_mode" == "write" ]]; then cache_args=(--projection-cache-output "$cache"); else cache_args=(--projection-cache-input "$cache"); fi
   if [[ -n "$fixed_point" ]]; then fixed_args=(--fixed-operating-point "$fixed_point" --per-view-spatial-output "$output/per_view_spatial.csv"); else fixed_args=(); fi
+  if [[ "$stage_root" == *"/temporal/evaluations/"* ]]; then
+    record_args=(--record-list "$OUTPUT_ROOT/protocol/temporal_record_list.json")
+  else
+    record_args=()
+  fi
   # shellcheck disable=SC2086
   env CUDA_VISIBLE_DEVICES=0 BODY_MODELS_ROOT="$PAPER_ROOT/body_models" "$PYTHON_BIN" \
     "$CODE_ROOT/tools/evaluate_semantic_editing_paper_protocol.py" \
@@ -127,7 +133,7 @@ evaluate() {
     --dataset-root "$DATASET_ROOT" --subject "CoreView_${subject}" \
     --explicit-binding-render-preset "$(preset "$subject")" --output-dir "$output" \
     --baselines $baselines --retention-reference-baseline B1 \
-    "${cache_args[@]}" "${fixed_args[@]}" "$@"
+    "${cache_args[@]}" "${fixed_args[@]}" "${record_args[@]}" "$@"
 }
 
 stage="${1:-all}"
