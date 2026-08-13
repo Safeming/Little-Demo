@@ -44,6 +44,7 @@ METRICS = (
     "macro_miou",
     "mean_boundary_f1",
 )
+TEMPORAL_SUFFIXES = ("mean", "std", "mean_abs_delta", "p95_abs_delta")
 
 
 def _as_bool(value) -> bool:
@@ -227,7 +228,12 @@ def summarize_significance(
     }
 
 
-def summarize_temporal(rows) -> dict:
+def summarize_temporal(
+    rows,
+    *,
+    bootstrap_iterations: int = 20_000,
+    bootstrap_seed: int = 20260813,
+) -> dict:
     frames = aggregate_method_frames(rows)
     windows = build_temporal_windows()
     window_lookup = {
@@ -273,7 +279,7 @@ def summarize_temporal(rows) -> dict:
             "camera_frame_count": int(sum(int(row["frame_count"]) for row in members)),
         }
         for metric in METRICS:
-            for suffix in ("mean", "std", "mean_abs_delta", "p95_abs_delta"):
+            for suffix in TEMPORAL_SUFFIXES:
                 key = f"{metric}_{suffix}"
                 output[key] = float(np.mean([float(row[key]) for row in members]))
         method_rows.append(output)
@@ -293,17 +299,75 @@ def summarize_temporal(rows) -> dict:
             "camera_frame_count": int(sum(int(row["frame_count"]) for row in members)),
         }
         for metric in METRICS:
-            for suffix in ("mean", "std", "mean_abs_delta", "p95_abs_delta"):
+            for suffix in TEMPORAL_SUFFIXES:
                 key = f"{metric}_{suffix}"
                 values = np.asarray([float(row[key]) for row in members], dtype=np.float64)
                 output[key] = float(np.mean(values))
                 output[f"{key}_across_window_std"] = float(np.std(values))
         main_table.append(output)
+    comparisons = []
+    by_method_window = {
+        (row["method"], row["subject"], int(row["camera"]), int(row["anchor"])): row
+        for row in window_rows
+    }
+    for comparator in METHOD_ORDER:
+        if comparator == "a5":
+            continue
+        paired = []
+        for row in window_rows:
+            if row["method"] != comparator or not row["target_retention_feasible"]:
+                continue
+            ours = by_method_window.get(
+                ("a5", row["subject"], int(row["camera"]), int(row["anchor"]))
+            )
+            if ours is not None and ours["target_retention_feasible"]:
+                paired.append((ours, row))
+        if not paired:
+            continue
+        for metric in METRICS:
+            for suffix in TEMPORAL_SUFFIXES:
+                key = f"{metric}_{suffix}"
+                difference_rows = [
+                    {
+                        "subject": ours["subject"],
+                        "camera": ours["camera"],
+                        "frame": ours["anchor"],
+                        "difference": float(ours[key]) - float(external[key]),
+                    }
+                    for ours, external in paired
+                ]
+                bootstrap = hierarchical_bootstrap_paired(
+                    difference_rows,
+                    value_key="difference",
+                    iterations=bootstrap_iterations,
+                    seed=bootstrap_seed,
+                )
+                comparisons.append(
+                    {
+                        "method": "a5",
+                        "comparison_method": comparator,
+                        "metric": key,
+                        "ours_estimate": float(
+                            np.mean([float(ours[key]) for ours, _ in paired])
+                        ),
+                        "comparison_estimate": float(
+                            np.mean([float(external[key]) for _, external in paired])
+                        ),
+                        "absolute_difference": bootstrap["estimate"],
+                        "ci_low": bootstrap["ci_low"],
+                        "ci_high": bootstrap["ci_high"],
+                        "subject_count": bootstrap["subject_count"],
+                        "window_count": len(paired),
+                        "bootstrap_iterations": bootstrap["iterations"],
+                        "bootstrap_seed": bootstrap["seed"],
+                    }
+                )
     return {
         "per_frame": frames,
         "windows": window_rows,
         "methods": method_rows,
         "main_table": main_table,
+        "comparisons": comparisons,
     }
 
 
@@ -478,6 +542,7 @@ def write_temporal(output: Path, result: dict) -> None:
     _write_csv(output / "per_window.csv", result["windows"])
     _write_csv(output / "temporal_table.csv", result["methods"])
     _write_csv(output / "main_table.csv", result["main_table"])
+    _write_csv(output / "comparisons.csv", result["comparisons"])
     (output / "main_table.md").write_text(
         _format_temporal_markdown(result["main_table"]), encoding="utf-8"
     )
@@ -647,6 +712,8 @@ def parse_args(argv=None):
     temporal = subparsers.add_parser("temporal")
     temporal.add_argument("--input", required=True, type=Path)
     temporal.add_argument("--output", required=True, type=Path)
+    temporal.add_argument("--iterations", type=int, default=20_000)
+    temporal.add_argument("--seed", type=int, default=20260813)
     concat = subparsers.add_parser("concat")
     concat.add_argument("--input", action="append", required=True, type=Path)
     concat.add_argument("--output", required=True, type=Path)
@@ -666,7 +733,14 @@ def main(argv=None) -> int:
         )
     elif args.command == "temporal":
         rows = _load_csv(args.input)
-        write_temporal(args.output, summarize_temporal(rows))
+        write_temporal(
+            args.output,
+            summarize_temporal(
+                rows,
+                bootstrap_iterations=args.iterations,
+                bootstrap_seed=args.seed,
+            ),
+        )
     elif args.command == "concat":
         concat_csv(args.input, args.output)
     elif args.command == "qualitative":

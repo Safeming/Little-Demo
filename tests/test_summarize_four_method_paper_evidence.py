@@ -89,7 +89,7 @@ def test_temporal_summary_reports_nine_windows_per_subject_method():
                         }
                     )
 
-    result = summarize_temporal(rows)
+    result = summarize_temporal(rows, bootstrap_iterations=200, bootstrap_seed=11)
 
     assert len(result["per_frame"]) == 378
     assert len(result["windows"]) == 18
@@ -98,6 +98,16 @@ def test_temporal_summary_reports_nine_windows_per_subject_method():
     assert all(row["camera_frame_count"] == 189 for row in result["methods"])
     assert len(result["main_table"]) == 2
     assert all(row["window_count"] == 9 for row in result["main_table"])
+    comparisons = {
+        row["comparison_method"]: row
+        for row in result["comparisons"]
+        if row["metric"] == "actionable_leakage_mean_abs_delta"
+    }
+    assert comparisons["saga"]["window_count"] == 9
+    assert comparisons["saga"]["subject_count"] == 1
+    assert comparisons["saga"]["bootstrap_iterations"] == 200
+    assert "ci_low" in comparisons["saga"]
+    assert "ci_high" in comparisons["saga"]
 
 
 def test_compose_part_layout_uses_confirmed_three_by_five_order(tmp_path):
@@ -226,7 +236,19 @@ def test_temporal_cli_writes_paper_tables_and_curves(tmp_path):
         writer.writerows(rows)
 
     output = tmp_path / "temporal"
-    assert main(["temporal", "--input", str(source), "--output", str(output)]) == 0
+    assert main(
+        [
+            "temporal",
+            "--input",
+            str(source),
+            "--output",
+            str(output),
+            "--iterations",
+            "100",
+            "--seed",
+            "5",
+        ]
+    ) == 0
     for filename in (
         "temporal_table.csv",
         "main_table.csv",
