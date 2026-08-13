@@ -114,6 +114,7 @@ evaluate() {
   checkpoint="$source/base_train_40k/ckpt40000.pth"
   evidence_bank="$source/banks/voting_evidence_target_support/part_label_bank.npz"
   voting_bank="$source/banks/multiview_voting/part_label_bank.npz"
+  config="$PAPER_ROOT/exp/external/sggs_released_code_canonical_three_subject_20260813_formal/CoreView_${subject}/evaluation/checkpoint_compat_config.yaml"
   cache="${output%/*}/projection_cache.pkl"
   stage_root="${output%/*}"
   local cache_args fixed_args record_args
@@ -129,7 +130,7 @@ evaluate() {
     "$CODE_ROOT/tools/evaluate_semantic_editing_paper_protocol.py" \
     --protocol "$(protocol_path "$subject")" --protocol-split test --frozen-config "$frozen" \
     --raw-trained-bank "$raw_bank" --trained-bank "$evidence_bank" --voting-bank "$voting_bank" \
-    --checkpoint "$checkpoint" --asset-root "$asset_root" --config "$source/base_train_40k/.hydra/config.yaml" \
+    --checkpoint "$checkpoint" --asset-root "$asset_root" --config "$config" \
     --dataset-root "$DATASET_ROOT" --subject "CoreView_${subject}" \
     --explicit-binding-render-preset "$(preset "$subject")" --output-dir "$output" \
     --baselines $baselines --retention-reference-baseline B1 \

@@ -27,6 +27,7 @@ def test_fixed_evaluation_queue_uses_shared_40k_and_external_raw_banks():
     text = path.read_text(encoding="utf-8")
 
     assert "base_train_40k/ckpt40000.pth" in text
+    assert "checkpoint_compat_config.yaml" in text
     assert "a5_shared40k_frozen.json" in text
     assert 'external_bank="$(external_root "$method")' in text
     assert 'evaluate "$subject" "$(external_frozen "$method" "$subject")" "$external_bank"' in text
@@ -46,6 +47,7 @@ def test_qualitative_queue_uses_all_four_methods_and_nine_views():
     assert "METHODS=(saga gaussian_grouping sggs a5)" in text
     assert "VIEWS=(" in text
     assert "c22_f000420" in text
+    assert "checkpoint_compat_config.yaml" in text
     assert "--external-bank gaussian_grouping=" in text
     assert "--external-bank sggs=" in text
     assert "--method-part-strengths" in text

@@ -58,7 +58,7 @@ for subject in "${SUBJECTS[@]}"; do
       --method-freeze "$PAPER_ROOT/configs/semantic/frozen_a5_main_method_v1.json" \
       --checkpoint "$source/base_train_40k/ckpt40000.pth" \
       --asset-root "$source/assets/test/test-view/semantic_editable_assets" \
-      --config "$source/base_train_40k/.hydra/config.yaml" \
+      --config "$PAPER_ROOT/exp/external/sggs_released_code_canonical_three_subject_20260813_formal/CoreView_${subject}/evaluation/checkpoint_compat_config.yaml" \
       --dataset-root "$PAPER_ROOT/data/ZJUMoCap" \
       --output-dir "$output" --views "${VIEWS[@]}" --methods "${METHODS[@]}" \
       --tasks recolor --parts hair shoes --method-part-strengths "$strengths" \
