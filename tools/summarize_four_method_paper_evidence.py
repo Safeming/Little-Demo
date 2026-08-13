@@ -701,6 +701,113 @@ def write_qualitative(manifest: Path, output: Path) -> dict:
     return result
 
 
+def _finite_row_metrics(rows, fields) -> bool:
+    try:
+        return all(
+            np.isfinite(float(row[field]))
+            for row in rows
+            for field in fields
+            if field in row and str(row[field]) != ""
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def verify_outputs(
+    output_root: Path | str,
+    *,
+    require_figures: bool = True,
+    require_summaries: bool = True,
+) -> dict:
+    output_root = Path(output_root)
+    errors = []
+    checks = {}
+    strict_path = output_root / "significance/per_view_long.csv"
+    temporal_path = output_root / "temporal/per_frame_long.csv"
+    strict = _load_csv(strict_path) if strict_path.is_file() else []
+    temporal = _load_csv(temporal_path) if temporal_path.is_file() else []
+    if not strict:
+        errors.append("missing strict per-view long table")
+    if not temporal:
+        errors.append("missing temporal long table")
+    strict_counts = {}
+    temporal_counts = {}
+    for method in METHOD_ORDER:
+        strict_keys = {
+            (row["subject"], row["camera"], row["frame"])
+            for row in strict
+            if row.get("method") == method
+        }
+        temporal_keys = {
+            (row["subject"], row["camera"], row["frame"])
+            for row in temporal
+            if row.get("method") == method
+        }
+        strict_counts[method] = len(strict_keys)
+        temporal_counts[method] = len(temporal_keys)
+        if strict and len(strict_keys) != 27:
+            errors.append(f"{method} strict camera-frame count {len(strict_keys)} != 27")
+        if temporal and len(temporal_keys) != 567:
+            errors.append(f"{method} temporal camera-frame count {len(temporal_keys)} != 567")
+    checks["strict_camera_frames_per_method"] = strict_counts
+    checks["temporal_camera_frames_per_method"] = temporal_counts
+    if not _finite_row_metrics(
+        strict + temporal,
+        ("actionable_leakage", "raw_leakage", "iou", "boundary_f1"),
+    ):
+        errors.append("long tables contain non-finite metrics")
+    for rows, name in ((strict, "strict"), (temporal, "temporal")):
+        for row in rows:
+            is_exception = (
+                row.get("subject") == "377"
+                and row.get("method") == "gaussian_grouping"
+            )
+            expected = 0.4 if is_exception else 0.6
+            feasible = _as_bool(row.get("target_retention_feasible", True))
+            if not np.isclose(float(row.get("retention", -1.0)), expected):
+                errors.append(f"{name} retention mismatch for {row.get('subject')}/{row.get('method')}")
+                break
+            if feasible == is_exception:
+                errors.append(f"{name} feasibility mismatch for {row.get('subject')}/{row.get('method')}")
+                break
+    if require_summaries:
+        significance_path = output_root / "significance/significance.json"
+        temporal_summary_path = output_root / "temporal/temporal_summary.json"
+        if not significance_path.is_file():
+            errors.append("missing significance summary")
+        else:
+            significance = json.loads(significance_path.read_text(encoding="utf-8"))
+            if int(significance.get("bootstrap_iterations", 0)) != 20_000:
+                errors.append("significance bootstrap iterations != 20000")
+            if int(significance.get("bootstrap_seed", -1)) != 20260813:
+                errors.append("significance bootstrap seed mismatch")
+            for row in significance.get("comparisons", []):
+                if int(row.get("permutation_count", 0)) <= 0:
+                    errors.append("significance permutation count missing")
+                    break
+        if not temporal_summary_path.is_file():
+            errors.append("missing temporal summary")
+        else:
+            temporal_summary = json.loads(temporal_summary_path.read_text(encoding="utf-8"))
+            windows = temporal_summary.get("windows", [])
+            per_method = {
+                method: sum(1 for row in windows if row.get("method") == method)
+                for method in METHOD_ORDER
+            }
+            checks["temporal_windows_per_method"] = per_method
+            for method, count in per_method.items():
+                if count != 27:
+                    errors.append(f"{method} temporal window count {count} != 27")
+    if require_figures:
+        for set_name in ("fixed_main", "objectively_selected"):
+            for part in ("hair", "shoes"):
+                for suffix in ("png", "pdf"):
+                    path = output_root / "qualitative" / set_name / f"{part}_three_subject_five_method.{suffix}"
+                    if not path.is_file() or path.stat().st_size <= 0:
+                        errors.append(f"missing qualitative figure: {path}")
+    return {"status": "passed" if not errors else "failed", "errors": errors, "checks": checks}
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Summarize frozen four-method paper evidence.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -720,6 +827,8 @@ def parse_args(argv=None):
     qualitative = subparsers.add_parser("qualitative")
     qualitative.add_argument("--manifest", required=True, type=Path)
     qualitative.add_argument("--output", required=True, type=Path)
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--output-root", required=True, type=Path)
     return parser.parse_args(argv)
 
 
@@ -745,6 +854,13 @@ def main(argv=None) -> int:
         concat_csv(args.input, args.output)
     elif args.command == "qualitative":
         write_qualitative(args.manifest, args.output)
+    elif args.command == "verify":
+        result = verify_outputs(args.output_root)
+        path = args.output_root / "integrity_report.json"
+        path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        if result["errors"]:
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 2
     else:
         raise ValueError(f"unsupported command: {args.command}")
     return 0

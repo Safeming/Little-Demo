@@ -374,3 +374,65 @@ def test_write_method_strengths_uses_each_frozen_operating_point(tmp_path):
     assert result["saga"] == {"hair": 0.1, "shoes": 0.1}
     assert result["a5"] == {"hair": 0.4, "shoes": 0.4}
     assert json.loads(output.read_text(encoding="utf-8")) == result
+
+
+def test_verify_outputs_rejects_missing_temporal_method(tmp_path):
+    from tools.summarize_four_method_paper_evidence import verify_outputs
+
+    root = tmp_path
+    (root / "significance").mkdir()
+    (root / "temporal").mkdir()
+    strict = []
+    temporal = []
+    for subject in ("377", "386", "394"):
+        for method in ("saga", "gaussian_grouping", "sggs", "a5"):
+            for camera in (21, 22, 23):
+                for frame in (180, 420, 540):
+                    strict.append(
+                        {
+                            "subject": subject,
+                            "method": method,
+                            "camera": camera,
+                            "frame": frame,
+                            "part": "hair",
+                            "actionable_leakage": 0.1,
+                            "raw_leakage": 0.2,
+                            "iou": 0.7,
+                            "boundary_f1": 0.6,
+                            "retention": 0.4 if subject == "377" and method == "gaussian_grouping" else 0.6,
+                            "target_retention_feasible": not (subject == "377" and method == "gaussian_grouping"),
+                        }
+                    )
+            if method == "sggs" and subject == "394":
+                continue
+            for camera in (21, 22, 23):
+                for anchor in (180, 420, 540):
+                    for frame in range(anchor - 10, anchor + 11):
+                        temporal.append(
+                            {
+                                "subject": subject,
+                                "method": method,
+                                "camera": camera,
+                                "frame": frame,
+                                "part": "hair",
+                                "actionable_leakage": 0.1,
+                                "raw_leakage": 0.2,
+                                "iou": 0.7,
+                                "boundary_f1": 0.6,
+                                "retention": 0.4 if subject == "377" and method == "gaussian_grouping" else 0.6,
+                                "target_retention_feasible": not (subject == "377" and method == "gaussian_grouping"),
+                            }
+                        )
+    for path, rows in (
+        (root / "significance/per_view_long.csv", strict),
+        (root / "temporal/per_frame_long.csv", temporal),
+    ):
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
+    report = verify_outputs(root, require_figures=False, require_summaries=False)
+
+    assert any("sggs temporal camera-frame count" in error for error in report["errors"])
+    assert report["checks"]["strict_camera_frames_per_method"]["a5"] == 27
