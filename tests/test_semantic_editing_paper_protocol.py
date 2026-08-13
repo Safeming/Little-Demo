@@ -672,3 +672,127 @@ def test_parser_accepts_frozen_main_method_contract(tmp_path):
     assert args.method_freeze == Path(
         "configs/semantic/frozen_a5_main_method_v1.json"
     )
+
+
+def test_explicit_record_selection_is_exact_and_preserves_requested_order():
+    from tools.evaluate_semantic_editing_paper_protocol import select_explicit_records
+
+    records = [
+        {"image_name": "c21_f00180", "cam_id": 21, "frame_id": 180},
+        {"image_name": "c22_f00180", "cam_id": 22, "frame_id": 180},
+        {"image_name": "c23_f00180", "cam_id": 23, "frame_id": 180},
+    ]
+
+    selected = select_explicit_records(
+        records,
+        ["c23_f00180", "c21_f00180"],
+    )
+
+    assert [row["image_name"] for row in selected] == ["c23_f00180", "c21_f00180"]
+    with pytest.raises(ValueError, match="missing explicit records"):
+        select_explicit_records(records, ["c24_f00180"])
+    with pytest.raises(ValueError, match="duplicate explicit record"):
+        select_explicit_records(records, ["c21_f00180", "c21_f00180"])
+
+
+def test_fixed_operating_point_rows_scale_activation_and_use_reference_burden():
+    from tools.evaluate_semantic_editing_paper_protocol import build_fixed_operating_point_rows
+
+    spatial_rows = [
+        {
+            "baseline": "B1",
+            "view": "c21_f00180",
+            "part": "hair",
+            "target_activation": 10.0,
+            "outer_activation": 4.0,
+            "boundary_activation": 2.0,
+            "allowed_adjacent_activation": 1.0,
+            "actionable_outer_activation": 3.0,
+            "selected_count": 10,
+            "observed_footprint_count": 9,
+        },
+        {
+            "baseline": "A5",
+            "view": "c21_f00180",
+            "part": "hair",
+            "target_activation": 8.0,
+            "outer_activation": 2.0,
+            "boundary_activation": 1.5,
+            "allowed_adjacent_activation": 1.0,
+            "actionable_outer_activation": 1.0,
+            "selected_count": 7,
+            "observed_footprint_count": 7,
+        },
+    ]
+    quality_rows = [
+        {
+            "baseline": "A5",
+            "view": "c21_f00180",
+            "part": "hair",
+            "iou": 0.7,
+            "boundary_f1": 0.8,
+            "target_empty": False,
+        }
+    ]
+
+    row = build_fixed_operating_point_rows(
+        spatial_rows=spatial_rows,
+        quality_rows=quality_rows,
+        operating_point={
+            "method": "Ours",
+            "baseline": "A5",
+            "reference_baseline": "B1",
+            "threshold": 0.2,
+            "edit_strength": 0.75,
+            "retention": 0.6,
+            "target_retention_feasible": True,
+        },
+    )[0]
+
+    assert row["target_activation"] == pytest.approx(6.0)
+    assert row["outer_activation"] == pytest.approx(1.5)
+    assert row["actionable_outer_activation"] == pytest.approx(0.75)
+    assert row["raw_leakage_ratio"] == pytest.approx(0.25)
+    assert row["actionable_leakage_ratio"] == pytest.approx(0.125)
+    assert row["raw_leakage"] == pytest.approx(0.15)
+    assert row["actionable_leakage"] == pytest.approx(0.075)
+    assert row["view_retention"] == pytest.approx(0.6)
+    assert row["iou"] == pytest.approx(0.7)
+    assert row["boundary_f1"] == pytest.approx(0.8)
+
+
+def test_parser_accepts_fixed_operating_point_export_options(tmp_path):
+    from tools.evaluate_semantic_editing_paper_protocol import parse_args
+
+    args = parse_args(
+        [
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--protocol-split",
+            "test",
+            "--frozen-config",
+            str(tmp_path / "frozen.json"),
+            "--raw-trained-bank",
+            str(tmp_path / "raw.npz"),
+            "--trained-bank",
+            str(tmp_path / "evidence.npz"),
+            "--voting-bank",
+            str(tmp_path / "voting.npz"),
+            "--checkpoint",
+            str(tmp_path / "ckpt.pth"),
+            "--asset-root",
+            str(tmp_path / "assets"),
+            "--output-dir",
+            str(tmp_path / "output"),
+            "--record-list",
+            str(tmp_path / "records.json"),
+            "--fixed-operating-point",
+            str(tmp_path / "operating_point.json"),
+            "--per-view-spatial-output",
+            str(tmp_path / "rows.csv"),
+        ]
+    )
+
+    assert args.record_list == tmp_path / "records.json"
+    assert args.fixed_operating_point == tmp_path / "operating_point.json"
+    assert args.per_view_spatial_output == tmp_path / "rows.csv"

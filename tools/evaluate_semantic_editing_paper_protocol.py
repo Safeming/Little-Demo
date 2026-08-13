@@ -88,6 +88,116 @@ HARD_LABEL_METHODS = frozenset(("B1", "B2", "A0"))
 DEFAULT_EDIT_STRENGTH_GRID = (0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
 
 
+def select_explicit_records(records, requested_names) -> list[dict]:
+    names = [str(value) for value in requested_names]
+    if not names:
+        raise ValueError("explicit record list must be non-empty")
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate explicit record name")
+    by_name = {str(record.get("image_name", "")): record for record in records}
+    missing = [name for name in names if name not in by_name]
+    if missing:
+        raise ValueError(f"missing explicit records: {', '.join(missing[:8])}")
+    return [by_name[name] for name in names]
+
+
+def load_explicit_record_names(path: Path | str) -> list[str]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload.get("selected_record_names", payload.get("records"))
+    if not isinstance(payload, list) or not all(isinstance(value, str) for value in payload):
+        raise ValueError("record list must be a JSON string list")
+    return [str(value) for value in payload]
+
+
+def build_fixed_operating_point_rows(
+    *,
+    spatial_rows: list[dict],
+    quality_rows: list[dict],
+    operating_point: dict,
+) -> list[dict]:
+    baseline = str(operating_point["baseline"])
+    reference_baseline = str(operating_point.get("reference_baseline", "B1"))
+    strength = float(operating_point["edit_strength"])
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("fixed operating point edit_strength must be within [0, 1]")
+    quality = {
+        (str(row["baseline"]), str(row["view"]), str(row["part"])): row
+        for row in quality_rows
+    }
+    references = {
+        (str(row["view"]), str(row["part"])): row
+        for row in spatial_rows
+        if str(row["baseline"]) == reference_baseline
+    }
+    rows = []
+    for source in spatial_rows:
+        if str(source["baseline"]) != baseline:
+            continue
+        key = (str(source["view"]), str(source["part"]))
+        if key not in references:
+            raise ValueError(
+                f"missing {reference_baseline} reference spatial row for {key[0]}/{key[1]}"
+            )
+        reference_target = float(references[key]["target_activation"])
+        scaled = {
+            field: float(source.get(field, 0.0)) * strength
+            for field in (
+                "target_activation",
+                "outer_activation",
+                "boundary_activation",
+                "allowed_adjacent_activation",
+                "actionable_outer_activation",
+                "selection_activation",
+            )
+        }
+        target_activation = scaled["target_activation"]
+        quality_row = quality.get((baseline, key[0], key[1]), {})
+        rows.append(
+            {
+                "method": str(operating_point["method"]),
+                "baseline": baseline,
+                "reference_baseline": reference_baseline,
+                "subject": str(operating_point.get("subject", "")),
+                "view": key[0],
+                "camera": int(source.get("camera", source.get("cam_id", -1))),
+                "frame": int(source.get("frame", source.get("frame_id", -1))),
+                "part": key[1],
+                "threshold": float(operating_point["threshold"]),
+                "edit_strength": strength,
+                "retention": float(operating_point["retention"]),
+                "target_retention_feasible": bool(
+                    operating_point.get("target_retention_feasible", True)
+                ),
+                "reference_target_activation": reference_target,
+                **scaled,
+                "selected_count": int(source.get("selected_count", 0)),
+                "observed_footprint_count": int(
+                    source.get("observed_footprint_count", 0)
+                ),
+                "view_retention": _safe_ratio(target_activation, reference_target),
+                "raw_leakage_ratio": _safe_ratio(
+                    scaled["outer_activation"], target_activation
+                ),
+                "actionable_leakage_ratio": _safe_ratio(
+                    scaled["actionable_outer_activation"], target_activation
+                ),
+                "raw_leakage": _safe_ratio(
+                    scaled["outer_activation"], reference_target
+                ),
+                "actionable_leakage": _safe_ratio(
+                    scaled["actionable_outer_activation"], reference_target
+                ),
+                "iou": float(quality_row.get("iou", 0.0)),
+                "boundary_f1": float(quality_row.get("boundary_f1", 0.0)),
+                "target_empty": bool(quality_row.get("target_empty", False)),
+            }
+        )
+    if not rows:
+        raise ValueError(f"fixed operating point baseline {baseline} has no spatial rows")
+    return rows
+
+
 def _one_hot_labels(labels, *, part_index: int) -> np.ndarray:
     values = np.asarray(labels, dtype=np.int16).reshape(-1)
     return (values == int(part_index)).astype(np.float32)
@@ -533,6 +643,7 @@ def write_baseline_reports(output_dir: Path | str, result: dict) -> None:
         ("baseline_summary.csv", "baseline_summary"),
         ("per_part_metrics.csv", "per_part"),
         ("per_view_metrics.csv", "per_view"),
+        ("per_view_spatial.csv", "per_view_spatial"),
         ("leakage_retention_curve.csv", "curve"),
         ("matched_retention.csv", "matched_retention"),
         ("support_diagnostics.csv", "support_diagnostics"),
@@ -981,7 +1092,14 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         raise ValueError("paper evaluator only accepts validation or test protocol splits")
     asset_root = args.asset_root.resolve()
     checkpoint = args.checkpoint.resolve()
-    records = select_protocol_records(_load_view_records(asset_root), protocol, args.protocol_split)
+    all_records = _load_view_records(asset_root)
+    if getattr(args, "record_list", None) is not None:
+        records = select_explicit_records(
+            all_records,
+            load_explicit_record_names(args.record_list),
+        )
+    else:
+        records = select_protocol_records(all_records, protocol, args.protocol_split)
     checkpoint_fp = file_fingerprint(checkpoint)
     bank_fp = file_fingerprint(args.trained_bank)
     frozen = None
@@ -1101,6 +1219,8 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
             caches.append(
                 {
                     "view": str(record["image_name"]),
+                    "camera": int(record["cam_id"]),
+                    "frame": int(record["frame_id"]),
                     "xy": xy.detach().float().cpu().numpy(),
                     "projected": projected.detach().bool().cpu().numpy(),
                     "radii": render_pkg["radii"].detach().float().cpu().numpy().reshape(-1)[:point_count],
@@ -1170,10 +1290,22 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                         {
                             "baseline": baseline,
                             "view": cache["view"],
+                            "camera": cache["camera"],
+                            "frame": cache["frame"],
                             "part": part,
+                            "selected_count": footprint["selected_count"],
+                            "observed_footprint_count": footprint[
+                                "observed_footprint_count"
+                            ],
                             "target_activation": footprint["target_activation"],
                             "outer_activation": footprint["outer_activation"],
                             "boundary_activation": footprint["boundary_activation"],
+                            "allowed_adjacent_activation": footprint[
+                                "allowed_adjacent_activation"
+                            ],
+                            "actionable_outer_activation": footprint[
+                                "actionable_outer_activation"
+                            ],
                             "selection_activation": (
                                 footprint["target_activation"]
                                 + footprint["outer_activation"]
@@ -1185,6 +1317,8 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                     {
                         "baseline": baseline,
                         "view": cache["view"],
+                        "camera": cache["camera"],
+                        "frame": cache["frame"],
                         "part": part,
                         "oracle": bool(metadata["oracle"]),
                         **binary_stats,
@@ -1319,6 +1453,41 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                             "actionable_support_activation": float(support_row["actionable_support_activation"]),
                         }
                     )
+    per_view_spatial = []
+    fixed_operating_point = None
+    if getattr(args, "fixed_operating_point", None) is not None:
+        fixed_operating_point = json.loads(
+            args.fixed_operating_point.read_text(encoding="utf-8")
+        )
+        baseline = str(fixed_operating_point.get("baseline", ""))
+        reference_baseline = str(
+            fixed_operating_point.get("reference_baseline", "B1")
+        )
+        missing_baselines = [
+            value
+            for value in (baseline, reference_baseline)
+            if value not in args.baselines
+        ]
+        if missing_baselines:
+            raise ValueError(
+                "fixed operating point requires evaluated baselines: "
+                + ", ".join(missing_baselines)
+            )
+        expected_threshold = 0.5 if baseline in HARD_LABEL_METHODS else fixed_threshold
+        if not np.isclose(
+            float(fixed_operating_point.get("threshold", -1.0)),
+            expected_threshold,
+        ):
+            raise ValueError(
+                "fixed operating point threshold does not match frozen evaluator threshold: "
+                f"expected {expected_threshold}"
+            )
+        per_view_spatial = build_fixed_operating_point_rows(
+            spatial_rows=spatial_guard_source,
+            quality_rows=per_view,
+            operating_point=fixed_operating_point,
+        )
+
     summary = {
         "protocol_name": protocol["protocol_name"],
         "protocol_split": args.protocol_split,
@@ -1336,6 +1505,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         ),
         "baseline_count": len(args.baselines),
         "processed_views": len(records),
+        "record_selection_mode": (
+            "explicit_list" if getattr(args, "record_list", None) is not None else "protocol_split"
+        ),
         "fixed_soft_threshold": fixed_threshold,
         "fixed_support_threshold": fixed_support_threshold,
         "fixed_boundary_radius": boundary_radius,
@@ -1361,19 +1533,47 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "common_support_across_methods": True,
         **a7_provenance,
     }
-    write_protocol_provenance(
-        args.output_dir,
-        protocol,
-        records,
-        split_name=args.protocol_split,
-        source_asset_root=asset_root,
-        frozen_config=frozen,
-    )
+    if getattr(args, "record_list", None) is None:
+        write_protocol_provenance(
+            args.output_dir,
+            protocol,
+            records,
+            split_name=args.protocol_split,
+            source_asset_root=asset_root,
+            frozen_config=frozen,
+        )
+    else:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        provenance = {
+            "protocol_name": protocol["protocol_name"],
+            "subject": protocol["subject"],
+            "split_name": "explicit_list",
+            "frozen_protocol_split": args.protocol_split,
+            "source_asset_root": str(asset_root),
+            "record_list": str(args.record_list.resolve()),
+            "protocol_fingerprint": protocol_fingerprint(protocol),
+            "record_fingerprint": record_fingerprint(records),
+            "selected_record_names": [str(row["image_name"]) for row in records],
+            "selected_records": [
+                {
+                    "image_name": str(row["image_name"]),
+                    "cam_id": int(row["cam_id"]),
+                    "frame_id": int(row["frame_id"]),
+                }
+                for row in records
+            ],
+            "frozen_config": frozen,
+        }
+        (args.output_dir / "protocol_provenance.json").write_text(
+            json.dumps(provenance, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
     return {
         "summary": summary,
         "baseline_summary": baseline_summary,
         "per_part": per_part,
         "per_view": per_view,
+        "per_view_spatial": per_view_spatial,
         "curve": curve_rows,
         "matched_retention": matched,
         "spatial_guard_metrics": spatial_guard_metrics,
@@ -1388,6 +1588,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--protocol", required=True, type=Path)
     parser.add_argument("--protocol-split", required=True, choices=("validation", "test"))
     parser.add_argument("--frozen-config", type=Path, default=None)
+    parser.add_argument("--record-list", type=Path, default=None)
+    parser.add_argument("--fixed-operating-point", type=Path, default=None)
+    parser.add_argument("--per-view-spatial-output", type=Path, default=None)
     parser.add_argument("--soft-threshold", type=float, default=None)
     parser.add_argument("--support-threshold", type=float, default=None)
     parser.add_argument("--boundary-radius", type=int, default=None)
@@ -1422,6 +1625,9 @@ def main() -> int:
     args = parse_args()
     result = evaluate_scene(args)
     write_baseline_reports(args.output_dir, result)
+    if args.per_view_spatial_output is not None:
+        args.per_view_spatial_output.parent.mkdir(parents=True, exist_ok=True)
+        _write_csv(args.per_view_spatial_output, list(result.get("per_view_spatial", [])))
     print(args.output_dir / "summary.json")
     return 0
 

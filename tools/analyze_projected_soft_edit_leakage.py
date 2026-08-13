@@ -58,6 +58,84 @@ def make_boundary_band(mask, radius: int = 2, threshold: float = 0.5) -> np.ndar
     return (dilated ^ eroded).astype(bool, copy=False)
 
 
+def upper_torso_x_bounds(mask: np.ndarray, *, mask_threshold: float, width: int) -> tuple[int, int]:
+    mask = np.asarray(mask, dtype=np.float32)
+    width = max(1, int(width))
+    if mask.ndim != 2:
+        return 0, width - 1
+    active = mask >= float(mask_threshold)
+    ys, xs = np.nonzero(active)
+    if xs.size == 0:
+        return 0, width - 1
+    y_min = int(np.min(ys))
+    y_max = int(np.max(ys))
+    span = max(1, y_max - y_min + 1)
+    mid_y_min = y_min + int(round(span * 0.30))
+    mid_y_max = y_min + int(round(span * 0.80))
+    yy = np.arange(mask.shape[0], dtype=np.int64)[:, None]
+    mid = active & (yy >= mid_y_min) & (yy <= mid_y_max)
+    _mid_ys, mid_xs = np.nonzero(mid)
+    usable_xs = mid_xs if mid_xs.size else xs
+    return int(np.min(usable_xs)), int(np.max(usable_xs))
+
+
+def region_support_mask(
+    *,
+    part: str,
+    target_mask,
+    allowed_adjacent_masks: dict[str, np.ndarray] | None,
+    mask_threshold: float,
+    region_support_mode: str,
+) -> np.ndarray:
+    target = np.asarray(target_mask, dtype=np.float32)
+    support = np.zeros_like(target, dtype=bool)
+    modes = [
+        item.strip().lower()
+        for item in str(region_support_mode or "none").replace("+", ",").split(",")
+        if item.strip()
+    ]
+    if not modes or modes == ["none"]:
+        return support
+    for mode in modes:
+        if mode == "none":
+            continue
+        if mode == "upper_torso_skin":
+            if str(part) != "upper" or not allowed_adjacent_masks or "skin" not in allowed_adjacent_masks:
+                continue
+            skin = np.asarray(allowed_adjacent_masks["skin"], dtype=np.float32) >= float(mask_threshold)
+            if skin.shape != target.shape:
+                raise ValueError("skin support mask must match target_mask shape")
+            height, width = target.shape
+            x_min, x_max = upper_torso_x_bounds(
+                target,
+                mask_threshold=float(mask_threshold),
+                width=width,
+            )
+            _yy, xx = np.indices((height, width), dtype=np.int64)
+            support |= skin & (xx >= x_min) & (xx <= x_max)
+            continue
+        if mode == "hair_face":
+            if not allowed_adjacent_masks:
+                continue
+            neighbor = "face" if str(part) == "hair" else "hair" if str(part) == "face" else ""
+            if not neighbor or neighbor not in allowed_adjacent_masks:
+                continue
+            neighbor_mask = (
+                np.asarray(allowed_adjacent_masks[neighbor], dtype=np.float32)
+                >= float(mask_threshold)
+            )
+            if neighbor_mask.shape != target.shape:
+                raise ValueError(f"{neighbor} support mask must match target_mask shape")
+            support |= neighbor_mask & make_boundary_band(
+                target,
+                radius=1,
+                threshold=float(mask_threshold),
+            )
+            continue
+        raise ValueError(f"unsupported region_support_mode: {mode}")
+    return support
+
+
 def compute_projected_leakage_for_selection(
     *,
     part: str,
@@ -136,7 +214,10 @@ def compute_footprint_leakage_for_selection(
     footprint_radius_scale: float = 1.0,
     min_footprint_radius: int = 1,
     max_footprint_radius: int = 12,
+    boundary_radius: int = 2,
     use_soft_target: bool = False,
+    allowed_adjacent_masks: dict[str, np.ndarray] | None = None,
+    region_support_mode: str = "none",
 ) -> dict:
     xy_np = np.asarray(xy, dtype=np.float32)
     if xy_np.ndim != 2 or xy_np.shape[1] != 2:
@@ -165,8 +246,27 @@ def compute_footprint_leakage_for_selection(
     target_activation = 0.0
     outer_activation = 0.0
     boundary_activation = 0.0
+    allowed_adjacent_activation = 0.0
+    actionable_outer_activation = 0.0
     observed_count = 0
-    boundary = make_boundary_band(target, radius=2, threshold=float(mask_threshold))
+    boundary = make_boundary_band(
+        target,
+        radius=int(boundary_radius),
+        threshold=float(mask_threshold),
+    )
+    adjacent_masks = []
+    for adjacent_mask in (allowed_adjacent_masks or {}).values():
+        adjacent = np.asarray(adjacent_mask, dtype=np.float32) >= float(mask_threshold)
+        if adjacent.shape != valid.shape:
+            raise ValueError("allowed adjacent masks must match target_mask shape")
+        adjacent_masks.append(adjacent)
+    region_support = region_support_mask(
+        part=part,
+        target_mask=target_mask,
+        allowed_adjacent_masks=allowed_adjacent_masks,
+        mask_threshold=float(mask_threshold),
+        region_support_mode=str(region_support_mode),
+    )
     for point_idx in np.nonzero(active)[0]:
         x = int(px[point_idx])
         y = int(py[point_idx])
@@ -189,10 +289,30 @@ def compute_footprint_leakage_for_selection(
         else:
             target_ratio = float(np.sum(support & target[y0:y1, x0:x1])) / float(support_count)
         boundary_ratio = float(np.sum(support & boundary[y0:y1, x0:x1])) / float(support_count)
+        adjacent_ratio = 0.0
+        for adjacent in adjacent_masks:
+            adjacent_ratio = max(
+                adjacent_ratio,
+                float(np.sum(support & adjacent[y0:y1, x0:x1])) / float(support_count),
+            )
+        region_support_ratio = float(
+            np.sum(support & region_support[y0:y1, x0:x1])
+        ) / float(support_count)
+        outer_ratio = max(0.0, 1.0 - target_ratio)
+        boundary_allowed_ratio = (
+            min(outer_ratio, adjacent_ratio) if boundary_ratio > 0.0 else 0.0
+        )
+        allowed_ratio = min(
+            outer_ratio,
+            max(boundary_allowed_ratio, region_support_ratio),
+        )
+        actionable_ratio = max(0.0, outer_ratio - allowed_ratio)
         weight = float(weights[point_idx])
         target_activation += weight * target_ratio
-        outer_activation += weight * max(0.0, 1.0 - target_ratio)
+        outer_activation += weight * outer_ratio
         boundary_activation += weight * boundary_ratio
+        allowed_adjacent_activation += weight * allowed_ratio
+        actionable_outer_activation += weight * actionable_ratio
     return {
         "part": str(part),
         "mode": str(mode),
@@ -202,8 +322,18 @@ def compute_footprint_leakage_for_selection(
         "target_activation": float(target_activation),
         "outer_activation": float(outer_activation),
         "boundary_activation": float(boundary_activation),
+        "allowed_adjacent_activation": float(allowed_adjacent_activation),
+        "actionable_outer_activation": float(actionable_outer_activation),
         "leakage_ratio": _safe_ratio(outer_activation, target_activation),
         "boundary_leakage_ratio": _safe_ratio(boundary_activation, target_activation),
+        "allowed_adjacent_leakage_ratio": _safe_ratio(
+            allowed_adjacent_activation,
+            target_activation,
+        ),
+        "actionable_leakage_ratio": _safe_ratio(
+            actionable_outer_activation,
+            target_activation,
+        ),
     }
 
 
