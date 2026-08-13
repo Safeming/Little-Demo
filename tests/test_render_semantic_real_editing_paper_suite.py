@@ -68,12 +68,14 @@ def test_parse_args_accepts_saga_bank_and_method_part_strengths():
             "--output-dir", "out",
             "--methods", "saga", "a5",
             "--method-part-strengths", "strengths.json",
+            "--a5-threshold", "0.15",
         ]
     )
 
     assert args.saga_bank == Path("saga.npz")
     assert args.method_part_strengths == Path("strengths.json")
     assert args.saga_threshold == 0.5
+    assert args.a5_threshold == 0.15
     assert args.methods == ["saga", "a5"]
 
 
@@ -207,6 +209,14 @@ def test_summary_edit_strength_is_none_for_method_part_mapping():
     assert summary_edit_strength([1.0], {"saga": {"hair": 0.6}}) is None
     assert summary_edit_strength([0.6], {}) == 0.6
     assert summary_edit_strength([0.2, 0.4], {}) is None
+
+
+def test_resolve_method_threshold_uses_explicit_a5_and_saga_values():
+    from tools.render_semantic_real_editing_paper_suite import resolve_method_threshold
+
+    assert resolve_method_threshold("saga", loso_threshold=0.2, saga_threshold=0.5, a5_threshold=0.15) == 0.5
+    assert resolve_method_threshold("a5", loso_threshold=0.2, saga_threshold=0.5, a5_threshold=0.15) == 0.15
+    assert resolve_method_threshold("a5", loso_threshold=0.2, saga_threshold=0.5, a5_threshold=None) == 0.2
 
 
 @pytest.mark.parametrize(

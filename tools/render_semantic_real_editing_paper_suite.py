@@ -41,6 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--a5-bank", required=True, type=Path)
     parser.add_argument("--a7-bank", type=Path, default=None)
     parser.add_argument("--a7-contract", type=Path, default=None)
+    parser.add_argument("--a5-threshold", type=float, default=None)
     parser.add_argument("--saga-bank", type=Path, default=None)
     parser.add_argument("--saga-threshold", type=float, default=0.5)
     parser.add_argument("--loso-config", required=True, type=Path)
@@ -101,6 +102,20 @@ def summary_edit_strength(edit_strengths, method_part_strengths):
     if method_part_strengths or len(values) != 1:
         return None
     return values[0]
+
+
+def resolve_method_threshold(
+    method: str,
+    *,
+    loso_threshold: float,
+    saga_threshold: float,
+    a5_threshold: float | None,
+) -> float:
+    if str(method) == "saga":
+        return float(saga_threshold)
+    if str(method) == "a5" and a5_threshold is not None:
+        return float(a5_threshold)
+    return float(loso_threshold)
 
 
 def validate_optional_method_banks(*, methods, saga_bank, a7_bank, a7_contract) -> None:
@@ -397,10 +412,11 @@ def run_suite(args: argparse.Namespace) -> dict:
                 saga_bank=saga_bank,
                 method=method,
                 part=part,
-                threshold=(
-                    float(args.saga_threshold)
-                    if method == "saga"
-                    else float(run_config["soft_threshold"])
+                threshold=resolve_method_threshold(
+                    method,
+                    loso_threshold=float(run_config["soft_threshold"]),
+                    saga_threshold=float(args.saga_threshold),
+                    a5_threshold=args.a5_threshold,
                 ),
             )
             for method in args.methods
@@ -496,10 +512,11 @@ def run_suite(args: argparse.Namespace) -> dict:
                             "task": task,
                             "method": method,
                             "edit_strength": float(edit_strength),
-                            "soft_threshold": (
-                                float(args.saga_threshold)
-                                if method == "saga"
-                                else float(run_config["soft_threshold"])
+                            "soft_threshold": resolve_method_threshold(
+                                method,
+                                loso_threshold=float(run_config["soft_threshold"]),
+                                saga_threshold=float(args.saga_threshold),
+                                a5_threshold=args.a5_threshold,
                             ),
                             "selected_gaussian_count": int(np.sum(weights > 0.0)),
                             "edit_weight_sum": float(np.sum(weights)),
@@ -531,6 +548,11 @@ def run_suite(args: argparse.Namespace) -> dict:
         "saga_bank": str(args.saga_bank.resolve()) if args.saga_bank is not None else "",
         "saga_bank_sha256": _file_sha256(args.saga_bank) if args.saga_bank is not None else "",
         "saga_threshold": float(args.saga_threshold),
+        "a5_threshold": (
+            float(args.a5_threshold)
+            if args.a5_threshold is not None
+            else float(run_config["soft_threshold"])
+        ),
         "loso_config": str(args.loso_config.resolve()),
         "method_freeze": str(args.method_freeze.resolve()),
         "method_freeze_id": run_config["method_freeze_id"],

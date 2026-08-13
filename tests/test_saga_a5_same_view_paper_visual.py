@@ -154,30 +154,33 @@ def test_build_subject_specs_uses_joint_test_checkpoint_and_fixed_protocol(tmp_p
     ]
     assert all(str(spec["checkpoint"]).endswith("base_train_40k/ckpt40000.pth") for spec in specs)
     assert all(str(spec["saga_bank"]).endswith("train_30k/part_label_bank.npz") for spec in specs)
+    assert all(str(spec["saga_operating_points"]).endswith("evaluation/test_saga_readouts/matched_retention.csv") for spec in specs)
+    assert all(str(spec["a5_operating_points"]).endswith("main/matched_retention.csv") for spec in specs)
 
 
-def test_build_render_command_freezes_scan_protocol(tmp_path: Path):
+def test_build_render_command_freezes_final_protocol(tmp_path: Path):
     from tools.make_saga_a5_same_view_paper_visual import TEST_VIEWS, build_render_command, build_subject_specs
 
     spec = build_subject_specs(tmp_path, tmp_path / "out")[0]
     command = build_render_command(
         spec,
-        output_dir=tmp_path / "scan",
+        output_dir=tmp_path / "final",
         python_bin=Path("/env/python"),
-        methods=("voting", "saga", "a5"),
-        strengths=(0.1, 0.2, 1.0),
-        metrics_only=True,
+        methods=("saga", "a5"),
+        method_part_strengths=tmp_path / "strengths.json",
+        a5_threshold=0.15,
     )
     joined = " ".join(map(str, command))
 
     assert command[:2] == ["/env/python", "tools/render_semantic_real_editing_paper_suite.py"]
     assert "--saga-threshold 0.5" in joined
-    assert "--methods voting saga a5" in joined
+    assert "--a5-threshold 0.15" in joined
+    assert "--methods saga a5" in joined
     assert "--parts hair shoes" in joined
     assert "--tasks recolor" in joined
-    assert "--edit-strengths 0.1 0.2 1.0" in joined
+    assert "--method-part-strengths" in joined
     assert all(view in command for view in TEST_VIEWS)
-    assert "--metrics-only" in command
+    assert "--metrics-only" not in command
 
 
 def test_build_dry_run_manifest_lists_three_ordered_subjects_and_stages(tmp_path: Path):
@@ -187,9 +190,74 @@ def test_build_dry_run_manifest_lists_three_ordered_subjects_and_stages(tmp_path
     manifest = build_dry_run_manifest(specs, python_bin=Path("/env/python"))
 
     assert [item["subject"] for item in manifest] == ["377", "386", "394"]
-    assert all(item["stages"] == ["coarse_scan", "fine_scan", "final_render"] for item in manifest)
-    assert all("--metrics-only" in item["coarse_command"] for item in manifest)
+    assert all(item["stages"] == ["frozen_operating_point", "final_render"] for item in manifest)
+    assert all(item["saga_operating_points"].endswith("matched_retention.csv") for item in manifest)
+    assert all(item["a5_operating_points"].endswith("matched_retention.csv") for item in manifest)
     assert all(item["fixed_view"] == "c22_f000420" for item in manifest)
+
+
+def test_resolve_frozen_operating_point_reads_unique_main_table_row(tmp_path: Path):
+    from tools.make_saga_a5_same_view_paper_visual import resolve_frozen_operating_point
+
+    path = tmp_path / "matched_retention.csv"
+    path.write_text(
+        "baseline,reference_baseline,retention,edit_strength,threshold\n"
+        "B4,B1,0.5,0.4,0.5\n"
+        "B4,B1,0.6,0.8436439295772922,0.5\n",
+        encoding="utf-8",
+    )
+
+    row = resolve_frozen_operating_point(path, baseline="B4", retention=0.6, expected_threshold=0.5)
+
+    assert row["edit_strength"] == 0.8436439295772922
+    assert row["reference_baseline"] == "B1"
+    assert row["source_csv"] == str(path.resolve())
+
+
+def test_resolve_frozen_operating_point_rejects_duplicate_or_wrong_reference(tmp_path: Path):
+    import pytest
+    from tools.make_saga_a5_same_view_paper_visual import resolve_frozen_operating_point
+
+    duplicate = tmp_path / "duplicate.csv"
+    duplicate.write_text(
+        "baseline,reference_baseline,retention,edit_strength,threshold\n"
+        "A5,B1,0.6,0.7,0.1\n"
+        "A5,B1,0.6,0.8,0.1\n",
+        encoding="utf-8",
+    )
+    wrong_reference = tmp_path / "wrong.csv"
+    wrong_reference.write_text(
+        "baseline,reference_baseline,retention,edit_strength,threshold\n"
+        "A5,B2,0.6,0.7,0.1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_frozen_operating_point(duplicate, baseline="A5", retention=0.6)
+    with pytest.raises(ValueError, match="reference_baseline=B1"):
+        resolve_frozen_operating_point(wrong_reference, baseline="A5", retention=0.6)
+
+
+def test_build_main_table_strength_mapping_shares_method_strength_across_parts(tmp_path: Path):
+    from tools.make_saga_a5_same_view_paper_visual import build_main_table_strength_mapping
+
+    saga = tmp_path / "saga.csv"
+    a5 = tmp_path / "a5.csv"
+    saga.write_text(
+        "baseline,reference_baseline,retention,edit_strength,threshold\n"
+        "B4,B1,0.6,0.4,0.5\n",
+        encoding="utf-8",
+    )
+    a5.write_text(
+        "baseline,reference_baseline,retention,edit_strength,threshold\n"
+        "A5,B1,0.6,0.7,0.1\n",
+        encoding="utf-8",
+    )
+
+    mapping, provenance = build_main_table_strength_mapping(saga, a5)
+
+    assert mapping == {"saga": {"hair": 0.4, "shoes": 0.4}, "a5": {"hair": 0.7, "shoes": 0.7}}
+    assert provenance["operating_point_definition"] == "main_table_point_activation_retention"
 
 
 def test_verify_output_rejects_missing_complete_marker(tmp_path: Path):
@@ -200,15 +268,6 @@ def test_verify_output_rejects_missing_complete_marker(tmp_path: Path):
 
     with pytest.raises(ValueError, match="COMPLETE"):
         verify_output(tmp_path)
-
-
-def test_retention_within_tolerance_rejects_large_protocol_drift():
-    import pytest
-    from tools.make_saga_a5_same_view_paper_visual import validate_retention_value
-
-    validate_retention_value(0.579, target=0.6, tolerance=0.03)
-    with pytest.raises(ValueError, match="outside tolerance"):
-        validate_retention_value(0.55, target=0.6, tolerance=0.03)
 
 
 def test_run_script_invokes_frozen_visual_orchestrator():
