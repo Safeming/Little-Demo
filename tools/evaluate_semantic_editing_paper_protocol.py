@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import pickle
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -196,6 +197,49 @@ def build_fixed_operating_point_rows(
     if not rows:
         raise ValueError(f"fixed operating point baseline {baseline} has no spatial rows")
     return rows
+
+
+def write_projection_cache(
+    path: Path | str,
+    *,
+    caches: list[dict],
+    checkpoint_fingerprint: str,
+    record_fingerprint_value: str,
+    loaded_iteration: int,
+    point_count: int,
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format_version": 1,
+        "checkpoint_fingerprint": str(checkpoint_fingerprint),
+        "record_fingerprint": str(record_fingerprint_value),
+        "loaded_iteration": int(loaded_iteration),
+        "point_count": int(point_count),
+        "caches": caches,
+    }
+    with path.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    return path
+
+
+def load_projection_cache(
+    path: Path | str,
+    *,
+    checkpoint_fingerprint: str,
+    record_fingerprint_value: str,
+) -> dict:
+    with Path(path).open("rb") as handle:
+        payload = pickle.load(handle)
+    if int(payload.get("format_version", 0)) != 1:
+        raise ValueError("unsupported projection cache format")
+    if str(payload.get("checkpoint_fingerprint", "")) != str(checkpoint_fingerprint):
+        raise ValueError("projection cache checkpoint fingerprint mismatch")
+    if str(payload.get("record_fingerprint", "")) != str(record_fingerprint_value):
+        raise ValueError("projection cache record fingerprint mismatch")
+    if not isinstance(payload.get("caches"), list) or not payload["caches"]:
+        raise ValueError("projection cache contains no views")
+    return payload
 
 
 def _one_hot_labels(labels, *, part_index: int) -> np.ndarray:
@@ -1178,55 +1222,96 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         voting_bank=voting_bank,
         requested_baselines=args.baselines,
     )
-    config_path = args.config.resolve() if args.config else asset_root.parent.parent / ".hydra" / "config.yaml"
-    config = _load_config(config_path, checkpoint, asset_root, records, args)
+    selected_record_fingerprint = record_fingerprint(records)
+    projection_cache_input = getattr(args, "projection_cache_input", None)
     caches = []
-    with torch.no_grad():
-        gaussians = GaussianModel(config.model.gaussian)
-        scene = Scene(config, gaussians, str(asset_root.parent))
-        scene.eval()
-        loaded_iteration = int(scene.load_checkpoint(str(checkpoint)))
-        point_count = int(scene.gaussians.get_xyz.shape[0])
-        for bank_name, bank in (
-            ("evidence", trained_bank),
-            ("raw_trained", raw_trained_bank),
-            ("voting", voting_bank),
-            *(((("footprint", footprint_bank),) if footprint_bank is not None else ())),
-            *(((("a7", a7_bank),) if a7_bank is not None else ())),
-        ):
-            labels = np.asarray(bank.get("part_label", []))
-            if labels.shape[0] != point_count:
-                raise ValueError(f"{bank_name} bank point count {labels.shape[0]} does not match scene {point_count}")
-        background = torch.zeros(3, dtype=torch.float32, device="cuda")
-        for record in records:
-            dataset_index = _find_dataset_index(scene.test_dataset, record["image_name"])
-            if dataset_index is None:
-                raise RuntimeError(f"image {record['image_name']} not present in dataset")
-            view = scene.test_dataset[dataset_index]
-            deformed, _, _colors = scene.convert_gaussians(view, loaded_iteration, compute_loss=False)
-            xy, projected, _depth = _project_points(deformed.get_xyz, view)
-            render_pkg = render(
-                view,
-                loaded_iteration,
-                scene,
-                config.pipeline,
-                background,
-                compute_loss=False,
-                return_opacity=False,
+    if projection_cache_input is not None:
+        cache_payload = load_projection_cache(
+            projection_cache_input,
+            checkpoint_fingerprint=checkpoint_fp,
+            record_fingerprint_value=selected_record_fingerprint,
+        )
+        caches = cache_payload["caches"]
+        loaded_iteration = int(cache_payload["loaded_iteration"])
+        point_count = int(cache_payload["point_count"])
+        expected_names = [str(record["image_name"]) for record in records]
+        if [str(cache["view"]) for cache in caches] != expected_names:
+            raise ValueError("projection cache view order differs from selected records")
+    else:
+        config_path = (
+            args.config.resolve()
+            if args.config
+            else asset_root.parent.parent / ".hydra" / "config.yaml"
+        )
+        config = _load_config(config_path, checkpoint, asset_root, records, args)
+        with torch.no_grad():
+            gaussians = GaussianModel(config.model.gaussian)
+            scene = Scene(config, gaussians, str(asset_root.parent))
+            scene.eval()
+            loaded_iteration = int(scene.load_checkpoint(str(checkpoint)))
+            point_count = int(scene.gaussians.get_xyz.shape[0])
+            background = torch.zeros(3, dtype=torch.float32, device="cuda")
+            for record in records:
+                dataset_index = _find_dataset_index(scene.test_dataset, record["image_name"])
+                if dataset_index is None:
+                    raise RuntimeError(f"image {record['image_name']} not present in dataset")
+                view = scene.test_dataset[dataset_index]
+                deformed, _, _colors = scene.convert_gaussians(
+                    view, loaded_iteration, compute_loss=False
+                )
+                xy, projected, _depth = _project_points(deformed.get_xyz, view)
+                render_pkg = render(
+                    view,
+                    loaded_iteration,
+                    scene,
+                    config.pipeline,
+                    background,
+                    compute_loss=False,
+                    return_opacity=False,
+                )
+                part_masks, foreground, valid = _load_record_masks(asset_root, record)
+                combined_valid = np.minimum(
+                    np.asarray(foreground, dtype=np.float32),
+                    np.asarray(valid, dtype=np.float32),
+                )
+                caches.append(
+                    {
+                        "view": str(record["image_name"]),
+                        "camera": int(record["cam_id"]),
+                        "frame": int(record["frame_id"]),
+                        "xy": xy.detach().float().cpu().numpy(),
+                        "projected": projected.detach().bool().cpu().numpy(),
+                        "radii": render_pkg["radii"]
+                        .detach()
+                        .float()
+                        .cpu()
+                        .numpy()
+                        .reshape(-1)[:point_count],
+                        "part_masks": part_masks,
+                        "valid_mask": combined_valid,
+                    }
+                )
+        projection_cache_output = getattr(args, "projection_cache_output", None)
+        if projection_cache_output is not None:
+            write_projection_cache(
+                projection_cache_output,
+                caches=caches,
+                checkpoint_fingerprint=checkpoint_fp,
+                record_fingerprint_value=selected_record_fingerprint,
+                loaded_iteration=loaded_iteration,
+                point_count=point_count,
             )
-            part_masks, foreground, valid = _load_record_masks(asset_root, record)
-            combined_valid = np.minimum(np.asarray(foreground, dtype=np.float32), np.asarray(valid, dtype=np.float32))
-            caches.append(
-                {
-                    "view": str(record["image_name"]),
-                    "camera": int(record["cam_id"]),
-                    "frame": int(record["frame_id"]),
-                    "xy": xy.detach().float().cpu().numpy(),
-                    "projected": projected.detach().bool().cpu().numpy(),
-                    "radii": render_pkg["radii"].detach().float().cpu().numpy().reshape(-1)[:point_count],
-                    "part_masks": part_masks,
-                    "valid_mask": combined_valid,
-                }
+    for bank_name, bank in (
+        ("evidence", trained_bank),
+        ("raw_trained", raw_trained_bank),
+        ("voting", voting_bank),
+        *(((("footprint", footprint_bank),) if footprint_bank is not None else ())),
+        *(((("a7", a7_bank),) if a7_bank is not None else ())),
+    ):
+        labels = np.asarray(bank.get("part_label", []))
+        if labels.shape[0] != point_count:
+            raise ValueError(
+                f"{bank_name} bank point count {labels.shape[0]} does not match scene {point_count}"
             )
 
     _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
@@ -1492,7 +1577,7 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "protocol_name": protocol["protocol_name"],
         "protocol_split": args.protocol_split,
         "protocol_fingerprint": protocol_fingerprint(protocol),
-        "record_fingerprint": record_fingerprint(records),
+        "record_fingerprint": selected_record_fingerprint,
         "checkpoint_fingerprint": checkpoint_fp,
         "bank_fingerprint": bank_fp,
         "raw_trained_bank_fingerprint": file_fingerprint(args.raw_trained_bank),
@@ -1507,6 +1592,9 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
         "processed_views": len(records),
         "record_selection_mode": (
             "explicit_list" if getattr(args, "record_list", None) is not None else "protocol_split"
+        ),
+        "projection_cache_mode": (
+            "loaded" if projection_cache_input is not None else "computed"
         ),
         "fixed_soft_threshold": fixed_threshold,
         "fixed_support_threshold": fixed_support_threshold,
@@ -1591,6 +1679,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--record-list", type=Path, default=None)
     parser.add_argument("--fixed-operating-point", type=Path, default=None)
     parser.add_argument("--per-view-spatial-output", type=Path, default=None)
+    parser.add_argument("--projection-cache-input", type=Path, default=None)
+    parser.add_argument("--projection-cache-output", type=Path, default=None)
     parser.add_argument("--soft-threshold", type=float, default=None)
     parser.add_argument("--support-threshold", type=float, default=None)
     parser.add_argument("--boundary-radius", type=int, default=None)

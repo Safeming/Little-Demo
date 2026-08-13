@@ -796,3 +796,64 @@ def test_parser_accepts_fixed_operating_point_export_options(tmp_path):
     assert args.record_list == tmp_path / "records.json"
     assert args.fixed_operating_point == tmp_path / "operating_point.json"
     assert args.per_view_spatial_output == tmp_path / "rows.csv"
+
+
+def test_projection_cache_round_trip_validates_checkpoint_and_records(tmp_path):
+    from tools.evaluate_semantic_editing_paper_protocol import (
+        load_projection_cache,
+        write_projection_cache,
+    )
+
+    path = tmp_path / "projection_cache.pkl"
+    caches = [
+        {
+            "view": "c21_f000170",
+            "camera": 21,
+            "frame": 170,
+            "xy": np.array([[1.0, 2.0]], dtype=np.float32),
+        }
+    ]
+    write_projection_cache(
+        path,
+        caches=caches,
+        checkpoint_fingerprint="checkpoint",
+        record_fingerprint_value="records",
+        loaded_iteration=42000,
+        point_count=1,
+    )
+
+    payload = load_projection_cache(
+        path,
+        checkpoint_fingerprint="checkpoint",
+        record_fingerprint_value="records",
+    )
+    assert payload["loaded_iteration"] == 42000
+    assert np.array_equal(payload["caches"][0]["xy"], caches[0]["xy"])
+    with pytest.raises(ValueError, match="checkpoint fingerprint"):
+        load_projection_cache(
+            path,
+            checkpoint_fingerprint="other",
+            record_fingerprint_value="records",
+        )
+
+
+def test_parser_accepts_projection_cache_options(tmp_path):
+    from tools.evaluate_semantic_editing_paper_protocol import parse_args
+
+    args = parse_args(
+        [
+            "--protocol", str(tmp_path / "protocol.json"),
+            "--protocol-split", "test",
+            "--frozen-config", str(tmp_path / "frozen.json"),
+            "--raw-trained-bank", str(tmp_path / "raw.npz"),
+            "--trained-bank", str(tmp_path / "trained.npz"),
+            "--voting-bank", str(tmp_path / "voting.npz"),
+            "--checkpoint", str(tmp_path / "checkpoint.pth"),
+            "--asset-root", str(tmp_path / "assets"),
+            "--output-dir", str(tmp_path / "output"),
+            "--projection-cache-input", str(tmp_path / "cache-in.pkl"),
+            "--projection-cache-output", str(tmp_path / "cache-out.pkl"),
+        ]
+    )
+    assert args.projection_cache_input == tmp_path / "cache-in.pkl"
+    assert args.projection_cache_output == tmp_path / "cache-out.pkl"

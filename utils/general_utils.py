@@ -39,7 +39,8 @@ def get_repo_root():
 
 
 def get_body_model_misc_path(filename):
-    return os.fspath(_REPO_ROOT / "body_models" / "misc" / filename)
+    body_models_root = Path(os.environ.get("BODY_MODELS_ROOT", _REPO_ROOT / "body_models"))
+    return os.fspath(body_models_root / "misc" / filename)
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
