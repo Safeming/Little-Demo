@@ -37,3 +37,16 @@ def test_fixed_evaluation_queue_uses_shared_40k_and_external_raw_banks():
     assert "SUBJECTS=(377 386 394)" in text
     assert "strict" in text
     assert "temporal" in text
+
+
+def test_qualitative_queue_uses_all_four_methods_and_nine_views():
+    path = Path(__file__).parents[1] / "tools" / "run_four_method_qualitative.sh"
+    text = path.read_text(encoding="utf-8")
+
+    assert "METHODS=(saga gaussian_grouping sggs a5)" in text
+    assert "VIEWS=(" in text
+    assert "c22_f000420" in text
+    assert "--external-bank gaussian_grouping=" in text
+    assert "--external-bank sggs=" in text
+    assert "--method-part-strengths" in text
+    assert "prepare_four_method_qualitative.py" in text

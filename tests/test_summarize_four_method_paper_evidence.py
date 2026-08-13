@@ -298,3 +298,57 @@ def test_rank_objective_views_uses_four_methods_and_both_parts():
     assert [row["view"] for row in ranking] == ["c22_f000420", "c21_f000180"]
     assert ranking[0]["cell_count"] == 8
     assert ranking[0]["rank"] == 1
+
+
+def test_build_qualitative_manifest_uses_fixed_and_ranked_views(tmp_path):
+    from tools.prepare_four_method_qualitative import build_qualitative_manifest
+
+    subjects = ("377", "386", "394")
+    methods = ("saga", "gaussian_grouping", "sggs", "a5")
+    rankings = {subject: [{"rank": 1, "view": f"c21_f000{subject}"}] for subject in subjects}
+    render_roots = {}
+    for subject in subjects:
+        root = tmp_path / subject / "frames"
+        render_roots[subject] = root.parent
+        root.mkdir(parents=True, exist_ok=True)
+        for view in ("c22_f000420", f"c21_f000{subject}"):
+            Image.new("RGB", (64, 96), (80, 90, 100)).save(root / f"{view}_rgb.png")
+            for method in methods:
+                for part in ("hair", "shoes"):
+                    path = root / "recolor" / method / f"{view}_{part}.png"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    Image.new("RGB", (64, 96), (100, 90, 80)).save(path)
+
+    result = build_qualitative_manifest(
+        subjects=subjects,
+        methods=("input", *methods),
+        render_roots=render_roots,
+        rankings=rankings,
+    )
+
+    assert result["sets"]["fixed_main"]["hair"]["377"]["input"].endswith(
+        "c22_f000420_rgb.png"
+    )
+    assert result["sets"]["objectively_selected"]["shoes"]["394"]["a5"].endswith(
+        "c21_f000394_shoes.png"
+    )
+
+
+def test_write_method_strengths_uses_each_frozen_operating_point(tmp_path):
+    from tools.prepare_four_method_qualitative import write_method_strengths
+
+    points = {}
+    for index, method in enumerate(("saga", "gaussian_grouping", "sggs", "a5"), start=1):
+        path = tmp_path / f"{method}.json"
+        path.write_text(
+            json.dumps({"method": method, "edit_strength": index / 10.0}),
+            encoding="utf-8",
+        )
+        points[method] = path
+    output = tmp_path / "strengths.json"
+
+    result = write_method_strengths(points, output=output)
+
+    assert result["saga"] == {"hair": 0.1, "shoes": 0.1}
+    assert result["a5"] == {"hair": 0.4, "shoes": 0.4}
+    assert json.loads(output.read_text(encoding="utf-8")) == result
