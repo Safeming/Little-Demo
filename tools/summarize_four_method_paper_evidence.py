@@ -32,6 +32,12 @@ METHOD_LABELS = {
     "sggs": "SG-GS",
     "a5": "Ours",
 }
+METHOD_COLORS = {
+    "a5": "#176f48",
+    "saga": "#356aa0",
+    "gaussian_grouping": "#b26a1b",
+    "sggs": "#8a4f8f",
+}
 METRICS = (
     "actionable_leakage",
     "raw_leakage",
@@ -164,6 +170,9 @@ def summarize_significance(
                 "ours_estimate": ours_estimate,
                 "comparison_estimate": comparator_estimate,
                 "absolute_difference": difference,
+                "paired_median_difference": float(
+                    np.median([row["difference"] for row in difference_rows])
+                ),
                 "relative_reduction": float(relative),
                 "ci_low": bootstrap["ci_low"],
                 "ci_high": bootstrap["ci_high"],
@@ -245,6 +254,10 @@ def summarize_temporal(rows) -> dict:
                 "camera": int(window["camera"]),
                 "anchor": int(window["anchor"]),
                 "window": window_name,
+                "retention": float(members[0].get("retention", 0.6)),
+                "target_retention_feasible": _as_bool(
+                    members[0].get("target_retention_feasible", True)
+                ),
                 **summary,
             }
         )
@@ -264,7 +277,34 @@ def summarize_temporal(rows) -> dict:
                 key = f"{metric}_{suffix}"
                 output[key] = float(np.mean([float(row[key]) for row in members]))
         method_rows.append(output)
-    return {"per_frame": frames, "windows": window_rows, "methods": method_rows}
+    main_table = []
+    by_method = defaultdict(list)
+    for row in window_rows:
+        if row["target_retention_feasible"]:
+            by_method[row["method"]].append(row)
+    for method in METHOD_ORDER:
+        members = by_method.get(method, [])
+        if not members:
+            continue
+        output = {
+            "method": method,
+            "subject_count": len({row["subject"] for row in members}),
+            "window_count": len(members),
+            "camera_frame_count": int(sum(int(row["frame_count"]) for row in members)),
+        }
+        for metric in METRICS:
+            for suffix in ("mean", "std", "mean_abs_delta", "p95_abs_delta"):
+                key = f"{metric}_{suffix}"
+                values = np.asarray([float(row[key]) for row in members], dtype=np.float64)
+                output[key] = float(np.mean(values))
+                output[f"{key}_across_window_std"] = float(np.std(values))
+        main_table.append(output)
+    return {
+        "per_frame": frames,
+        "windows": window_rows,
+        "methods": method_rows,
+        "main_table": main_table,
+    }
 
 
 def compose_part_layout(
@@ -394,6 +434,163 @@ def write_temporal(output: Path, result: dict) -> None:
     _write_csv(output / "per_frame.csv", result["per_frame"])
     _write_csv(output / "per_window.csv", result["windows"])
     _write_csv(output / "temporal_table.csv", result["methods"])
+    _write_csv(output / "main_table.csv", result["main_table"])
+    (output / "main_table.md").write_text(
+        _format_temporal_markdown(result["main_table"]), encoding="utf-8"
+    )
+    (output / "main_table.tex").write_text(
+        _format_temporal_latex(result["main_table"]), encoding="utf-8"
+    )
+    _plot_temporal_curves(output / "curves", result["per_frame"])
+
+
+def _format_temporal_markdown(rows: list[dict]) -> str:
+    lines = [
+        "| Method | Subjects | Windows | Actionable leakage | Actionable delta | mIoU | mIoU delta |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| {label} | {subject_count} | {window_count} | {leak:.6f} | "
+            "{leak_delta:.6f} | {miou:.6f} | {miou_delta:.6f} |".format(
+                label=METHOD_LABELS[row["method"]],
+                subject_count=row["subject_count"],
+                window_count=row["window_count"],
+                leak=row["actionable_leakage_mean"],
+                leak_delta=row["actionable_leakage_mean_abs_delta"],
+                miou=row["macro_miou_mean"],
+                miou_delta=row["macro_miou_mean_abs_delta"],
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _format_temporal_latex(rows: list[dict]) -> str:
+    lines = [
+        r"\begin{tabular}{lrrrrrr}",
+        r"Method & Subjects & Windows & Act. leak & Act. $\Delta$ & mIoU & mIoU $\Delta$ \\",
+        r"\hline",
+    ]
+    for row in rows:
+        lines.append(
+            f"{METHOD_LABELS[row['method']]} & {row['subject_count']} & {row['window_count']} & "
+            f"{row['actionable_leakage_mean']:.6f} & "
+            f"{row['actionable_leakage_mean_abs_delta']:.6f} & "
+            f"{row['macro_miou_mean']:.6f} & "
+            f"{row['macro_miou_mean_abs_delta']:.6f} " + r"\\"
+        )
+    lines.append(r"\end{tabular}")
+    return "\n".join(lines) + "\n"
+
+
+def _plot_temporal_curves(output: Path, rows: list[dict]) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output.mkdir(parents=True, exist_ok=True)
+    subjects = sorted({str(row["subject"]) for row in rows})
+    cameras = sorted({int(row["camera"]) for row in rows})
+    methods = [method for method in METHOD_ORDER if any(row["method"] == method for row in rows)]
+    for metric in METRICS:
+        fig, axes = plt.subplots(
+            len(subjects),
+            len(cameras),
+            figsize=(4.0 * len(cameras), 2.65 * len(subjects)),
+            squeeze=False,
+            facecolor="white",
+            sharex=True,
+        )
+        for row_index, subject in enumerate(subjects):
+            for column_index, camera in enumerate(cameras):
+                axis = axes[row_index][column_index]
+                for method in methods:
+                    selected = sorted(
+                        (
+                            row
+                            for row in rows
+                            if row["subject"] == subject
+                            and int(row["camera"]) == camera
+                            and row["method"] == method
+                        ),
+                        key=lambda row: int(row["frame"]),
+                    )
+                    if selected:
+                        axis.plot(
+                            [int(row["frame"]) for row in selected],
+                            [float(row[metric]) for row in selected],
+                            color=METHOD_COLORS[method],
+                            linewidth=1.25,
+                            label=METHOD_LABELS[method],
+                        )
+                axis.set_title(f"CoreView {subject}, c{camera}", fontsize=9)
+                axis.grid(True, color="#dddddd", linewidth=0.5)
+                if column_index == 0:
+                    axis.set_ylabel(metric.replace("_", " "), fontsize=8)
+                if row_index == len(subjects) - 1:
+                    axis.set_xlabel("Frame", fontsize=8)
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncol=len(handles), frameon=False)
+        fig.subplots_adjust(top=0.91, left=0.08, right=0.99, bottom=0.09, wspace=0.22, hspace=0.33)
+        fig.savefig(output / f"{metric}.png", dpi=220, facecolor="white")
+        fig.savefig(output / f"{metric}.pdf", facecolor="white")
+        plt.close(fig)
+
+
+def concat_csv(inputs: list[Path], output: Path) -> dict:
+    fieldnames = None
+    rows = []
+    for path in inputs:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            current = list(reader.fieldnames or [])
+            if fieldnames is None:
+                fieldnames = current
+            elif current != fieldnames:
+                raise ValueError(f"CSV headers differ: {path}")
+            rows.extend(reader)
+    if not fieldnames:
+        raise ValueError("input CSVs have no header")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return {"input_count": len(inputs), "row_count": len(rows), "output": str(output)}
+
+
+def write_qualitative(manifest: Path, output: Path) -> dict:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    subjects = payload["subjects"]
+    methods = payload["methods"]
+    layouts = []
+    for set_name, part_payload in payload["sets"].items():
+        for part, subject_payload in part_payload.items():
+            paths = {
+                (str(subject), str(method)): Path(subject_payload[str(subject)][str(method)])
+                for subject in subjects
+                for method in methods
+            }
+            layouts.append(
+                {
+                    "set": set_name,
+                    **compose_part_layout(
+                        subjects=subjects,
+                        methods=methods,
+                        part=part,
+                        frame_paths=paths,
+                        output_dir=output / set_name,
+                    ),
+                }
+            )
+    result = {"manifest": str(manifest), "layouts": layouts}
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "qualitative_summary.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return result
 
 
 def parse_args(argv=None):
@@ -407,19 +604,30 @@ def parse_args(argv=None):
     temporal = subparsers.add_parser("temporal")
     temporal.add_argument("--input", required=True, type=Path)
     temporal.add_argument("--output", required=True, type=Path)
+    concat = subparsers.add_parser("concat")
+    concat.add_argument("--input", action="append", required=True, type=Path)
+    concat.add_argument("--output", required=True, type=Path)
+    qualitative = subparsers.add_parser("qualitative")
+    qualitative.add_argument("--manifest", required=True, type=Path)
+    qualitative.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    rows = _load_csv(args.input)
     if args.command == "significance":
+        rows = _load_csv(args.input)
         write_significance(
             args.output,
             summarize_significance(rows, iterations=args.iterations, seed=args.seed),
         )
     elif args.command == "temporal":
+        rows = _load_csv(args.input)
         write_temporal(args.output, summarize_temporal(rows))
+    elif args.command == "concat":
+        concat_csv(args.input, args.output)
+    elif args.command == "qualitative":
+        write_qualitative(args.manifest, args.output)
     else:
         raise ValueError(f"unsupported command: {args.command}")
     return 0
