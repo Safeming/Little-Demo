@@ -147,6 +147,8 @@ def test_compose_part_layout_uses_confirmed_three_by_five_order(tmp_path):
     assert result["columns"] == ["Input", "SAGA", "Gaussian Grouping", "SG-GS", "Ours"]
     assert result["subjects"] == ["377", "386", "394"]
     assert result["gg_377_label"] == "GG\N{DAGGER}"
+    assert result["row_labels"] == ["CoreView 377", "CoreView 386", "CoreView 394"]
+    assert set(result["shared_crop_boxes"]) == {"377", "386", "394"}
     assert Path(result["png"]).stat().st_size > 0
     assert Path(result["pdf"]).stat().st_size > 0
 

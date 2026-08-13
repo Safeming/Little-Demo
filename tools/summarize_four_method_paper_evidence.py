@@ -389,6 +389,27 @@ def compose_part_layout(
     methods = [str(value) for value in methods]
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    loaded = {}
+    crop_boxes = {}
+    for subject in subjects:
+        for method in methods:
+            with Image.open(Path(frame_paths[(subject, method)])) as source:
+                loaded[(subject, method)] = source.convert("RGB").copy()
+        reference = np.asarray(loaded[(subject, "input")])
+        foreground = np.max(reference, axis=2) > 12
+        if np.any(foreground):
+            ys, xs = np.where(foreground)
+            x0, x1 = int(xs.min()), int(xs.max()) + 1
+            y0, y1 = int(ys.min()), int(ys.max()) + 1
+            side = int(np.ceil(max(x1 - x0, y1 - y0) * 1.24))
+            side = min(side, reference.shape[1], reference.shape[0])
+            center_x = (x0 + x1) // 2
+            center_y = (y0 + y1) // 2
+            left = max(0, min(reference.shape[1] - side, center_x - side // 2))
+            top = max(0, min(reference.shape[0] - side, center_y - side // 2))
+            crop_boxes[subject] = (left, top, left + side, top + side)
+        else:
+            crop_boxes[subject] = (0, 0, reference.shape[1], reference.shape[0])
     fig, axes = plt.subplots(
         len(subjects),
         len(methods),
@@ -398,21 +419,12 @@ def compose_part_layout(
     )
     for row_index, subject in enumerate(subjects):
         for column_index, method in enumerate(methods):
-            path = Path(frame_paths[(subject, method)])
-            with Image.open(path) as image:
-                axes[row_index][column_index].imshow(image.convert("RGB"))
+            image = loaded[(subject, method)].crop(crop_boxes[subject])
+            axes[row_index][column_index].imshow(image)
             axes[row_index][column_index].axis("off")
             if row_index == 0:
                 axes[row_index][column_index].set_title(
                     METHOD_LABELS[method], fontsize=12, pad=7
-                )
-            if column_index == 0:
-                axes[row_index][column_index].set_ylabel(
-                    subject,
-                    fontsize=12,
-                    rotation=0,
-                    labelpad=24,
-                    va="center",
                 )
             if method == "gaussian_grouping" and subject == "377":
                 axes[row_index][column_index].text(
@@ -426,7 +438,17 @@ def compose_part_layout(
                     color="black",
                     bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.85},
                 )
-    fig.subplots_adjust(left=0.06, right=0.995, top=0.95, bottom=0.01, wspace=0.03, hspace=0.05)
+    fig.subplots_adjust(left=0.09, right=0.995, top=0.95, bottom=0.01, wspace=0.03, hspace=0.05)
+    for row_index, subject in enumerate(subjects):
+        position = axes[row_index][0].get_position()
+        fig.text(
+            0.012,
+            (position.y0 + position.y1) / 2.0,
+            f"CoreView\n{subject}",
+            ha="left",
+            va="center",
+            fontsize=11,
+        )
     stem = f"{part}_three_subject_five_method"
     png = output_dir / f"{stem}.png"
     pdf = output_dir / f"{stem}.pdf"
@@ -437,6 +459,10 @@ def compose_part_layout(
         "part": str(part),
         "columns": [METHOD_LABELS[method] for method in methods],
         "subjects": subjects,
+        "row_labels": [f"CoreView {subject}" for subject in subjects],
+        "shared_crop_boxes": {
+            subject: list(crop_boxes[subject]) for subject in subjects
+        },
         "gg_377_label": "GG\N{DAGGER}",
         "png": str(png),
         "pdf": str(pdf),
