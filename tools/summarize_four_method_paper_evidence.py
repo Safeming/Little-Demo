@@ -379,6 +379,49 @@ def compose_part_layout(
     }
 
 
+def rank_objective_views(
+    rows,
+    *,
+    parts=("hair", "shoes"),
+    methods=METHOD_ORDER,
+) -> list[dict]:
+    required = {(str(method), str(part)) for method in methods for part in parts}
+    grouped = defaultdict(dict)
+    for row in rows:
+        key = (str(row["method"]), str(row["part"]))
+        if key in required:
+            grouped[str(row["view"])][key] = row
+    candidates = []
+    for view, cells in grouped.items():
+        if set(cells) != required:
+            continue
+        leakage = np.asarray(
+            [float(row["actionable_leakage"]) for row in cells.values()],
+            dtype=np.float64,
+        )
+        iou = np.asarray([float(row["iou"]) for row in cells.values()], dtype=np.float64)
+        if not np.isfinite(leakage).all() or not np.isfinite(iou).all():
+            continue
+        candidates.append(
+            {
+                "view": view,
+                "mean_actionable_leakage": float(np.mean(leakage)),
+                "mean_iou": float(np.mean(iou)),
+                "cell_count": len(cells),
+            }
+        )
+    candidates.sort(
+        key=lambda row: (
+            float(row["mean_actionable_leakage"]),
+            -float(row["mean_iou"]),
+            str(row["view"]),
+        )
+    )
+    for rank, row in enumerate(candidates, start=1):
+        row["rank"] = rank
+    return candidates
+
+
 def _format_significance_markdown(rows: list[dict]) -> str:
     lines = [
         "| Metric | Comparison | Ours | External | Difference | 95% CI | p (Holm) |",

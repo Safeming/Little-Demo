@@ -268,3 +268,33 @@ def test_qualitative_cli_composes_both_frozen_sets(tmp_path):
             assert (output / set_name / f"{part}_three_subject_five_method.pdf").stat().st_size > 0
     payload = json.loads((output / "qualitative_summary.json").read_text(encoding="utf-8"))
     assert len(payload["layouts"]) == 4
+
+
+def test_rank_objective_views_uses_four_methods_and_both_parts():
+    from tools.summarize_four_method_paper_evidence import rank_objective_views
+
+    rows = []
+    for view, leakage, iou in (
+        ("c21_f000180", 0.08, 0.7),
+        ("c22_f000420", 0.05, 0.6),
+        ("c23_f000540", 0.05, 0.8),
+    ):
+        for method in ("saga", "gaussian_grouping", "sggs", "a5"):
+            for part in ("hair", "shoes"):
+                rows.append(
+                    {
+                        "subject": "377",
+                        "view": view,
+                        "method": method,
+                        "part": part,
+                        "actionable_leakage": leakage,
+                        "iou": iou,
+                    }
+                )
+    rows.pop()
+
+    ranking = rank_objective_views(rows[:-1])
+
+    assert [row["view"] for row in ranking] == ["c22_f000420", "c21_f000180"]
+    assert ranking[0]["cell_count"] == 8
+    assert ranking[0]["rank"] == 1
