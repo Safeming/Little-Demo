@@ -21,12 +21,57 @@ THRESHOLDS = (0.05, 0.10, 0.15, 0.20, 0.25, 0.35, 0.50)
 TARGET_RETENTION = 0.6
 
 
+def render_preset_for_subject(subject: str) -> str:
+    return "v338_temporal_selector_grow_only_guard" if str(subject) == "377" else "none"
+
+
+def materialize_evaluation_config(source: Path, output: Path) -> Path:
+    from omegaconf import OmegaConf
+
+    config = OmegaConf.load(source)
+    patterns = list(config.resume.get("partial_converter_missing_keys_allow_patterns", []) or [])
+    for key in ("camera_geometry.rot_raw", "camera_geometry.trans_raw"):
+        if key not in patterns:
+            patterns.append(key)
+    config.resume.allow_partial_converter_load = True
+    config.resume.partial_converter_missing_keys_allow_patterns = patterns
+    output.parent.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(config, output)
+    return output
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_frozen_external_bank(frozen: dict, external_bank: Path) -> None:
+    expected = str(frozen.get("external_bank_fingerprint", ""))
+    actual = _sha256(external_bank)
+    if actual != expected:
+        raise ValueError(f"external SG-GS bank fingerprint mismatch: expected {expected}, got {actual}")
+
+
+def attach_training_efficiency(rows: list[dict], experiment_root: Path) -> list[dict]:
+    result = []
+    for source in rows:
+        row = dict(source)
+        row["training_seconds"] = ""
+        row["peak_memory_bytes"] = ""
+        if row.get("method") == "SG-GS":
+            summary = json.loads(
+                (
+                    Path(experiment_root)
+                    / f"CoreView_{row['subject']}/train_30k/summary.json"
+                ).read_text(encoding="utf-8")
+            )
+            row["training_seconds"] = float(summary["elapsed_seconds"])
+            row["peak_memory_bytes"] = int(summary["peak_memory_bytes"])
+        result.append(row)
+    return result
 
 
 def _csv_rows(path: Path) -> list[dict]:
@@ -77,10 +122,13 @@ def _subject_paths(paper_root: Path, experiment_root: Path, subject: str) -> dic
     )
     checkpoint = Path(frozen_manifest["source_checkpoint"])
     strict_root = checkpoint.parent.parent
+    evaluation_config = experiment_root / f"CoreView_{subject}/evaluation/checkpoint_compat_config.yaml"
+    materialize_evaluation_config(Path(frozen_manifest["source_config"]), evaluation_config)
     return {
         "protocol": paper_root / f"configs/semantic/coreview{subject}_strict_paper_protocol.json",
         "checkpoint": checkpoint,
-        "config": Path(frozen_manifest["source_config"]),
+        "config": evaluation_config,
+        "source_config": Path(frozen_manifest["source_config"]),
         "external_bank": experiment_root / f"CoreView_{subject}/train_30k/part_label_bank.npz",
         "evidence_bank": strict_root / "banks/voting_evidence_target_support/part_label_bank.npz",
         "voting_bank": strict_root / "banks/multiview_voting/part_label_bank.npz",
@@ -116,6 +164,7 @@ def _run_evaluator(
         "--config", str(paths["config"]),
         "--dataset-root", str(paper_root / "data/ZJUMoCap"),
         "--subject", f"CoreView_{subject}",
+        "--explicit-binding-render-preset", render_preset_for_subject(subject),
         "--output-dir", str(output),
         "--baselines", "B1", "B4",
         "--retention-reference-baseline", "B1",
@@ -160,6 +209,7 @@ def _write_frozen_config(
         "bank_fingerprint": _sha256(paths["evidence_bank"]),
         "external_bank_fingerprint": _sha256(paths["external_bank"]),
         "sggs_head": "27b9ed9c9e4c5663deb169247c2339ccafe1c254",
+        "explicit_binding_render_preset": render_preset_for_subject(subject),
         "selection_objective": [
             "require_every_donor_target_retention_if_feasible",
             "otherwise_max_every_donor_common_reachable_retention",
@@ -194,7 +244,7 @@ def _write_aggregate(paper_root: Path, experiment_root: Path, sggs_rows: list[di
         / "aggregate/gg_a5_saga_test_comparison.json"
     )
     prior = json.loads(prior_path.read_text(encoding="utf-8"))
-    rows = [*prior["comparison_rows"], *sggs_rows]
+    rows = attach_training_efficiency([*prior["comparison_rows"], *sggs_rows], experiment_root)
     output = experiment_root / "aggregate"
     output.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0])
@@ -281,6 +331,8 @@ def main(argv=None) -> int:
         evaluation_root = args.experiment_root / f"CoreView_{subject}/evaluation"
         frozen = evaluation_root / "frozen_sggs_loso_config.json"
         _write_frozen_config(path=frozen, paths=all_paths[subject], subject=subject, selected=selected)
+        frozen_payload = json.loads(frozen.read_text(encoding="utf-8"))
+        verify_frozen_external_bank(frozen_payload, all_paths[subject]["external_bank"])
         test_output = evaluation_root / "test_sggs_loso"
         _run_evaluator(
             python=args.python,

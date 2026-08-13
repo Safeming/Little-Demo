@@ -492,3 +492,74 @@ def test_sggs_evaluator_uses_avatar_dataset_root_for_scene_loading():
 
     assert '"--dataset-root", str(paper_root / "data/ZJUMoCap")' in source
     assert '"--dataset-root", "/remote-home/ming/dataSet"' not in source
+
+
+def test_materialize_sggs_evaluation_config_adds_only_checkpoint_compatibility_keys(tmp_path):
+    from omegaconf import OmegaConf
+    from tools.evaluate_sggs_released_code_canonical import materialize_evaluation_config
+
+    source = tmp_path / "source.yaml"
+    OmegaConf.save(
+        OmegaConf.create(
+            {
+                "dataset": {"name": "zjumocap", "root_dir": "/original"},
+                "resume": {
+                    "allow_partial_converter_load": True,
+                    "partial_converter_missing_keys_allow_patterns": ["texture.structured_trunk_"],
+                },
+            }
+        ),
+        source,
+    )
+    output = tmp_path / "compat.yaml"
+
+    materialize_evaluation_config(source, output)
+
+    original = OmegaConf.to_container(OmegaConf.load(source), resolve=True)
+    result = OmegaConf.to_container(OmegaConf.load(output), resolve=True)
+    assert result["dataset"] == original["dataset"]
+    assert result["resume"]["allow_partial_converter_load"] is True
+    assert result["resume"]["partial_converter_missing_keys_allow_patterns"] == [
+        "texture.structured_trunk_",
+        "camera_geometry.rot_raw",
+        "camera_geometry.trans_raw",
+    ]
+
+
+def test_sggs_render_preset_is_subject_validated():
+    from tools.evaluate_sggs_released_code_canonical import render_preset_for_subject
+
+    assert render_preset_for_subject("377") == "v338_temporal_selector_grow_only_guard"
+    assert render_preset_for_subject("386") == "none"
+    assert render_preset_for_subject("394") == "none"
+
+
+def test_verify_frozen_external_bank_rejects_post_freeze_mutation(tmp_path):
+    from tools.evaluate_sggs_released_code_canonical import _sha256, verify_frozen_external_bank
+
+    bank = tmp_path / "bank.npz"
+    bank.write_bytes(b"frozen-bank")
+    frozen = {"external_bank_fingerprint": _sha256(bank)}
+    verify_frozen_external_bank(frozen, bank)
+
+    bank.write_bytes(b"mutated-bank")
+    with pytest.raises(ValueError, match="external SG-GS bank fingerprint mismatch"):
+        verify_frozen_external_bank(frozen, bank)
+
+
+def test_attach_training_efficiency_reads_sggs_summary(tmp_path):
+    from tools.evaluate_sggs_released_code_canonical import attach_training_efficiency
+
+    train = tmp_path / "CoreView_377" / "train_30k"
+    train.mkdir(parents=True)
+    (train / "summary.json").write_text(
+        json.dumps({"elapsed_seconds": 12.5, "peak_memory_bytes": 123456}), encoding="utf-8"
+    )
+    rows = [{"method": "SG-GS", "subject": "377"}, {"method": "A5", "subject": "377"}]
+
+    result = attach_training_efficiency(rows, tmp_path)
+
+    assert result[0]["training_seconds"] == pytest.approx(12.5)
+    assert result[0]["peak_memory_bytes"] == 123456
+    assert result[1]["training_seconds"] == ""
+    assert result[1]["peak_memory_bytes"] == ""
