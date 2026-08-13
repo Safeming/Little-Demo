@@ -370,6 +370,44 @@ def test_rank_objective_views_uses_four_methods_and_both_parts():
     assert ranking[0]["rank"] == 1
 
 
+def test_rank_objective_views_sums_activation_before_normalizing_and_ignores_empty_target():
+    from tools.summarize_four_method_paper_evidence import rank_objective_views
+
+    rows = []
+    for view in ("c21_f000180", "c22_f000420"):
+        for method in ("saga", "gaussian_grouping", "sggs", "a5"):
+            rows.extend(
+                [
+                    {
+                        "view": view,
+                        "method": method,
+                        "part": "hair",
+                        "actionable_outer_activation": 1.0 if view.startswith("c21") else 2.0,
+                        "reference_target_activation": 10.0,
+                        "actionable_leakage": 0.1 if view.startswith("c21") else 0.2,
+                        "iou": 0.7,
+                        "target_empty": False,
+                    },
+                    {
+                        "view": view,
+                        "method": method,
+                        "part": "shoes",
+                        "actionable_outer_activation": 10.0**9,
+                        "reference_target_activation": 0.0,
+                        "actionable_leakage": 10.0**18,
+                        "iou": 0.0,
+                        "target_empty": True,
+                    },
+                ]
+            )
+
+    ranking = rank_objective_views(rows)
+
+    assert [row["view"] for row in ranking] == ["c21_f000180", "c22_f000420"]
+    assert ranking[0]["mean_actionable_leakage"] == pytest.approx(0.1)
+    assert ranking[0]["valid_cell_count"] == 4
+
+
 def test_build_qualitative_manifest_uses_fixed_and_ranked_views(tmp_path):
     from tools.prepare_four_method_qualitative import build_qualitative_manifest
 

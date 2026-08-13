@@ -459,11 +459,39 @@ def rank_objective_views(
     for view, cells in grouped.items():
         if set(cells) != required:
             continue
-        leakage = np.asarray(
-            [float(row["actionable_leakage"]) for row in cells.values()],
-            dtype=np.float64,
-        )
-        iou = np.asarray([float(row["iou"]) for row in cells.values()], dtype=np.float64)
+        valid_cells = [
+            row for row in cells.values() if not _as_bool(row.get("target_empty", False))
+        ]
+        if not valid_cells:
+            continue
+        method_leakage = []
+        for method in methods:
+            members = [
+                row
+                for (cell_method, _), row in cells.items()
+                if cell_method == str(method)
+                and not _as_bool(row.get("target_empty", False))
+            ]
+            if not members:
+                break
+            if all(
+                "actionable_outer_activation" in row
+                and "reference_target_activation" in row
+                for row in members
+            ):
+                numerator = sum(float(row["actionable_outer_activation"]) for row in members)
+                denominator = sum(float(row["reference_target_activation"]) for row in members)
+                if denominator <= 0.0:
+                    break
+                method_leakage.append(float(numerator / denominator))
+            else:
+                method_leakage.append(
+                    float(np.mean([float(row["actionable_leakage"]) for row in members]))
+                )
+        if len(method_leakage) != len(tuple(methods)):
+            continue
+        leakage = np.asarray(method_leakage, dtype=np.float64)
+        iou = np.asarray([float(row["iou"]) for row in valid_cells], dtype=np.float64)
         if not np.isfinite(leakage).all() or not np.isfinite(iou).all():
             continue
         candidates.append(
@@ -472,6 +500,7 @@ def rank_objective_views(
                 "mean_actionable_leakage": float(np.mean(leakage)),
                 "mean_iou": float(np.mean(iou)),
                 "cell_count": len(cells),
+                "valid_cell_count": len(valid_cells),
             }
         )
     candidates.sort(
