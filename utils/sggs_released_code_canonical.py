@@ -7,12 +7,51 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
 REQUIRED_RELEASE_FILES = ("README.md", "environment.yml", ".gitmodules")
 LOCAL_IMPORT_MODULES = ("diff_gaussian_rasterization_obj", "sparseconvnet")
 JOINT_TO_PART = (4, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 3, 2, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2)
+
+
+class Compact6Readout(nn.Module):
+    def __init__(self, *, input_dim: int = 32, hidden_dim: int = 64, class_count: int = 6):
+        super().__init__()
+        if input_dim <= 0 or hidden_dim <= 0 or class_count <= 1:
+            raise ValueError("readout dimensions must be positive and class_count must exceed one")
+        self.input_dim = int(input_dim)
+        self.class_count = int(class_count)
+        self.network = nn.Sequential(
+            nn.Linear(self.input_dim, int(hidden_dim)),
+            nn.ReLU(),
+            nn.Linear(int(hidden_dim), self.class_count),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 2 or features.shape[1] != self.input_dim:
+            raise ValueError(f"features must have shape [N, {self.input_dim}]")
+        return self.network(features)
+
+
+def compact6_predictions(logits: torch.Tensor) -> dict[str, object]:
+    if logits.ndim != 2 or logits.shape[1] < 2:
+        raise ValueError("logits must have shape [N, C] with C >= 2")
+    if not torch.isfinite(logits).all():
+        raise ValueError("logits must be finite")
+    probabilities = torch.softmax(logits.detach(), dim=1).cpu().numpy().astype("float32", copy=False)
+    sorted_probabilities = torch.sort(torch.from_numpy(probabilities), dim=1).values.numpy()
+    labels = probabilities.argmax(axis=1).astype("int16", copy=False)
+    return {
+        "semantic_probs": probabilities,
+        "part_label": labels,
+        "editable_label": labels.copy(),
+        "confidence": probabilities.max(axis=1).astype("float32", copy=False),
+        "semantic_margin": (sorted_probabilities[:, -1] - sorted_probabilities[:, -2]).astype(
+            "float32", copy=False
+        ),
+    }
 
 
 def _sha256(path: Path) -> str:

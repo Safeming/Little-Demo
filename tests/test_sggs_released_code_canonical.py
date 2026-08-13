@@ -257,3 +257,84 @@ def test_export_prior_cli_writes_32d_features_and_provenance(tmp_path):
     assert manifest["feature_layout"] == {"skinning": [0, 24], "native_semantics": [24, 29], "xyz": [29, 32]}
     assert manifest["sggs_head"] == "27b9ed9c9e4c5663deb169247c2339ccafe1c254"
     assert manifest["trainable"] == ["compact6_readout_mlp"]
+
+
+def test_train_parser_has_frozen_paper_defaults():
+    from tools.train_sggs_released_code_canonical import build_parser
+
+    args = build_parser().parse_args(["--input", "/tmp/input", "--prior", "/tmp/prior", "--output", "/tmp/out"])
+
+    assert args.iterations == 30000
+    assert args.hidden_dim == 64
+    assert args.learning_rate == pytest.approx(1.0e-3)
+    assert args.samples_per_class == 512
+    assert args.topology_lambda == pytest.approx(0.1)
+    assert args.topology_interval == 2
+    assert args.seed == 0
+
+
+def test_compact6_readout_and_predictions_are_normalized():
+    from utils.sggs_released_code_canonical import Compact6Readout, compact6_predictions
+
+    readout = Compact6Readout(input_dim=32, hidden_dim=8, class_count=6)
+    features = torch.randn((7, 32), generator=torch.Generator().manual_seed(4))
+    logits = readout(features)
+    result = compact6_predictions(logits)
+
+    assert logits.shape == (7, 6)
+    np.testing.assert_allclose(result["semantic_probs"].sum(axis=1), 1.0, atol=1.0e-6)
+    np.testing.assert_array_equal(result["part_label"], np.argmax(result["semantic_probs"], axis=1))
+    assert np.all(result["confidence"] >= 0.0)
+    assert np.all(result["semantic_margin"] >= 0.0)
+
+
+def _make_train_inputs(tmp_path: Path):
+    input_dir, avatar_root, body_models = _make_prior_export_inputs(tmp_path)
+    views = input_dir / "views"
+    views.mkdir()
+    for name in json.loads((input_dir / "manifest.json").read_text())["views"]:
+        torch.save({"xyz": torch.zeros((2, 3)), "labels": torch.zeros((2, 2), dtype=torch.int16)}, views / name)
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    torch.save(torch.zeros((2, 32)), prior / "topology_features.pt")
+    torch.save(
+        {"indices": torch.tensor([[1], [0]]), "distances": torch.ones((2, 1)), "weights": torch.ones((2, 1))},
+        prior / "topology_knn.pt",
+    )
+    manifest = {
+        "schema_version": 1,
+        "subject": "CoreView_377",
+        "point_count": 2,
+        "view_count": 80,
+        "feature_dim": 32,
+        "source_frozen_views": str(input_dir.resolve()),
+        "source_checkpoint": "/tmp/checkpoint.pth",
+        "source_checkpoint_sha256": "a" * 64,
+        "sggs_head": "27b9ed9c9e4c5663deb169247c2339ccafe1c254",
+    }
+    (prior / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return input_dir, prior
+
+
+def test_validate_training_inputs_rejects_point_count_and_prior_shape_mismatch(tmp_path):
+    from tools.train_sggs_released_code_canonical import validate_training_inputs
+
+    input_dir, prior = _make_train_inputs(tmp_path)
+    source, prior_manifest, features, graph, view_paths = validate_training_inputs(input_dir, prior)
+    assert features.shape == (2, 32)
+    assert graph["indices"].shape == (2, 1)
+    assert len(view_paths) == 80
+
+    torch.save(torch.zeros((3, 32)), prior / "topology_features.pt")
+    with pytest.raises(ValueError, match="point count"):
+        validate_training_inputs(input_dir, prior)
+
+
+def test_find_sggs_resume_checkpoint_prefers_latest_unfinished(tmp_path):
+    from tools.train_sggs_released_code_canonical import find_resume_checkpoint
+
+    torch.save({"iteration": 100}, tmp_path / "checkpoint_000100.pt")
+    torch.save({"iteration": 200}, tmp_path / "checkpoint_000200.pt")
+    assert find_resume_checkpoint(tmp_path, iterations=300).name == "checkpoint_000200.pt"
+    (tmp_path / "COMPLETE").write_text("complete\n")
+    assert find_resume_checkpoint(tmp_path, iterations=300) is None
