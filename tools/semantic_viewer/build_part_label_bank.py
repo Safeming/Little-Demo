@@ -177,11 +177,34 @@ def _read_mask(path: Path) -> np.ndarray:
 def _load_record_masks(asset_root: Path, record: dict) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
     compact = record.get("compact_head_mask_files", {}) or {}
     part_masks = {}
+    missing_parts = []
     for name in PART_NAMES:
         rel = compact.get(name)
         if not rel:
             rel = f"compact_head_masks/{name}/render_{record['image_name']}.png"
-        part_masks[name] = _read_mask(asset_root / rel)
+        path = asset_root / rel
+        if path.exists():
+            part_masks[name] = _read_mask(path)
+        else:
+            missing_parts.append(name)
+    if missing_parts:
+        if part_masks:
+            shape = next(iter(part_masks.values())).shape
+        else:
+            coarse = record.get("coarse_mask_files", {}) or {}
+            shape = None
+            for rel in coarse.values():
+                path = asset_root / rel
+                if path.exists():
+                    shape = _read_mask(path).shape
+                    break
+            if shape is None:
+                raise FileNotFoundError(
+                    f"missing all compact masks for {record['image_name']} "
+                    "and no coarse mask is available to infer shape"
+                )
+        for name in missing_parts:
+            part_masks[name] = np.zeros(shape, dtype=np.float32)
     coarse = record.get("coarse_mask_files", {}) or {}
     first_shape = next(iter(part_masks.values())).shape
     fg = _read_mask(asset_root / coarse["foreground"]) if coarse.get("foreground") else np.ones(first_shape, dtype=np.float32)

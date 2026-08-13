@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -12,7 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from utils.four_method_paper_evidence import build_temporal_windows
+from utils.four_method_paper_evidence import (
+    build_temporal_windows,
+    resolve_frozen_operating_point,
+)
+from utils.semantic_eval_protocol import file_fingerprint
 
 
 def build_record_names(windows) -> list[str]:
@@ -209,6 +214,48 @@ def verify_asset_root(output_root: Path | str, *, expected_names) -> dict:
     }
 
 
+def derive_aligned_frozen_config(
+    *,
+    source_config: Path | str,
+    checkpoint: Path | str,
+    output: Path | str,
+) -> dict:
+    source_config = Path(source_config)
+    checkpoint = Path(checkpoint)
+    output = Path(output)
+    payload = json.loads(source_config.read_text(encoding="utf-8"))
+    old_fingerprint = str(payload.get("checkpoint_fingerprint", ""))
+    payload["checkpoint_fingerprint"] = file_fingerprint(checkpoint)
+    payload["alignment"] = {
+        "mode": "shared_40k_checkpoint_reprojection",
+        "source_frozen_config": str(source_config.resolve()),
+        "source_checkpoint_fingerprint": old_fingerprint,
+        "aligned_checkpoint": str(checkpoint.resolve()),
+        "selected_parameters_unchanged": True,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return payload
+
+
+def write_operating_point(
+    *,
+    curve_path: Path | str,
+    method: str,
+    subject: str,
+    output: Path | str,
+) -> dict:
+    curve_path = Path(curve_path)
+    output = Path(output)
+    with curve_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    point = resolve_frozen_operating_point(rows, method=method, subject=subject)
+    point["reference_baseline"] = "B1"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(point, indent=2, sort_keys=True), encoding="utf-8")
+    return point
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Prepare frozen continuous temporal assets.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -224,6 +271,15 @@ def parse_args(argv=None):
     verify = subparsers.add_parser("verify")
     verify.add_argument("--asset-root", required=True, type=Path)
     verify.add_argument("--record-list", required=True, type=Path)
+    align = subparsers.add_parser("align-frozen-config")
+    align.add_argument("--source-config", required=True, type=Path)
+    align.add_argument("--checkpoint", required=True, type=Path)
+    align.add_argument("--output", required=True, type=Path)
+    operating_point = subparsers.add_parser("write-operating-point")
+    operating_point.add_argument("--curve", required=True, type=Path)
+    operating_point.add_argument("--method", required=True)
+    operating_point.add_argument("--subject", required=True)
+    operating_point.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)
 
 
@@ -259,6 +315,19 @@ def main(argv=None) -> int:
         result = verify_asset_root(
             args.asset_root,
             expected_names=_load_names(args.record_list),
+        )
+    elif args.command == "align-frozen-config":
+        result = derive_aligned_frozen_config(
+            source_config=args.source_config,
+            checkpoint=args.checkpoint,
+            output=args.output,
+        )
+    elif args.command == "write-operating-point":
+        result = write_operating_point(
+            curve_path=args.curve,
+            method=args.method,
+            subject=args.subject,
+            output=args.output,
         )
     else:
         raise ValueError(f"unsupported command: {args.command}")

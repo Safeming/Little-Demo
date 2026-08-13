@@ -76,3 +76,57 @@ def test_merge_asset_roots_links_referenced_files_and_rejects_duplicate_keys(tmp
             output_root=tmp_path / "bad",
             expected_names=["c21_f000170"],
         )
+
+
+def test_derive_aligned_frozen_config_only_rebinds_checkpoint(tmp_path):
+    from tools.prepare_four_method_temporal_assets import derive_aligned_frozen_config
+    from utils.semantic_eval_protocol import file_fingerprint
+
+    source = tmp_path / "source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "checkpoint_fingerprint": "old",
+                "bank_fingerprint": "bank",
+                "protocol_fingerprint": "protocol",
+                "selected": {"soft_threshold": 0.15, "boundary_radius": 6},
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "ckpt.pth"
+    checkpoint.write_bytes(b"checkpoint")
+
+    result = derive_aligned_frozen_config(
+        source_config=source,
+        checkpoint=checkpoint,
+        output=tmp_path / "aligned.json",
+    )
+
+    assert result["checkpoint_fingerprint"] == file_fingerprint(checkpoint)
+    assert result["bank_fingerprint"] == "bank"
+    assert result["selected"] == {"soft_threshold": 0.15, "boundary_radius": 6}
+    assert result["alignment"]["source_checkpoint_fingerprint"] == "old"
+
+
+def test_write_operating_point_selects_unique_method_retention(tmp_path):
+    from tools.prepare_four_method_temporal_assets import write_operating_point
+
+    curve = tmp_path / "matched.csv"
+    curve.write_text(
+        "baseline,retention,threshold,edit_strength\n"
+        "B1,0.6,0.5,0.6\n"
+        "A5,0.6,0.15,0.72\n",
+        encoding="utf-8",
+    )
+    result = write_operating_point(
+        curve_path=curve,
+        method="a5",
+        subject="386",
+        output=tmp_path / "point.json",
+    )
+
+    assert result["baseline"] == "A5"
+    assert result["retention"] == 0.6
+    assert result["edit_strength"] == 0.72
+    assert result["reference_baseline"] == "B1"

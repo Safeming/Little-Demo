@@ -1291,16 +1291,6 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
                         "valid_mask": combined_valid,
                     }
                 )
-        projection_cache_output = getattr(args, "projection_cache_output", None)
-        if projection_cache_output is not None:
-            write_projection_cache(
-                projection_cache_output,
-                caches=caches,
-                checkpoint_fingerprint=checkpoint_fp,
-                record_fingerprint_value=selected_record_fingerprint,
-                loaded_iteration=loaded_iteration,
-                point_count=point_count,
-            )
     for bank_name, bank in (
         ("evidence", trained_bank),
         ("raw_trained", raw_trained_bank),
@@ -1315,6 +1305,16 @@ def evaluate_scene(args: argparse.Namespace) -> dict:
             )
 
     _ensure_footprint_ratio_cache(caches, protocol, boundary_radius)
+    projection_cache_output = getattr(args, "projection_cache_output", None)
+    if projection_cache_output is not None and projection_cache_input is None:
+        write_projection_cache(
+            projection_cache_output,
+            caches=caches,
+            checkpoint_fingerprint=checkpoint_fp,
+            record_fingerprint_value=selected_record_fingerprint,
+            loaded_iteration=loaded_iteration,
+            point_count=point_count,
+        )
     per_view = []
     spatial_guard_source = []
     for cache in caches:
