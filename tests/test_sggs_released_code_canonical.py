@@ -394,3 +394,91 @@ def test_sggs_queue_dry_run_does_not_write_completion_or_state(tmp_path):
     assert "train_sggs_released_code_canonical.py" in completed.stdout
     assert not (output / "COMPLETE").exists()
     assert not (output / "queue_state.json").exists()
+
+
+def _validation_candidate(max_retention, leakage, *, miou=0.4, boundary=0.3):
+    rows = []
+    for retention in (0.4, 0.5, 0.6):
+        if retention <= max_retention:
+            rows.append(
+                {
+                    "baseline": "B4",
+                    "retention": retention,
+                    "actionable_leakage": leakage * retention,
+                    "raw_leakage": leakage * retention * 2.0,
+                    "actionable_leakage_ratio": leakage,
+                }
+            )
+    return {
+        "matched_retention": rows,
+        "macro_miou": miou,
+        "mean_boundary_f1": boundary,
+        "report_dir": "/validation/only",
+    }
+
+
+def test_select_loso_threshold_prefers_feasible_low_leakage_then_quality_and_threshold():
+    from utils.sggs_released_code_canonical import select_loso_threshold
+
+    validation = {
+        "377": {
+            0.05: _validation_candidate(0.6, 0.30),
+            0.10: _validation_candidate(0.6, 0.20, miou=0.45),
+            0.15: _validation_candidate(0.6, 0.20, miou=0.40),
+        },
+        "386": {
+            0.05: _validation_candidate(0.6, 0.20),
+            0.10: _validation_candidate(0.6, 0.10, miou=0.45),
+            0.15: _validation_candidate(0.6, 0.10, miou=0.40),
+        },
+        "394": {
+            0.05: _validation_candidate(0.6, 0.50),
+            0.10: _validation_candidate(0.6, 0.50),
+            0.15: _validation_candidate(0.6, 0.50),
+        },
+    }
+
+    selected = select_loso_threshold(validation, held_out_subject="394", target_retention=0.6)
+
+    assert selected["soft_threshold"] == pytest.approx(0.10)
+    assert selected["validation_target_feasible"] is True
+    assert selected["validation_selection_retention"] == pytest.approx(0.6)
+    assert selected["donor_subjects"] == ["377", "386"]
+
+
+def test_select_loso_threshold_falls_back_to_largest_common_reachable_retention():
+    from utils.sggs_released_code_canonical import select_loso_threshold
+
+    validation = {
+        "377": {0.1: _validation_candidate(0.5, 0.4), 0.2: _validation_candidate(0.4, 0.1)},
+        "386": {0.1: _validation_candidate(0.5, 0.2), 0.2: _validation_candidate(0.6, 0.1)},
+        "394": {0.1: _validation_candidate(0.6, 0.3), 0.2: _validation_candidate(0.6, 0.3)},
+    }
+
+    selected = select_loso_threshold(validation, held_out_subject="394", target_retention=0.6)
+
+    assert selected["soft_threshold"] == pytest.approx(0.1)
+    assert selected["validation_target_feasible"] is False
+    assert selected["validation_selection_retention"] == pytest.approx(0.5)
+
+
+def test_build_sggs_comparison_row_marks_missing_60_percent_without_interpolation(tmp_path):
+    from tools.evaluate_sggs_released_code_canonical import build_method_row
+
+    report = tmp_path / "report"
+    report.mkdir()
+    (report / "matched_retention.csv").write_text(
+        "baseline,retention,actionable_leakage,raw_leakage,actionable_leakage_ratio,edit_strength\n"
+        "B4,0.4,0.2,0.4,0.5,0.9\n",
+        encoding="utf-8",
+    )
+    (report / "baseline_summary.csv").write_text(
+        "baseline,macro_miou,mean_boundary_f1\nB4,0.3,0.2\n", encoding="utf-8"
+    )
+
+    row = build_method_row("SG-GS", "377", report, target_retention=0.6)
+
+    assert row["retention_0p6_feasible"] is False
+    assert row["actionable_leakage_at_0p6"] == ""
+    assert row["max_reachable_retention"] == pytest.approx(0.4)
+    assert row["actionable_leakage_at_0p4"] == pytest.approx(0.2)

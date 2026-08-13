@@ -50,6 +50,102 @@ def estimate_queue_seconds(
     }
 
 
+def _retention_row(report: Mapping, retention: float) -> Mapping | None:
+    for row in report.get("matched_retention", []):
+        if str(row.get("baseline")) == "B4" and abs(float(row["retention"]) - float(retention)) < 1.0e-8:
+            return row
+    return None
+
+
+def _max_retention(report: Mapping) -> float:
+    values = [
+        float(row["retention"])
+        for row in report.get("matched_retention", [])
+        if str(row.get("baseline")) == "B4"
+    ]
+    return max(values) if values else 0.0
+
+
+def select_loso_threshold(
+    validation: Mapping[str, Mapping[float, Mapping]],
+    *,
+    held_out_subject: str,
+    target_retention: float = 0.6,
+) -> dict:
+    held_out_subject = str(held_out_subject)
+    donors = sorted(str(subject) for subject in validation if str(subject) != held_out_subject)
+    if len(donors) < 2:
+        raise ValueError("LOSO selection requires at least two donor subjects")
+    common_thresholds = set(float(value) for value in validation[donors[0]])
+    for donor in donors[1:]:
+        common_thresholds &= set(float(value) for value in validation[donor])
+    if not common_thresholds:
+        raise ValueError("LOSO donors have no common threshold candidates")
+
+    candidates = []
+    for threshold in sorted(common_thresholds):
+        reports = [validation[donor][threshold] for donor in donors]
+        common_max = min(_max_retention(report) for report in reports)
+        feasible = common_max + 1.0e-8 >= float(target_retention)
+        selection_retention = float(target_retention) if feasible else float(common_max)
+        donor_rows = []
+        for donor, report in zip(donors, reports):
+            row = _retention_row(report, selection_retention)
+            if row is None:
+                raise ValueError("candidate report is missing its common selection retention row")
+            donor_rows.append(
+                {
+                    "donor_subject": donor,
+                    "retention": selection_retention,
+                    "actionable_leakage": float(row["actionable_leakage"]),
+                    "raw_leakage": float(row["raw_leakage"]),
+                    "actionable_leakage_ratio": float(row["actionable_leakage_ratio"]),
+                    "report_dir": str(report.get("report_dir", "")),
+                }
+            )
+        candidates.append(
+            {
+                "soft_threshold": float(threshold),
+                "donor_subjects": donors,
+                "donor_metrics": donor_rows,
+                "target_retention": float(target_retention),
+                "target_feasible_on_every_donor": bool(feasible),
+                "selection_retention": selection_retention,
+                "common_max_retention": float(common_max),
+                "mean_actionable_leakage": float(
+                    sum(row["actionable_leakage"] for row in donor_rows) / len(donor_rows)
+                ),
+                "mean_raw_leakage": float(sum(row["raw_leakage"] for row in donor_rows) / len(donor_rows)),
+                "mean_macro_miou": float(sum(float(report["macro_miou"]) for report in reports) / len(reports)),
+                "mean_boundary_f1": float(
+                    sum(float(report["mean_boundary_f1"]) for report in reports) / len(reports)
+                ),
+            }
+        )
+    any_feasible = any(candidate["target_feasible_on_every_donor"] for candidate in candidates)
+    eligible = (
+        [candidate for candidate in candidates if candidate["target_feasible_on_every_donor"]]
+        if any_feasible
+        else candidates
+    )
+    selected = min(
+        eligible,
+        key=lambda candidate: (
+            0.0 if any_feasible else -candidate["common_max_retention"],
+            candidate["mean_actionable_leakage"],
+            -candidate["mean_macro_miou"],
+            -candidate["mean_boundary_f1"],
+            candidate["soft_threshold"],
+        ),
+    )
+    return {
+        **selected,
+        "validation_target_feasible": bool(selected["target_feasible_on_every_donor"]),
+        "validation_selection_retention": float(selected["selection_retention"]),
+        "candidate_trace": candidates,
+    }
+
+
 class Compact6Readout(nn.Module):
     def __init__(self, *, input_dim: int = 32, hidden_dim: int = 64, class_count: int = 6):
         super().__init__()
