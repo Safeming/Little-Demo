@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pytest
@@ -338,3 +340,57 @@ def test_find_sggs_resume_checkpoint_prefers_latest_unfinished(tmp_path):
     assert find_resume_checkpoint(tmp_path, iterations=300).name == "checkpoint_000200.pt"
     (tmp_path / "COMPLETE").write_text("complete\n")
     assert find_resume_checkpoint(tmp_path, iterations=300) is None
+
+
+def test_sggs_queue_contract_freezes_release_inputs_order_and_resume():
+    script = Path("tools/run_sggs_released_code_canonical_three_subject.sh").read_text(encoding="utf-8")
+
+    assert "/opt/miniconda3/envs/gaussian_splatting/bin/python" in script
+    assert "/remote-home/ming/SGGS" in script
+    assert "27b9ed9c9e4c5663deb169247c2339ccafe1c254" in script
+    assert "/remote-home/ming/dataSet" in script
+    assert "/remote-home/ming/3dgs-avatar-release-main/body_models" in script
+    assert 'SUBJECTS="${SUBJECTS:-377 386 394}"' in script
+    assert 'ITERATIONS="${ITERATIONS:-30000}"' in script
+    assert 'CANARY_ITERATIONS="${CANARY_ITERATIONS:-100}"' in script
+    assert "queue_state.json" in script
+    assert "estimated_completion_bjt" in script
+    assert "trap on_exit EXIT" in script
+    assert "--resume auto" in script
+
+
+def test_estimate_sggs_queue_seconds_uses_steady_canary_rate_and_buffer():
+    from utils.sggs_released_code_canonical import estimate_queue_seconds
+
+    rows = [
+        {"iteration": 1, "elapsed_seconds": 1.0},
+        {"iteration": 20, "elapsed_seconds": 5.0},
+        {"iteration": 100, "elapsed_seconds": 21.0},
+    ]
+
+    estimate = estimate_queue_seconds(
+        rows,
+        canary_iterations=100,
+        formal_iterations=30000,
+        subject_count=3,
+        buffer_ratio=0.15,
+    )
+
+    assert estimate["steady_seconds_per_iteration"] == pytest.approx(0.2)
+    assert estimate["estimated_seconds"] == pytest.approx(20700.0)
+
+
+def test_sggs_queue_dry_run_does_not_write_completion_or_state(tmp_path):
+    output = tmp_path / "dry-run"
+    completed = subprocess.run(
+        ["bash", "tools/run_sggs_released_code_canonical_three_subject.sh"],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "DRY_RUN": "1", "OUTPUT_ROOT": str(output)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "train_sggs_released_code_canonical.py" in completed.stdout
+    assert not (output / "COMPLETE").exists()
+    assert not (output / "queue_state.json").exists()

@@ -4,7 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 
 import torch
 import torch.nn as nn
@@ -14,6 +14,40 @@ import torch.nn.functional as F
 REQUIRED_RELEASE_FILES = ("README.md", "environment.yml", ".gitmodules")
 LOCAL_IMPORT_MODULES = ("diff_gaussian_rasterization_obj", "sparseconvnet")
 JOINT_TO_PART = (4, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 3, 2, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2)
+
+
+def estimate_queue_seconds(
+    rows: Sequence[Mapping],
+    *,
+    canary_iterations: int,
+    formal_iterations: int,
+    subject_count: int,
+    buffer_ratio: float = 0.15,
+) -> dict[str, float]:
+    if canary_iterations <= 0 or formal_iterations <= 0 or subject_count <= 0:
+        raise ValueError("iteration and subject counts must be positive")
+    if buffer_ratio < 0.0:
+        raise ValueError("buffer_ratio must be non-negative")
+    steady_start = max(1, int(canary_iterations * 0.2))
+    ordered = sorted(
+        (row for row in rows if int(row["iteration"]) >= steady_start),
+        key=lambda row: int(row["iteration"]),
+    )
+    if len(ordered) < 2:
+        raise ValueError("canary metrics need at least two steady-state rows")
+    first, last = ordered[0], ordered[-1]
+    iteration_delta = int(last["iteration"]) - int(first["iteration"])
+    elapsed_delta = float(last["elapsed_seconds"]) - float(first["elapsed_seconds"])
+    if iteration_delta <= 0 or elapsed_delta <= 0.0:
+        raise ValueError("canary steady-state slope must be positive")
+    seconds_per_iteration = elapsed_delta / iteration_delta
+    base_seconds = seconds_per_iteration * int(formal_iterations) * int(subject_count)
+    return {
+        "steady_seconds_per_iteration": float(seconds_per_iteration),
+        "base_seconds": float(base_seconds),
+        "buffer_ratio": float(buffer_ratio),
+        "estimated_seconds": float(base_seconds * (1.0 + buffer_ratio)),
+    }
 
 
 class Compact6Readout(nn.Module):
